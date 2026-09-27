@@ -106,6 +106,23 @@ class VulnerabilityFinding(Base):
 
     agent = relationship("Agent", back_populates="vulnerabilities")
     remediation_evidence = relationship("RemediationEvidence", back_populates="finding")
+    sla_exceptions = relationship("VulnerabilitySlaException", back_populates="finding", cascade="all, delete-orphan")
+
+
+class VulnerabilitySlaException(Base):
+    __tablename__ = "vulnerability_sla_exceptions"
+
+    id = Column(String(36), primary_key=True)
+    finding_id = Column(String(36), ForeignKey("vulnerability_findings.id"), nullable=False, index=True)
+    reason = Column(Text, nullable=False)
+    approved_by = Column(String(255), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by = Column(String(255), nullable=False, default="")
+    revoke_reason = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    finding = relationship("VulnerabilityFinding", back_populates="sla_exceptions")
 
 
 class RemediationEvidence(Base):
