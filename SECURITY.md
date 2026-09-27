@@ -80,3 +80,18 @@ Application health checks are restricted to HTTP(S) URLs whose host is `localhos
 Health telemetry stored in heartbeat inventory can contain operational state. Prometheus exports only aggregated counts and never uses service names, application-check names, hostnames or addresses as labels.
 
 A health regression blocks ring advancement. It does not authorize or trigger rollback. Rollback retains its separate administrative approval gate.
+
+
+## Remediation evidence and Greenbone rescans
+
+Automated remediation evidence is deliberately narrower than generic Greenbone control.
+
+The Patch Manager starts only the Greenbone task identifier already attached to the original vulnerability finding. It does not create arbitrary targets, scanners or scan tasks as part of the remediation flow.
+
+A patch job must complete and pass post-patch validation before a rescan may be requested. The report ID returned by Greenbone is persisted and reconciliation waits for that exact report to reach a completed task state.
+
+Automatic remediation is based on the absence of the same stable finding identity plus CVE from that exact post-patch report. A random later report, a running or partial report, or disappearance from an unrelated task cannot prove remediation.
+
+Accepted-risk and false-positive workflow states are not overwritten by automated evidence. Manual rescan requests are restricted to operators, allowed only after an error or a still-detected result, require a reason and are audited.
+
+Prometheus exposes only aggregate remediation lifecycle counts. Task IDs, report IDs, CVEs and endpoint identifiers are not used as metric labels.
