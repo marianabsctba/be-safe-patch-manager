@@ -58,8 +58,11 @@ def create_signed_stage(tmp_path, *, version="0.17.0", requirements=None):
         archive.writestr("patch_agent.py", future_agent)
         archive.writestr("requirements.txt", requirements)
 
+    key_id = hashlib.sha256(
+        private.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    ).hexdigest()
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "product": "be-safe-patch-agent",
         "version": version,
         "protocol": 2,
@@ -70,6 +73,8 @@ def create_signed_stage(tmp_path, *, version="0.17.0", requirements=None):
             "signed_update_activation_v1",
         ],
         "generated_at": "2026-09-27T19:00:00+00:00",
+        "source_commit": "c" * 40,
+        "signing_key_id": key_id,
         "artifact": {
             "filename": artifact.name,
             "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),

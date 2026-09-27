@@ -69,8 +69,11 @@ def signed_release(tmp_path, *, version="0.14.0", files=None):
         tmp_path / f"be-safe-patch-agent-{version}.zip",
         files=files,
     )
+    key_id = hashlib.sha256(
+        private.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    ).hexdigest()
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "product": "be-safe-patch-agent",
         "version": version,
         "protocol": 2,
@@ -81,6 +84,8 @@ def signed_release(tmp_path, *, version="0.14.0", files=None):
             "signed_update_staging_v1",
         ],
         "generated_at": "2026-09-27T18:00:00+00:00",
+        "source_commit": "a" * 40,
+        "signing_key_id": key_id,
         "artifact": {
             "filename": artifact.name,
             "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
@@ -104,6 +109,30 @@ def test_server_release_verifier_accepts_valid_release(tmp_path):
     assert release["manifest"]["version"] == "0.14.0"
     assert release["artifact_path"] == artifact.resolve()
     assert release["manifest"]["artifact"]["sha256"] == manifest["artifact"]["sha256"]
+
+
+def test_server_release_verifier_rejects_missing_provenance(tmp_path):
+    _, _, public, _ = signed_release(tmp_path)
+    path = tmp_path / "agent-release.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.pop("source_commit")
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(AgentReleaseError, match="source_commit"):
+        load_signed_release(tmp_path, public)
+
+
+def test_server_release_verifier_rejects_wrong_signing_key_id(tmp_path):
+    _, _, public, _ = signed_release(tmp_path)
+    path = tmp_path / "agent-release.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["signing_key_id"] = "f" * 64
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    # Re-signing is intentionally not done. Validation must still identify
+    # the trust-anchor mismatch before treating the release as trusted.
+    with pytest.raises(AgentReleaseError, match="signing_key_id"):
+        load_signed_release(tmp_path, public)
 
 
 def test_server_release_verifier_rejects_manifest_tamper(tmp_path):

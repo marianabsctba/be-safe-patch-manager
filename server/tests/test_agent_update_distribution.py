@@ -58,13 +58,18 @@ def publish_release(tmp_path, version="0.14.0"):
         archive.writestr("patch_agent.py", b"print('release')\n")
         archive.writestr("requirements.txt", b"requests==2.32.3\n")
 
+    key_id = hashlib.sha256(
+        private.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    ).hexdigest()
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "product": "be-safe-patch-agent",
         "version": version,
         "protocol": 2,
         "capabilities": ["scan_updates", "signed_update_staging_v1"],
         "generated_at": "2026-09-27T18:30:00+00:00",
+        "source_commit": "b" * 40,
+        "signing_key_id": key_id,
         "artifact": {
             "filename": artifact.name,
             "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
