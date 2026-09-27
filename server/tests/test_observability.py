@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -148,6 +149,25 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
             action="install_updates",
             status="stalled",
         )
+        expired_approval = PatchJob(
+            id="obs-expired-approval",
+            campaign=campaign,
+            agent=agent,
+            action="activate_agent_update",
+            status="pending",
+            payload_json=json.dumps({
+                "expected_version": "0.17.0",
+                "approval_expires_at": (now() - timedelta(minutes=1)).isoformat(),
+            }),
+        )
+        invalidated_approval = PatchJob(
+            id="obs-invalidated-approval",
+            campaign=campaign,
+            agent=agent,
+            action="activate_agent_update",
+            status="skipped",
+            error="agent update authorization invalidated: approval_expired",
+        )
         finding = VulnerabilityFinding(
             id="obs-vuln",
             source="openvas",
@@ -183,7 +203,16 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
             evidence_json="{}",
             verified_at=now(),
         )
-        db.add_all([agent, campaign, job, finding, greenbone, evidence])
+        db.add_all([
+            agent,
+            campaign,
+            job,
+            expired_approval,
+            invalidated_approval,
+            finding,
+            greenbone,
+            evidence,
+        ])
         db.commit()
     finally:
         db.close()
@@ -218,6 +247,9 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
     assert 'patch_manager_agent_update_state{status="staged"} 1.0' in body
     assert "patch_manager_agent_update_distribution_enabled" in body
     assert 'patch_manager_agent_activation_state{status="rolled_back"} 1.0' in body
+    assert "patch_manager_agent_update_approvals_pending 1.0" in body
+    assert "patch_manager_agent_update_approvals_expired 1.0" in body
+    assert "patch_manager_agent_update_authorizations_invalidated 1.0" in body
 
     assert "sensitive-hostname-should-not-leak" not in body
     assert "10.123.45.67" not in body
