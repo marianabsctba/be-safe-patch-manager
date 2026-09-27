@@ -19,6 +19,9 @@
 - sync enriquece findings abertos sem sobrescrever evidência original do scanner;
 - falha de uma fonte mantém a outra ativa e sinaliza estado degradado;
 - worker opcional executa sync periódico e o operador pode solicitar sync manual;
+- adicionada fila de remediação orientada a risco e SLA, com recomendação de próxima ação e justificativas;
+- findings elegíveis podem abrir a campanha pré-preenchida, mas continuam exigindo revisão humana antes do deploy;
+- corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
 
