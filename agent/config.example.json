@@ -6,5 +6,8 @@
   "tags": ["piloto"],
   "poll_seconds": 60,
   "scan_every_seconds": 1800,
-  "tls_verify": true
+  "tls_verify": true,
+  "ca_cert": "/etc/patch-manager/tls/server-ca.crt",
+  "client_cert": "/etc/patch-manager/tls/agent.crt",
+  "client_key": "/etc/patch-manager/tls/agent.key"
 }
