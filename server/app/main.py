@@ -3134,6 +3134,66 @@ def agent_update_rollout_eligibility(
     return True, "eligible"
 
 
+@app.post("/api/admin/agent-update-rollouts/preview")
+def preview_agent_update_rollout(
+    body: AgentUpdateRolloutCreate,
+    _=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if body.ring_percent not in {10, 30, 100}:
+        raise HTTPException(status_code=400, detail="agent update ring must be 10, 30 or 100")
+
+    release_binding = signed_release_binding(body.expected_version)
+    eligible = []
+    skipped = {}
+    details = []
+
+    for agent in db.query(Agent).order_by(Agent.id.asc()).all():
+        ok, reason = agent_update_rollout_eligibility(
+            db,
+            agent,
+            body.expected_version,
+            body.target_tag.strip(),
+            release_binding,
+        )
+        if ok:
+            eligible.append(agent)
+        else:
+            skipped[reason] = skipped.get(reason, 0) + 1
+        details.append({
+            "agent_id": agent.id,
+            "hostname": agent.hostname,
+            "eligible": ok,
+            "reason": reason,
+            "runtime_version": agent_runtime_metadata(agent).get("version", ""),
+            "last_seen": agent.last_seen.isoformat() if agent.last_seen else None,
+        })
+
+    ordered = sorted(eligible, key=lambda agent: ring_bucket(agent.id))
+    selected_count = (
+        max(1, math.ceil(len(ordered) * body.ring_percent / 100))
+        if ordered
+        else 0
+    )
+    selected_ids = {agent.id for agent in ordered[:selected_count]}
+    for item in details:
+        item["selected"] = bool(item["agent_id"] in selected_ids)
+
+    return {
+        "ok": True,
+        "expected_version": body.expected_version,
+        "ring_percent": body.ring_percent,
+        "target_tag": body.target_tag.strip(),
+        "release_binding": release_binding,
+        "approval_ttl_seconds": AGENT_UPDATE_APPROVAL_TTL_SECONDS,
+        "max_heartbeat_age_seconds": AGENT_UPDATE_MAX_HEARTBEAT_AGE_SECONDS,
+        "eligible_agents": len(eligible),
+        "selected_agents": selected_count,
+        "skipped": skipped,
+        "agents": details[:200],
+    }
+
+
 @app.post("/api/admin/agent-update-rollouts")
 def create_agent_update_rollout(
     body: AgentUpdateRolloutCreate,
