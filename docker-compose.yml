@@ -1,0 +1,21 @@
+services:
+  patch-manager:
+    build: ./server
+    container_name: patch-manager
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite:////data/patchmgr.db
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?configure ADMIN_TOKEN in .env}
+      ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN:?configure ENROLLMENT_TOKEN in .env}
+    ports:
+      - "8080:8080"
+    volumes:
+      - patch_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  patch_data:

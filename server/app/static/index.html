@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Be Safe Patch Manager</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Be Safe Patch Manager</h1>
+      <p>Inventário, compliance, campanhas e evidências de atualização</p>
+    </div>
+    <div class="token-box">
+      <input id="token" type="password" placeholder="Admin token" />
+      <button id="saveToken">Entrar</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="summary" class="cards"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Endpoints</h2>
+        <button id="refresh">Atualizar</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Hostname</th><th>SO</th><th>Tags</th><th>Último contato</th><th>Pendentes</th><th>Críticas</th><th>Reboot</th></tr></thead>
+          <tbody id="agents"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Nova campanha</h2></div>
+      <form id="campaignForm" class="grid-form">
+        <input name="name" placeholder="Nome da campanha" required />
+        <select name="target_os"><option value="all">Todos os SO</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
+        <input name="target_tag" placeholder="Tag (opcional): piloto, prod..." />
+        <input name="ring_percent" type="number" min="1" max="100" value="100" />
+        <select name="action"><option value="scan_updates">Somente scan</option><option value="install_updates">Instalar updates</option></select>
+        <label class="check"><input name="allow_reboot" type="checkbox" /> permitir reboot</label>
+        <input name="not_before" type="datetime-local" />
+        <input name="packages" placeholder="Pacotes/KBs opcionais, separados por vírgula" />
+        <textarea name="description" placeholder="Descrição"></textarea>
+        <button type="submit">Criar campanha</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Campanhas</h2></div>
+      <div id="campaigns" class="campaigns"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Execuções recentes</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Endpoint</th><th>Campanha</th><th>Ação</th><th>Status</th><th>Erro</th></tr></thead>
+          <tbody id="jobs"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <template id="cardTpl"><article class="card"><span></span><strong></strong></article></template>
+  <script src="/static/app.js"></script>
+</body>
+</html>

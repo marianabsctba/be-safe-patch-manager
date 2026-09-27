@@ -1,0 +1,48 @@
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field
+
+
+class RegisterRequest(BaseModel):
+    hostname: str
+    os_family: str
+    os_name: str
+    os_version: str = ""
+    arch: str = ""
+    ip_address: str = ""
+    tags: List[str] = Field(default_factory=list)
+
+
+class RegisterResponse(BaseModel):
+    agent_id: str
+    agent_token: str
+
+
+class HeartbeatRequest(BaseModel):
+    inventory: Dict[str, Any] = Field(default_factory=dict)
+    patch_scan: List[Dict[str, Any]] = Field(default_factory=list)
+    reboot_required: bool = False
+
+
+class JobResultRequest(BaseModel):
+    status: str
+    result: Dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
+class CampaignCreate(BaseModel):
+    name: str
+    description: str = ""
+    target_os: str = "all"
+    target_tag: str = ""
+    ring_percent: int = Field(default=100, ge=1, le=100)
+    action: str = "install_updates"
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    not_before: Optional[datetime] = None
+    allow_reboot: bool = False
+
+
+class TagUpdate(BaseModel):
+    tags: List[str]

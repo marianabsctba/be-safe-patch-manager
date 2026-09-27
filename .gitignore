@@ -1,0 +1,49 @@
+# Secrets / local configuration
+.env
+.env.*
+!.env.example
+agent.json
+**/agent.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.p7b
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+secrets/
+credentials/
+
+# Databases / runtime data
+*.db
+*.sqlite
+*.sqlite3
+*.log
+/data/
+data/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build / packaging
+build/
+dist/
+*.zip
+*.tar.gz

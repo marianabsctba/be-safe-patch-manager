@@ -1,0 +1,16 @@
+[Unit]
+Description=Patch Manager Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/patch-manager-agent
+ExecStart=/opt/patch-manager-agent/.venv/bin/python /opt/patch-manager-agent/patch_agent.py --config /etc/patch-manager/agent.json
+Restart=always
+RestartSec=15
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
