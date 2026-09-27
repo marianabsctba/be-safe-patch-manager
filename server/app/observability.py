@@ -14,7 +14,7 @@ from .database import SessionLocal
 from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
 
 
-APP_VERSION = "0.12.0"
+APP_VERSION = "0.13.0"
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -109,6 +109,40 @@ def metrics_response():
     return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
+
+def _version_tuple(value: str):
+    import re
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", str(value or "").strip())
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _agent_compatibility_status(inventory: dict) -> str:
+    runtime = inventory.get("agent") if isinstance(inventory.get("agent"), dict) else {}
+    version = str(runtime.get("version") or "").strip()
+    try:
+        protocol = int(runtime.get("protocol") or 0)
+    except (TypeError, ValueError):
+        protocol = 0
+
+    current = _version_tuple(version)
+    minimum = _version_tuple(os.getenv("AGENT_MIN_VERSION", "0.13.0"))
+    try:
+        minimum_protocol = max(1, int(os.getenv("AGENT_MIN_PROTOCOL", "2")))
+    except ValueError:
+        minimum_protocol = 2
+
+    if not version or not protocol:
+        return "unknown"
+    if current is None or minimum is None or current < minimum:
+        return "outdated"
+    if protocol < minimum_protocol:
+        return "protocol_unsupported"
+    return "supported"
+
+
+
 def _backup_state():
     state = {
         "ok": 0.0,
@@ -171,6 +205,12 @@ class PatchManagerCollector:
             unhealthy_services = 0
             unhealthy_applications = 0
             health_collection_errors = 0
+            compatibility_counts = {
+                "supported": 0,
+                "outdated": 0,
+                "protocol_unsupported": 0,
+                "unknown": 0,
+            }
 
             for agent in agents:
                 family = (agent.os_family or "unknown").lower()
@@ -188,6 +228,8 @@ class PatchManagerCollector:
                     inventory = json.loads(agent.inventory_json or "{}")
                 except Exception:
                     inventory = {}
+                compatibility_status = _agent_compatibility_status(inventory)
+                compatibility_counts[compatibility_status] = compatibility_counts.get(compatibility_status, 0) + 1
                 health = inventory.get("health") if isinstance(inventory.get("health"), dict) else {}
                 if health:
                     health_reporting += 1
@@ -211,6 +253,25 @@ class PatchManagerCollector:
             for family, count in sorted(agents_by_os.items()):
                 agent_family.add_metric([family], count)
             yield agent_family
+
+            compatibility = GaugeMetricFamily(
+                "patch_manager_agent_compatibility",
+                "Managed agents by compatibility state.",
+                labels=["status"],
+            )
+            for status, count in sorted(compatibility_counts.items()):
+                compatibility.add_metric([status], count)
+            yield compatibility
+
+            enforcement = GaugeMetricFamily(
+                "patch_manager_agent_compatibility_enforced",
+                "Whether incompatible agents are prevented from claiming jobs.",
+            )
+            enforcement.add_metric(
+                [],
+                1 if os.getenv("AGENT_ENFORCE_COMPATIBILITY", "").strip().lower() in {"1", "true", "yes", "on"} else 0,
+            )
+            yield enforcement
 
             for name, description, value in [
                 ("patch_manager_agents_online", "Agents seen inside the online threshold.", online),

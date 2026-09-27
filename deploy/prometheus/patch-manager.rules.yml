@@ -112,3 +112,22 @@ groups:
         annotations:
           summary: Vulnerabilidade ainda detectada após patch
           description: Um rescan pós-patch confirmou que a vulnerabilidade continua presente.
+
+
+      - alert: PatchManagerCompatibilityBlockedJobs
+        expr: patch_manager_agent_compatibility_enforced == 1 and patch_manager_jobs{status="blocked"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Jobs bloqueados por compatibilidade
+          description: Há jobs aguardando atualização de versão, protocolo ou capabilities do agente.
+
+      - alert: PatchManagerIncompatibleAgents
+        expr: patch_manager_agent_compatibility_enforced == 1 and sum(patch_manager_agent_compatibility{status!="supported"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Agentes incompatíveis na frota
+          description: Um ou mais endpoints não atendem a versão/protocolo mínimo exigido pelo Patch Manager.
