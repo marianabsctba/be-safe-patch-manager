@@ -1,0 +1,408 @@
+# Be Safe Risk Model
+
+Este documento descreve o modelo de risco implementado no Be Safe Patch Manager v0.18.
+
+O objetivo não é substituir CVSS, EPSS, CISA KEV ou a evidência do scanner. O modelo usa esses sinais como entradas para priorização operacional e mantém cada fonte separada e auditável.
+
+## Camadas
+
+O modelo possui quatro camadas independentes:
+
+1. **Finding Detection Risk** — risco contextual de uma vulnerabilidade individual, em escala de 1 a 100.
+2. **Asset Context** — criticidade, exposição e controles compensatórios do endpoint.
+3. **Be Safe Asset Risk** — risco agregado do ativo, em escala de 0 a 1000.
+4. **Remediation Priority** — combina Asset/Finding Risk com SLA e elegibilidade de campanha.
+
+Nenhum desses scores marca uma vulnerabilidade como remediada. O fechamento continua dependendo da evidência pós-patch e do rescan.
+
+## 1. Finding Detection Risk
+
+Escala: **1–100**.
+
+Fórmula implementada:
+
+```text
+Finding Risk =
+    CVSS * 6
+  + EPSS * 20
+  + 15 se CISA KEV
+  + 10 se houver uso conhecido por ransomware
+  + idade
+```
+
+A idade adiciona até 10 pontos:
+
+```text
+age_points = min(10, age_days / 9)
+```
+
+O score final é limitado a 100.
+
+Faixas:
+
+| Score | Nível |
+|---:|---|
+| 90–100 | critical |
+| 70–89.9 | high |
+| 40–69.9 | medium |
+| 1–39.9 | low |
+
+### Fatores retornados
+
+Cada cálculo retorna os fatores separadamente:
+
+- `cvss`
+- `epss`
+- `known_exploited`
+- `ransomware`
+- `age`
+
+Isso permite explicar por que dois findings com o mesmo CVSS podem ter prioridades diferentes.
+
+## 2. Criticidade do ativo
+
+Escala: **1–5**.
+
+A criticidade é derivada das tags conhecidas do endpoint. Quando várias tags possuem valor, prevalece a maior criticidade.
+
+| Tag | Criticidade |
+|---|---:|
+| tier0 | 5 |
+| mission-critical | 5 |
+| critical | 5 |
+| domain-controller | 5 |
+| identity | 5 |
+| prod / production | 4 |
+| database | 4 |
+| internet-facing | 4 |
+| public | 4 |
+| dmz | 4 |
+| staging | 2 |
+| dev / development | 1 |
+| lab | 1 |
+
+Quando nenhuma tag conhecida está presente, o default é **2**.
+
+A origem da criticidade é retornada como `tags` ou `default`.
+
+## 3. Exposição
+
+Tags reconhecidas como exposição externa:
+
+- `internet-facing`
+- `public`
+- `dmz`
+- `external`
+
+Ativos externos recebem multiplicador:
+
+```text
+external multiplier = 1.2
+internal multiplier = 1.0
+```
+
+O modelo não infere exposição apenas pelo IP. Isso evita classificar NAT, ranges privados ou topologias incompletas de forma incorreta.
+
+## 4. Controles compensatórios
+
+Controles reconhecidos atualmente:
+
+| Tag | Multiplicador |
+|---|---:|
+| segmented | 0.90 |
+| edr-protected | 0.90 |
+| restricted-egress | 0.95 |
+
+Eles são multiplicativos e possuem piso agregado de **0.60**.
+
+Exemplo:
+
+```text
+segmented + edr-protected
+= 0.90 * 0.90
+= 0.81
+```
+
+O controle reduz o risco calculado, mas nunca altera o finding original, CVSS, EPSS ou estado do scanner.
+
+## 5. Agregação por severidade
+
+Os findings abertos são agrupados por severidade.
+
+Pesos atuais:
+
+| Severidade | Peso |
+|---|---:|
+| critical | 2.0 |
+| high | 1.5 |
+| medium | 1.0 |
+| low | 0.5 |
+| unknown | 0.5 |
+
+Para cada bucket:
+
+```text
+average_detection_risk = média dos Finding Detection Risks
+count_factor = count ^ 0.01
+bucket_contribution =
+    average_detection_risk
+    * count_factor
+    * severity_weight
+```
+
+O expoente baixo evita que quantidade pura domine completamente o risco.
+
+## 6. Be Safe Asset Risk
+
+Escala: **0–1000**.
+
+```text
+weighted_findings = soma das contribuições dos buckets
+
+Asset Risk =
+    asset_criticality
+  * exposure_multiplier
+  * weighted_findings
+  * compensating_multiplier
+```
+
+O resultado é limitado a 1000.
+
+Faixas:
+
+| Score | Nível |
+|---:|---|
+| 850–1000 | critical |
+| 700–849.9 | high |
+| 500–699.9 | medium |
+| 0–499.9 | low |
+
+## 7. Risk Appetite
+
+Configuração:
+
+```dotenv
+ASSET_RISK_APPETITE=700
+```
+
+A console mostra:
+
+- quantidade de ativos acima do appetite;
+- média de risco dos ativos;
+- ativos critical/high;
+- ranking decrescente.
+
+O appetite não altera o score. Ele funciona apenas como limite operacional.
+
+## 8. Decomposição do Asset Risk
+
+O endpoint de Asset Risk retorna `decomposition`.
+
+Contributors positivos:
+
+- `findings:critical`
+- `findings:high`
+- `findings:medium`
+- `findings:low`
+- `asset_criticality`
+- `external_exposure`
+
+Contributor negativo:
+
+- `compensating_controls`
+
+Cada item contém:
+
+- `name`
+- `category`
+- `raw`
+- `percent`
+
+O percentual é calculado sobre os contributors positivos. Controles compensatórios aparecem como redução negativa e não são usados no denominador positivo.
+
+Isso permite respostas como:
+
+```text
+Asset Risk: 884
+
+Principais contributors:
+- asset_criticality: 39.2%
+- findings:critical: 34.8%
+- external_exposure: 16.4%
+- findings:high: 9.6%
+
+Risk reduction:
+- compensating_controls: -92.3
+```
+
+## 9. Top Risk Contributors
+
+O relatório agrega contributors positivos de todos os ativos e retorna os dez maiores em `top_contributors`.
+
+Isso mostra o que mais pressiona o risco global do ambiente, por exemplo:
+
+```text
+1. asset_criticality
+2. findings:critical
+3. external_exposure
+4. findings:high
+```
+
+A finalidade é apoiar decisões como:
+
+- corrigir vulnerabilidades críticas;
+- reduzir exposição;
+- rever classificação de ativos;
+- implementar controles compensatórios;
+- priorizar campanhas por impacto global.
+
+## 10. Histórico e tendência
+
+Snapshots persistentes ficam em `asset_risk_snapshots`.
+
+São criados:
+
+- após sync Greenbone;
+- após sync de Threat Intel;
+- manualmente pela console.
+
+Snapshots automáticos possuem intervalo mínimo de uma hora para reduzir ruído.
+
+A tendência do score é:
+
+- `up` — risco atual maior que o último snapshot;
+- `down` — risco atual menor;
+- `flat` — sem alteração;
+- `new` — ainda não há baseline.
+
+Exemplo:
+
+```text
+Asset Risk 742
+Trend ↑ +86.4
+Previous 655.6
+```
+
+## 11. SLA e Remediation Priority
+
+SLA não faz parte diretamente da fórmula do Asset Risk.
+
+Isso é intencional:
+
+- **Risk** responde "quão perigoso é?"
+- **SLA** responde "quanto tempo ainda temos?"
+- **Remediation Queue** responde "o que fazer primeiro?"
+
+A fila de remediação combina os dois.
+
+Recomendações possíveis:
+
+- `patch_now`
+- `schedule_patch`
+- `plan_patch`
+- `scan_or_manual_triage`
+- `correlate_asset`
+- `exception_active`
+
+Uma exceção de SLA não reduz o Asset Risk.
+
+## 12. APIs
+
+### Asset Risk
+
+```http
+GET /api/admin/reports/asset-risk
+```
+
+### Histórico
+
+```http
+GET /api/admin/reports/asset-risk/history
+GET /api/admin/reports/asset-risk/history?agent_id=<uuid>
+```
+
+### Snapshot manual
+
+```http
+POST /api/admin/reports/asset-risk/snapshot
+```
+
+Requer `operator` ou `admin`.
+
+### Remediation Queue
+
+```http
+GET /api/admin/reports/remediation-queue
+```
+
+### SLA
+
+```http
+GET /api/admin/reports/vulnerability-sla
+```
+
+## 13. Threat Intelligence
+
+O enrichment opcional usa:
+
+- FIRST EPSS;
+- CISA Known Exploited Vulnerabilities.
+
+As informações são armazenadas em:
+
+```text
+raw.threat_intel
+```
+
+O raw do scanner é preservado.
+
+Falha de uma fonte pode resultar em estado `degraded`, mantendo a outra utilizável.
+
+## 14. Princípios de segurança
+
+O modelo segue estas regras:
+
+- ausência de EPSS/KEV não gera valor inventado;
+- exposição não é inferida somente por IP;
+- controles compensatórios não alteram evidência original;
+- score não muda status do finding;
+- score não dispara patch automaticamente;
+- campanha continua exigindo revisão humana;
+- remediação só é comprovada por evidência/rescan;
+- mudanças administrativas relevantes permanecem auditáveis.
+
+## 15. Exemplo completo
+
+Ativo:
+
+```text
+tags:
+  - tier0
+  - internet-facing
+  - segmented
+  - edr-protected
+```
+
+Finding:
+
+```text
+CVSS: 9.8
+EPSS: 0.95
+KEV: true
+Ransomware: known
+Age: 30 days
+Severity: critical
+```
+
+O finding recebe risco individual alto devido à combinação de severidade técnica, probabilidade, exploração conhecida, ransomware e idade.
+
+O Asset Risk então aplica:
+
+```text
+criticality = 5
+exposure = 1.2
+severity weight = 2.0
+compensating controls = 0.81
+```
+
+O resultado permanece elevado, mas os controles compensatórios aparecem explicitamente como redução. O operador consegue ver tanto o risco residual quanto os fatores responsáveis por ele.
