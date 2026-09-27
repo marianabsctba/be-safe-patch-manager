@@ -45,12 +45,53 @@ def save_config(path: Path, cfg):
         pass
 
 
+def tls_request_options(cfg):
+    client_cert = str(cfg.get("client_cert") or "").strip()
+    client_key = str(cfg.get("client_key") or "").strip()
+    ca_cert = str(cfg.get("ca_cert") or "").strip()
+
+    if bool(client_cert) != bool(client_key):
+        raise RuntimeError("client_cert and client_key must be configured together")
+
+    cert = None
+    if client_cert and client_key:
+        if not Path(client_cert).is_file():
+            raise RuntimeError(f"mTLS client certificate not found: {client_cert}")
+        if not Path(client_key).is_file():
+            raise RuntimeError(f"mTLS client key not found: {client_key}")
+        cert = (client_cert, client_key)
+
+    verify = cfg.get("tls_verify", True)
+    if ca_cert:
+        if not Path(ca_cert).is_file():
+            raise RuntimeError(f"TLS CA certificate not found: {ca_cert}")
+        verify = ca_cert
+
+    if verify is False:
+        raise RuntimeError("tls_verify=false is not allowed")
+
+    return {"verify": verify, "cert": cert}
+
+
 def api(cfg, method, path, *, json_body=None, headers=None, timeout=60):
     url = cfg["server_url"].rstrip("/") + path
-    h = {"User-Agent": "PatchManagerAgent/0.7.0"}
+    if not url.lower().startswith("https://"):
+        raise RuntimeError("server_url must use https://")
+
+    h = {"User-Agent": "PatchManagerAgent/0.9.0"}
     if headers:
         h.update(headers)
-    r = requests.request(method, url, json=json_body, headers=h, timeout=timeout, verify=cfg.get("tls_verify", True))
+
+    tls = tls_request_options(cfg)
+    r = requests.request(
+        method,
+        url,
+        json=json_body,
+        headers=h,
+        timeout=timeout,
+        verify=tls["verify"],
+        cert=tls["cert"],
+    )
     r.raise_for_status()
     return r.json() if r.content else {}
 
