@@ -189,6 +189,7 @@ def test_exact_completed_rescan_absence_marks_remediated(db):
         "task_status": "Done",
         "report_id": "post-patch-report",
         "external_ids": [],
+        "finding_keys": [],
         "finding_count": 0,
     }])
 
@@ -215,6 +216,7 @@ def test_exact_completed_rescan_presence_keeps_finding_open(db):
         "task_status": "Done",
         "report_id": "post-patch-report",
         "external_ids": [finding.external_id],
+        "finding_keys": [finding.external_id + "|" + finding.cve],
         "finding_count": 1,
     }])
 
@@ -235,6 +237,7 @@ def test_wrong_or_running_report_never_proves_remediation(db):
         "task_status": "Done",
         "report_id": "different-report",
         "external_ids": [],
+        "finding_keys": [],
         "finding_count": 0,
     }])
     db.refresh(evidence)
@@ -272,3 +275,22 @@ def test_accepted_risk_status_is_not_overwritten_by_verified_evidence(db):
     db.refresh(evidence)
     assert evidence.status == "verified"
     assert finding.status == "accepted_risk"
+
+
+def test_same_result_with_different_cve_does_not_block_remediation(db):
+    finding, evidence = seed_requested_evidence(db)
+
+    result = main.reconcile_remediation_evidence(db, [{
+        "task_id": "task-one",
+        "task_status": "Done",
+        "report_id": "post-patch-report",
+        "external_ids": [finding.external_id],
+        "finding_keys": [finding.external_id + "|CVE-2026-99999"],
+        "finding_count": 1,
+    }])
+
+    db.refresh(finding)
+    db.refresh(evidence)
+    assert result["verified"] == 1
+    assert evidence.status == "verified"
+    assert finding.status == "remediated"

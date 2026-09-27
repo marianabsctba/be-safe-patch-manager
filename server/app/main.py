@@ -641,7 +641,11 @@ def reconcile_remediation_evidence(db: Session, reports) -> dict:
             continue
 
         source_external_id = str(load(item.evidence_json, {}).get("source_external_id") or finding.external_id)
-        detected = source_external_id in set(report.get("external_ids") or [])
+        source_key = source_external_id + "|" + str(item.cve or "")
+        finding_keys = set(report.get("finding_keys") or [])
+        detected = source_key in finding_keys if finding_keys else (
+            source_external_id in set(report.get("external_ids") or [])
+        )
         item.verified_at = timestamp
         item.error = ""
 
@@ -652,6 +656,7 @@ def reconcile_remediation_evidence(db: Session, reports) -> dict:
             "task_status": report.get("task_status", ""),
             "report_id": item.rescan_report_id,
             "source_external_id": source_external_id,
+            "source_key": source_key,
             "cve": item.cve,
             "detected": detected,
             "finding_count": report.get("finding_count", 0),

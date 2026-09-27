@@ -264,6 +264,11 @@ def fetch_findings(config: GreenboneConfig | None = None) -> dict:
                     **report,
                     "finding_count": len(parsed),
                     "external_ids": [item["external_id"] for item in parsed],
+                    "finding_keys": sorted({
+                        item["external_id"] + "|" + cve
+                        for item in parsed
+                        for cve in (item.get("cves") or [""])
+                    }),
                 })
                 output["findings"].extend(parsed)
     except GvmError as exc:
