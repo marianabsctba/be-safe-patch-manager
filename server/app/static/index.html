@@ -245,6 +245,16 @@
                   <span>Exigir heartbeat e validação pós-patch antes de avançar o ring</span>
                 </label>
 
+                <label class="check wide">
+                  <input name="prepare_rollback" type="checkbox" checked />
+                  <span>Criar checkpoint de rollback antes de instalar, quando suportado</span>
+                </label>
+
+                <label class="check wide">
+                  <input name="rollback_required" type="checkbox" />
+                  <span>Bloquear a instalação se o checkpoint não puder ser criado</span>
+                </label>
+
                 <p class="form-hint wide">
                   Sem horário de início/fim, a campanha pode executar a qualquer momento após o campo “Executar a partir de”.
                 </p>
@@ -286,6 +296,7 @@
                     <th>Início</th>
                     <th>Fim</th>
                     <th>Validação</th>
+                    <th>Rollback</th>
                     <th>Erro</th>
                   </tr>
                 </thead>

@@ -15,11 +15,11 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
 from .models import Agent, AuditEvent, Campaign, PatchJob
-from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, RegisterRequest, RegisterResponse, RingAdvance, TagUpdate
+from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate
 from .security import hash_token, new_token, require_admin, require_enrollment
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="Be Safe Patch Manager", version="0.3.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.4.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -191,6 +191,62 @@ def validate_campaign_policy(body):
             raise HTTPException(status_code=400, detail="maintenance days must be between 0 and 6")
 
 
+
+def rollback_state(job: PatchJob):
+    if job.action == "rollback_checkpoint":
+        payload=load(job.payload_json,{})
+        return {
+            "status":"rollback_job",
+            "original_job_id":payload.get("_rollback_of_job_id",""),
+            "method":payload.get("method",""),
+        }
+
+    if job.action != "install_updates":
+        return {"status":"unavailable","reason":"rollback applies only to install jobs"}
+    if job.status != "success":
+        return {"status":"not_ready","reason":"install job has not completed successfully"}
+
+    result=load(job.result_json,{})
+    checkpoint=result.get("rollback_checkpoint") or {}
+    if checkpoint.get("status") != "created":
+        return {
+            "status":"unavailable",
+            "reason":checkpoint.get("reason") or "no rollback checkpoint was created",
+            "checkpoint":checkpoint,
+        }
+
+    existing=[]
+    if job.campaign:
+        for candidate in job.campaign.jobs:
+            if candidate.action != "rollback_checkpoint":
+                continue
+            payload=load(candidate.payload_json,{})
+            if payload.get("_rollback_of_job_id") == job.id:
+                existing.append(candidate)
+    if existing:
+        current=sorted(existing,key=lambda item:item.created_at)[-1]
+        mapped="completed" if current.status == "success" else "rollback_failed" if current.status == "failed" else "requested"
+        return {
+            "status":mapped,
+            "rollback_job_id":current.id,
+            "rollback_job_status":current.status,
+            "checkpoint":checkpoint,
+        }
+
+    if not checkpoint.get("automatic_restore"):
+        return {
+            "status":"manual_only",
+            "reason":"checkpoint exists but automated restore is not supported",
+            "checkpoint":checkpoint,
+        }
+
+    return {
+        "status":"eligible",
+        "reason":"manual approval required",
+        "checkpoint":checkpoint,
+    }
+
+
 def job_post_patch_validation(job: PatchJob):
     payload = load(job.payload_json, {})
     if job.action != "install_updates" or not payload.get("post_patch_validation", True):
@@ -257,7 +313,8 @@ def ring_bucket(agent_id: str) -> int:
 def campaign_ring_jobs(c: Campaign):
     marked = [
         job for job in c.jobs
-        if int(load(job.payload_json, {}).get("_ring_percent", -1)) == int(c.ring_percent)
+        if job.action in {"scan_updates", "install_updates"}
+        and int(load(job.payload_json, {}).get("_ring_percent", -1)) == int(c.ring_percent)
     ]
     return marked if marked else list(c.jobs)
 
@@ -366,6 +423,7 @@ def serialize_job(j: PatchJob):
         "error": j.error,
         "validation": job_post_patch_validation(j),
         "maintenance_window": maintenance_window_state(load(j.payload_json, {})),
+        "rollback": rollback_state(j),
     }
 
 
@@ -517,6 +575,8 @@ def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session 
         raise HTTPException(status_code=400, detail="unsupported action")
 
     validate_campaign_policy(body)
+    if body.rollback_required and not body.prepare_rollback:
+        raise HTTPException(status_code=400, detail="rollback_required requires prepare_rollback")
 
     reboot_policy = body.reboot_policy
     if body.allow_reboot and reboot_policy == "never":
@@ -532,6 +592,8 @@ def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session 
         "maintenance_timezone": body.maintenance_timezone,
         "maintenance_days": body.maintenance_days,
         "post_patch_validation": body.post_patch_validation,
+        "prepare_rollback": body.prepare_rollback,
+        "rollback_required": body.rollback_required,
     }
 
     campaign = Campaign(
@@ -560,6 +622,8 @@ def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session 
             "reboot_policy": reboot_policy,
             "maintenance_window": maintenance_window_state(policy_payload),
             "post_patch_validation": body.post_patch_validation,
+            "prepare_rollback": body.prepare_rollback,
+            "rollback_required": body.rollback_required,
         },
     )
     return serialize_campaign(campaign)
@@ -695,6 +759,73 @@ def advance_campaign(
         "target_agents": len(target_agents),
         "campaign": serialize_campaign(campaign),
     }
+
+
+@app.post("/api/admin/jobs/{job_id}/rollback")
+def approve_rollback(
+    job_id: str,
+    body: RollbackRequest,
+    _=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if not body.acknowledge_risk:
+        raise HTTPException(status_code=400, detail="explicit rollback risk acknowledgement is required")
+
+    original=db.get(PatchJob,job_id)
+    if not original:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    state=rollback_state(original)
+    if state.get("status") != "eligible":
+        raise HTTPException(status_code=409, detail={"message":"rollback is not eligible","rollback":state})
+
+    checkpoint=state.get("checkpoint") or {}
+    if checkpoint.get("method") != "windows_restore_point":
+        raise HTTPException(status_code=409, detail="automatic rollback provider is not supported")
+
+    try:
+        sequence=int(checkpoint.get("sequence"))
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail="restore point evidence is incomplete") from exc
+
+    original_payload=load(original.payload_json,{})
+    payload={
+        "method":"windows_restore_point",
+        "restore_point_sequence":sequence,
+        "_rollback_of_job_id":original.id,
+        "approved_reason":body.reason,
+        "maintenance_start":original_payload.get("maintenance_start",""),
+        "maintenance_end":original_payload.get("maintenance_end",""),
+        "maintenance_timezone":original_payload.get("maintenance_timezone","UTC"),
+        "maintenance_days":original_payload.get("maintenance_days",list(range(7))),
+    }
+    rollback_job=PatchJob(
+        id=str(uuid.uuid4()),
+        campaign_id=original.campaign_id,
+        agent_id=original.agent_id,
+        action="rollback_checkpoint",
+        payload_json=dump(payload),
+        not_before=None,
+        status="pending",
+    )
+    db.add(rollback_job)
+    db.commit()
+    audit(
+        db,
+        "admin",
+        "rollback.approved",
+        "job",
+        rollback_job.id,
+        {
+            "original_job_id":original.id,
+            "agent_id":original.agent_id,
+            "method":"windows_restore_point",
+            "restore_point_sequence":sequence,
+            "reason":body.reason,
+        },
+    )
+    return {"ok":True,"rollback_job":serialize_job(rollback_job)}
+
 
 
 @app.get("/api/admin/jobs")

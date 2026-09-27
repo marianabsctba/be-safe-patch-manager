@@ -48,10 +48,17 @@ class CampaignCreate(BaseModel):
     maintenance_timezone: str = "America/Sao_Paulo"
     maintenance_days: List[int] = Field(default_factory=lambda: list(range(7)))
     post_patch_validation: bool = True
+    prepare_rollback: bool = True
+    rollback_required: bool = False
 
 class RingAdvance(BaseModel):
     target_percent: int = Field(ge=1, le=100)
     override_health_gate: bool = False
+
+
+class RollbackRequest(BaseModel):
+    reason: str = Field(min_length=5, max_length=500)
+    acknowledge_risk: bool = False
 
 
 class TagUpdate(BaseModel):

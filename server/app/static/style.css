@@ -1329,3 +1329,24 @@ button:disabled:hover {
   color:#c8c8cf;
   font-weight:650;
 }
+
+
+/* Rollback controls */
+.danger-action {
+  border-color:rgba(251,113,133,.36);
+  background:rgba(251,113,133,.10);
+  color:#fda4af;
+}
+
+.danger-action:hover {
+  border-color:rgba(251,113,133,.55);
+  background:rgba(251,113,133,.18);
+}
+
+.drawer-metrics {
+  grid-template-columns:repeat(5,1fr);
+}
+
+@media (max-width:760px) {
+  .drawer-metrics { grid-template-columns:repeat(2,1fr); }
+}

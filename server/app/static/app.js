@@ -97,7 +97,9 @@ function jobClass(status) {
 }
 
 function actionLabel(action) {
-  return action === 'install_updates' ? 'Instalar updates' : 'Scan de updates';
+  if (action === 'install_updates') return 'Instalar updates';
+  if (action === 'rollback_checkpoint') return 'Rollback aprovado';
+  return 'Scan de updates';
 }
 
 function statusLabel(status) {
@@ -391,6 +393,7 @@ function renderAgentDrawer(agent = selectedAgent()) {
     ['Críticas', Number(agent.critical_updates || 0), Number(agent.critical_updates || 0) ? 'danger' : 'ok'],
     ['Reboot', agent.reboot_required ? 'SIM' : 'não', agent.reboot_required ? 'warn' : 'ok'],
     ['Último contato', shortWhen(agent.last_seen), isOnline(agent) ? 'ok' : 'neutral'],
+    ['Rollback', agent.inventory && agent.inventory.rollback && agent.inventory.rollback.checkpoint_supported ? 'disponível' : 'indisponível', agent.inventory && agent.inventory.rollback && agent.inventory.rollback.checkpoint_supported ? 'ok' : 'neutral'],
   ];
 
   $('#drawerMetrics').innerHTML = metrics.map((item) =>
@@ -489,6 +492,37 @@ function maintenanceDaysLabel(days) {
   return 'dias customizados';
 }
 
+
+function rollbackBadge(rollback) {
+  const state = rollback || {};
+  const labels = {
+    eligible: 'aprovação disponível',
+    manual_only: 'checkpoint manual',
+    requested: 'rollback solicitado',
+    completed: 'rollback concluído',
+    rollback_failed: 'rollback falhou',
+    unavailable: 'indisponível',
+    not_ready: 'aguardando',
+    rollback_job: 'job de rollback',
+  };
+  const cls = state.status === 'eligible' || state.status === 'completed'
+    ? 'ok'
+    : state.status === 'rollback_failed'
+      ? 'fail'
+      : ['manual_only','requested','not_ready'].includes(state.status)
+        ? 'warn'
+        : 'info';
+  return badge(labels[state.status] || state.status || 'indisponível', cls);
+}
+
+function rollbackControl(job) {
+  const state = job.rollback || {};
+  if (state.status === 'eligible') {
+    return '<button class="row-action danger-action" onclick="approveRollback(\'' + job.id + '\')">Aprovar rollback</button>';
+  }
+  return rollbackBadge(state);
+}
+
 function validationBadge(validation) {
   const status = validation && validation.status ? validation.status : 'waiting';
   const labels = {
@@ -571,6 +605,7 @@ function campaignCard(campaign, compact = false) {
           <span>Janela: <strong>${esc(windowText)}</strong></span>
           <span>Reboot: <strong>${esc(rebootPolicyLabel(payload.reboot_policy))}</strong></span>
           <span>Pós-patch: <strong>${payload.post_patch_validation === false ? 'desativado' : 'obrigatório'}</strong></span>
+          <span>Rollback: <strong>${payload.prepare_rollback === false ? 'desativado' : payload.rollback_required ? 'checkpoint obrigatório' : 'checkpoint best effort'}</strong></span>
         </div>
 
         <div class="campaign-meta">
@@ -621,7 +656,7 @@ function renderJobs() {
   if (!state.jobs.length) {
     $('#jobs').innerHTML = `
       <tr>
-        <td colspan="8"><div class="empty-state">Nenhuma execução registrada.</div></td>
+        <td colspan="9"><div class="empty-state">Nenhuma execução registrada.</div></td>
       </tr>`;
     return;
   }
@@ -635,6 +670,7 @@ function renderJobs() {
       <td>${when(job.started_at || job.claimed_at)}</td>
       <td>${when(job.finished_at)}</td>
       <td>${validationBadge(job.validation)}</td>
+      <td>${rollbackControl(job)}</td>
       <td class="error-cell">${esc(job.error || '')}</td>
     </tr>
   `).join('');
@@ -693,6 +729,27 @@ window.advanceCampaign = async (id, targetPercent) => {
     await load();
   } catch (error) {
     toast('Health gate: ' + error.message, 'fail');
+  }
+};
+
+
+window.approveRollback = async (jobId) => {
+  const reason = prompt('Motivo da aprovação do rollback (obrigatório):');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+  if (!confirm('ATENÇÃO: o endpoint será restaurado para o checkpoint anterior e poderá reiniciar. Aprovar rollback?')) return;
+
+  try {
+    await api('/api/admin/jobs/' + jobId + '/rollback', {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim(), acknowledge_risk: true }),
+    });
+    toast('Rollback aprovado e colocado na fila.');
+    await load();
+  } catch (error) {
+    toast('Rollback: ' + error.message, 'fail');
   }
 };
 
@@ -789,6 +846,8 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     maintenance_timezone: form.get('maintenance_timezone') || 'America/Sao_Paulo',
     maintenance_days: dayPresets[form.get('maintenance_days')] || dayPresets.all,
     post_patch_validation: form.get('post_patch_validation') === 'on',
+    prepare_rollback: form.get('prepare_rollback') === 'on',
+    rollback_required: form.get('rollback_required') === 'on',
     not_before: form.get('not_before')
       ? new Date(form.get('not_before')).toISOString()
       : null,

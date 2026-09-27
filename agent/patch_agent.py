@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -45,7 +46,7 @@ def save_config(path: Path, cfg):
 
 def api(cfg, method, path, *, json_body=None, headers=None, timeout=60):
     url = cfg["server_url"].rstrip("/") + path
-    h = {"User-Agent": "PatchManagerAgent/0.1.1"}
+    h = {"User-Agent": "PatchManagerAgent/0.4.0"}
     if headers:
         h.update(headers)
     r = requests.request(method, url, json=json_body, headers=h, timeout=timeout, verify=cfg.get("tls_verify", True))
@@ -82,6 +83,7 @@ def inventory():
         "python": sys.version.split()[0],
         "cpu_count": os.cpu_count(),
         "boot_time_hint": None,
+        "rollback": rollback_capability(),
     })
     if os.name == "nt":
         ps = r'''$ErrorActionPreference='SilentlyContinue';
@@ -100,6 +102,132 @@ $cs=Get-CimInstance Win32_ComputerSystem;
         except Exception:
             pass
     return info
+
+
+
+def windows_rollback_capability():
+    ps = r'''$checkpoint=$null -ne (Get-Command Checkpoint-Computer -ErrorAction SilentlyContinue);
+$restore=$false;
+try{$null=[WMIClass]'\\.\root\default:SystemRestore';$restore=$true}catch{}
+[pscustomobject]@{checkpoint_supported=[bool]$checkpoint;automatic_restore=[bool]($checkpoint -and $restore);method='windows_restore_point'}|ConvertTo-Json -Compress'''
+    rr = run(["powershell.exe","-NoProfile","-NonInteractive","-Command",ps], timeout=30)
+    if rr["returncode"] != 0:
+        return {"checkpoint_supported":False,"automatic_restore":False,"method":"windows_restore_point","reason":"system restore capability unavailable"}
+    try:
+        data=json.loads(rr["stdout"].strip() or "{}")
+        data["platform"]="windows"
+        return data
+    except Exception:
+        return {"checkpoint_supported":False,"automatic_restore":False,"method":"windows_restore_point","reason":"capability probe failed","platform":"windows"}
+
+
+def linux_rollback_capability():
+    snapper = shutil.which("snapper")
+    if snapper:
+        rr = run([snapper,"get-config"], timeout=30)
+        if rr["returncode"] == 0:
+            return {
+                "platform":"linux",
+                "checkpoint_supported":True,
+                "automatic_restore":False,
+                "method":"snapper_snapshot",
+                "reason":"snapper root configuration available",
+            }
+    fstype=""
+    if shutil.which("findmnt"):
+        rr=run(["findmnt","-n","-o","FSTYPE","/"], timeout=20)
+        if rr["returncode"] == 0:
+            fstype=rr["stdout"].strip()
+    return {
+        "platform":"linux",
+        "checkpoint_supported":False,
+        "automatic_restore":False,
+        "method":"snapper_snapshot",
+        "filesystem":fstype,
+        "reason":"configure Snapper for managed Linux checkpoints" if fstype == "btrfs" else "no managed snapshot provider detected",
+    }
+
+
+def rollback_capability():
+    return windows_rollback_capability() if os.name == "nt" else linux_rollback_capability()
+
+
+def windows_create_restore_point(job_id):
+    if not re.fullmatch(r"[A-Fa-f0-9-]{36}", str(job_id)):
+        return {"status":"failed","method":"windows_restore_point","automatic_restore":False,"reason":"invalid job id"}
+    desc = "Be Safe Patch " + str(job_id)[:12]
+    desc_json = json.dumps(desc)
+    ps = rf'''$ErrorActionPreference='Stop';
+$desc={desc_json};
+Checkpoint-Computer -Description $desc -RestorePointType 'MODIFY_SETTINGS';
+$rp=Get-ComputerRestorePoint | Where-Object {{$_.Description -eq $desc}} | Sort-Object SequenceNumber | Select-Object -Last 1;
+if(-not $rp){{throw 'restore point was not found after creation'}}
+[pscustomobject]@{{status='created';method='windows_restore_point';automatic_restore=$true;sequence=[int]$rp.SequenceNumber;description=[string]$rp.Description;creation_time=[string]$rp.CreationTime}}|ConvertTo-Json -Compress'''
+    rr=run(["powershell.exe","-NoProfile","-NonInteractive","-Command",ps], timeout=300)
+    if rr["returncode"] != 0:
+        return {"status":"failed","method":"windows_restore_point","automatic_restore":False,"reason":(rr["stderr"] or rr["stdout"] or "restore point creation failed")[-2000:]}
+    try:
+        return json.loads(rr["stdout"].strip() or "{}")
+    except Exception:
+        return {"status":"failed","method":"windows_restore_point","automatic_restore":False,"reason":"invalid restore point response"}
+
+
+def linux_create_snapper_checkpoint(job_id):
+    snapper=shutil.which("snapper")
+    if not snapper:
+        return {"status":"unsupported","method":"snapper_snapshot","automatic_restore":False,"reason":"snapper is not installed"}
+    check=run([snapper,"get-config"], timeout=30)
+    if check["returncode"] != 0:
+        return {"status":"unsupported","method":"snapper_snapshot","automatic_restore":False,"reason":"snapper root configuration is unavailable"}
+    desc="Be Safe Patch "+str(job_id)[:12]
+    rr=run([snapper,"create","--type","single","--cleanup-algorithm","number","--description",desc,"--print-number"], timeout=300)
+    if rr["returncode"] != 0:
+        return {"status":"failed","method":"snapper_snapshot","automatic_restore":False,"reason":(rr["stderr"] or rr["stdout"] or "snapper snapshot failed")[-2000:]}
+    number=rr["stdout"].strip().splitlines()[-1].strip() if rr["stdout"].strip() else ""
+    return {
+        "status":"created",
+        "method":"snapper_snapshot",
+        "automatic_restore":False,
+        "snapshot_number":number,
+        "description":desc,
+        "manual_recovery_required":True,
+    }
+
+
+def create_rollback_checkpoint(job_id):
+    return windows_create_restore_point(job_id) if os.name == "nt" else linux_create_snapper_checkpoint(job_id)
+
+
+def windows_restore_checkpoint(payload):
+    try:
+        sequence=int(payload.get("restore_point_sequence"))
+    except Exception as exc:
+        raise RuntimeError("restore point sequence is invalid") from exc
+    if sequence <= 0:
+        raise RuntimeError("restore point sequence is invalid")
+    ps = rf'''$ErrorActionPreference='Stop';
+$seq={sequence};
+$rp=Get-ComputerRestorePoint | Where-Object {{$_.SequenceNumber -eq $seq}} | Select-Object -First 1;
+if(-not $rp){{throw 'restore point not found'}}
+$sr=[WMIClass]'\\.\root\default:SystemRestore';
+$r=$sr.Restore($seq);
+if([int]$r.ReturnValue -ne 0){{throw ('SystemRestore.Restore returned '+[int]$r.ReturnValue)}}
+shutdown.exe /r /t 120 /c "Be Safe Patch Manager: reinicialização para concluir rollback" | Out-Null;
+[pscustomobject]@{{restore_point_sequence=$seq;description=[string]$rp.Description;restore_return_value=[int]$r.ReturnValue;reboot_scheduled_seconds=120}}|ConvertTo-Json -Compress'''
+    rr=run(["powershell.exe","-NoProfile","-NonInteractive","-Command",ps], timeout=120)
+    if rr["returncode"] != 0:
+        raise RuntimeError(rr["stderr"] or rr["stdout"] or "system restore failed")
+    try:
+        return json.loads(rr["stdout"].strip() or "{}")
+    except Exception as exc:
+        raise RuntimeError("invalid rollback response") from exc
+
+
+def rollback_checkpoint(payload):
+    method=str(payload.get("method") or "")
+    if method != "windows_restore_point" or os.name != "nt":
+        raise RuntimeError("automatic rollback is not supported for this checkpoint")
+    return windows_restore_checkpoint(payload)
 
 
 def windows_scan():
@@ -288,8 +416,17 @@ def execute_job(cfg, job):
         if action == "scan_updates":
             result={"updates":scan_updates(),"reboot_required":reboot_required()}
         elif action == "install_updates":
-            result=install_updates(job.get("payload") or {})
+            payload=job.get("payload") or {}
+            checkpoint={"status":"disabled","method":"","automatic_restore":False,"reason":"rollback protection disabled"}
+            if payload.get("prepare_rollback", True):
+                checkpoint=create_rollback_checkpoint(jid)
+                if payload.get("rollback_required", False) and checkpoint.get("status") != "created":
+                    raise RuntimeError("rollback checkpoint required but unavailable: "+str(checkpoint.get("reason") or checkpoint.get("status")))
+            result=install_updates(payload)
+            result["rollback_checkpoint"]=checkpoint
             result["post_scan"] = scan_updates()
+        elif action == "rollback_checkpoint":
+            result=rollback_checkpoint(job.get("payload") or {})
         else:
             raise RuntimeError(f"Ação não permitida: {action}")
         send_job_result(cfg,jid,"success",result=result,started_at=started,finished_at=utcnow())
