@@ -419,3 +419,95 @@ def test_operator_cannot_advance_agent_update_rollout(db):
 
     assert exc.value.status_code == 403
     assert "admin role required" in str(exc.value.detail)
+
+
+
+def test_rollout_preview_is_read_only_and_matches_first_ring(db):
+    seed_fleet(db, 10)
+
+    preview = main.preview_agent_update_rollout(
+        rollout_request(10),
+        _={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+
+    assert preview["eligible_agents"] == 10
+    assert preview["selected_agents"] == 1
+    assert preview["ring_percent"] == 10
+    assert preview["release_binding"]["version"] == "0.17.0"
+    assert preview["release_binding"]["artifact_sha256"] == "e" * 64
+    assert db.query(PatchJob).count() == 0
+    assert db.query(main.Campaign).count() == 0
+
+    selected_preview = {
+        item["agent_id"]
+        for item in preview["agents"]
+        if item.get("selected")
+    }
+
+    created = main.create_agent_update_rollout(
+        rollout_request(10),
+        principal={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+    campaign = db.get(main.Campaign, created["campaign"]["id"])
+    selected_actual = {job.agent_id for job in campaign.jobs}
+
+    assert selected_actual == selected_preview
+
+
+def test_rollout_preview_explains_release_binding_drift(db):
+    agent = add_agent(db, 1)
+    inventory = json.loads(agent.inventory_json)
+    inventory["update"]["artifact_sha256"] = "a" * 64
+    agent.inventory_json = json.dumps(inventory)
+    db.commit()
+
+    preview = main.preview_agent_update_rollout(
+        rollout_request(10),
+        _={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+
+    assert preview["eligible_agents"] == 0
+    assert preview["selected_agents"] == 0
+    assert preview["skipped"]["artifact_sha256_mismatch"] == 1
+    detail = next(item for item in preview["agents"] if item["agent_id"] == agent.id)
+    assert detail["eligible"] is False
+    assert detail["reason"] == "artifact_sha256_mismatch"
+
+
+def test_rollout_advance_refreshes_short_lived_approval(db):
+    seed_fleet(db, 10)
+    created = main.create_agent_update_rollout(
+        rollout_request(10),
+        principal={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+    campaign = db.get(main.Campaign, created["campaign"]["id"])
+    first_payload = json.loads(campaign.jobs[0].payload_json)
+    first_expiry = main._approval_expiry(first_payload)
+    assert first_expiry is not None
+
+    commit_activation(db, campaign.jobs[0])
+    db.refresh(campaign)
+
+    result = main.advance_campaign(
+        campaign.id,
+        RingAdvance(target_percent=30, override_health_gate=False),
+        principal={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+    assert result["new_agents"] == 2
+
+    db.refresh(campaign)
+    ring_30_jobs = [
+        job for job in campaign.jobs
+        if json.loads(job.payload_json).get("_ring_percent") == 30
+    ]
+    assert len(ring_30_jobs) == 2
+    for job in ring_30_jobs:
+        payload = json.loads(job.payload_json)
+        assert payload["release_binding"]["artifact_sha256"] == "e" * 64
+        assert main._approval_expiry(payload) is not None
+        assert main._approval_expiry(payload) >= first_expiry
