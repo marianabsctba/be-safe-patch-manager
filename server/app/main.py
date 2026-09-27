@@ -17,14 +17,14 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
-from .models import Agent, AuditEvent, Campaign, IntegrationState, PatchJob, VulnerabilityFinding
-from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, VulnerabilityImportRequest, VulnerabilityStatusUpdate
-from .security import hash_token, new_token, require_admin, require_enrollment
+from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, VulnerabilityFinding
+from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
+from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
 from .greenbone import public_config as public_greenbone_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.7.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.8.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -66,6 +66,63 @@ def audit(db: Session, actor: str, event_type: str, object_type: str = "", objec
         details_json=dump(details or {}),
     ))
     db.commit()
+
+
+def serialize_admin_user(user: AdminUser):
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "active": user.active,
+        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        "created_at": user.created_at.isoformat(),
+        "updated_at": user.updated_at.isoformat(),
+    }
+
+
+def ensure_bootstrap_admin():
+    db = SessionLocal()
+    try:
+        if db.query(AdminUser).count() > 0:
+            return
+
+        username_raw = os.getenv("BOOTSTRAP_ADMIN_USERNAME", "").strip()
+        password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+        if not username_raw or not password:
+            raise RuntimeError(
+                "no administrative users exist; configure BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD"
+            )
+
+        try:
+            username = validate_username(username_raw)
+            validate_password_strength(password)
+        except ValueError as exc:
+            raise RuntimeError(f"invalid bootstrap administrator: {exc}") from exc
+
+        user = AdminUser(
+            id=str(uuid.uuid4()),
+            username=username,
+            password_hash=password_hash(password),
+            role="admin",
+            active=True,
+        )
+        db.add(user)
+        db.commit()
+        audit(
+            db,
+            "system",
+            "auth.bootstrap_admin.created",
+            "user",
+            user.id,
+            {"username": user.username, "role": user.role},
+        )
+    finally:
+        db.close()
+
+
+@app.on_event("startup")
+def bootstrap_authentication():
+    ensure_bootstrap_admin()
 
 
 def get_agent(db: Session, agent_id: str, token: str | None) -> Agent:
@@ -811,6 +868,180 @@ def _terminal_result_matches(job: PatchJob, body: JobResultRequest) -> bool:
         and job.result_json == dump(body.result)
         and job.error == body.error
     )
+
+
+@app.post("/api/auth/login")
+def login(body: LoginRequest, db: Session = Depends(get_db)):
+    try:
+        username = validate_username(body.username)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    user = db.query(AdminUser).filter(AdminUser.username == username).first()
+    if not user or not user.active or not password_verify(user.password_hash, body.password):
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    if password_needs_rehash(user.password_hash):
+        user.password_hash = password_hash(body.password)
+
+    raw_token, session = create_session(db, user)
+    audit(
+        db,
+        f"user:{user.username}",
+        "auth.login",
+        "session",
+        session.id,
+        {"role": user.role},
+    )
+    return {
+        "session_token": raw_token,
+        "expires_at": session.expires_at.isoformat(),
+        "user": serialize_admin_user(user),
+    }
+
+
+@app.post("/api/auth/logout")
+def logout(
+    x_session_token: str | None = Header(default=None),
+    principal=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    actor = principal["actor"]
+    revoked = revoke_session(db, x_session_token or "")
+    audit(db, actor, "auth.logout", "session", principal.get("session_id", ""), {"revoked": revoked})
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(principal=Depends(require_viewer), db: Session = Depends(get_db)):
+    if principal.get("kind") == "break_glass":
+        return {
+            "id": "",
+            "username": "break-glass",
+            "role": "admin",
+            "active": True,
+            "break_glass": True,
+        }
+    user = db.get(AdminUser, principal["user_id"])
+    if not user:
+        raise HTTPException(status_code=401, detail="user not found")
+    return {**serialize_admin_user(user), "break_glass": False}
+
+
+@app.post("/api/auth/change-password")
+def change_password(
+    body: PasswordChangeRequest,
+    principal=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    if principal.get("kind") != "user":
+        raise HTTPException(status_code=409, detail="break-glass principal has no password")
+
+    user = db.get(AdminUser, principal["user_id"])
+    if not user or not password_verify(user.password_hash, body.current_password):
+        raise HTTPException(status_code=401, detail="current password is invalid")
+
+    try:
+        validate_password_strength(body.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    user.password_hash = password_hash(body.new_password)
+    sessions = db.query(AdminSession).filter(
+        AdminSession.user_id == user.id,
+        AdminSession.id != principal["session_id"],
+    ).all()
+    for session in sessions:
+        db.delete(session)
+    db.commit()
+    audit(
+        db,
+        principal["actor"],
+        "auth.password.changed",
+        "user",
+        user.id,
+        {"other_sessions_revoked": len(sessions)},
+    )
+    return {"ok": True, "other_sessions_revoked": len(sessions)}
+
+
+@app.get("/api/admin/users")
+def list_users(_=Depends(require_admin), db: Session = Depends(get_db)):
+    return [serialize_admin_user(user) for user in db.query(AdminUser).order_by(AdminUser.username.asc()).all()]
+
+
+@app.post("/api/admin/users")
+def create_user(
+    body: UserCreateRequest,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        username = validate_username(body.username)
+        role = validate_role(body.role)
+        validate_password_strength(body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if db.query(AdminUser).filter(AdminUser.username == username).first():
+        raise HTTPException(status_code=409, detail="username already exists")
+
+    user = AdminUser(
+        id=str(uuid.uuid4()),
+        username=username,
+        password_hash=password_hash(body.password),
+        role=role,
+        active=True,
+    )
+    db.add(user)
+    db.commit()
+    audit(
+        db,
+        principal["actor"],
+        "auth.user.created",
+        "user",
+        user.id,
+        {"username": user.username, "role": user.role},
+    )
+    return serialize_admin_user(user)
+
+
+@app.patch("/api/admin/users/{user_id}")
+def update_user(
+    user_id: str,
+    body: UserUpdateRequest,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.get(AdminUser, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    if body.role is not None:
+        try:
+            user.role = validate_role(body.role)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if body.active is not None:
+        if user.id == principal.get("user_id") and body.active is False:
+            raise HTTPException(status_code=409, detail="cannot deactivate the current user")
+        user.active = body.active
+        if not user.active:
+            sessions = db.query(AdminSession).filter(AdminSession.user_id == user.id).all()
+            for session in sessions:
+                db.delete(session)
+
+    db.commit()
+    audit(
+        db,
+        principal["actor"],
+        "auth.user.updated",
+        "user",
+        user.id,
+        {"username": user.username, "role": user.role, "active": user.active},
+    )
+    return serialize_admin_user(user)
 
 
 @app.get("/")
