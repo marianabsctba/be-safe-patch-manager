@@ -144,3 +144,40 @@ If the new release repeatedly fails to confirm startup, the launcher restores th
 Activation is available only to administrators, requires an explicit risk acknowledgement and reason, and is audited. The server also records whether a later heartbeat reports a committed, reverted, aborted or error state.
 
 Windows agent activation is not implemented in v0.15.
+
+
+## Agent update rollout safety
+
+The v0.16 Linux agent lifecycle adds hard-gated rollout behavior on top of the signed release channel.
+
+A rollout freezes its eligible endpoint snapshot when it is created. Later endpoints do not silently join an in-flight rollout. Promotion follows 10%, 30% and 100% rings, requires administrator privileges and cannot bypass the agent-update health gate.
+
+Agent-update rings require a 100% successful current ring. The new agent must confirm the expected version through a fresh heartbeat within the bounded activation confirmation window. A watchdog rollback, quarantine state, failed activation or confirmation timeout blocks promotion.
+
+A release that triggers watchdog rollback is quarantined on that endpoint. Retrying the same quarantined release requires a separate administrative clearance with explicit risk acknowledgement and audit evidence.
+
+Signed release provenance uses manifest schema 2. In addition to version and artifact integrity, the manifest binds a source commit and a signing-key identifier. The agent verifies that the signing-key identifier matches its pinned Ed25519 public key.
+
+Old managed releases and staged artifacts are garbage-collected only after activation is committed. Cleanup keeps protected releases and refuses unsafe symlink traversal.
+
+
+## Short-lived agent update authorization
+
+The v0.17 control plane treats an approval as a short-lived authorization rather than a permanent queue entry.
+
+By default, a new activation authorization expires after 1800 seconds and an endpoint must have reported a heartbeat within the last 900 seconds. Both thresholds are configurable.
+
+At approval time, the server binds the authorization to the exact signed release identity:
+
+- version;
+- artifact SHA-256;
+- source commit;
+- signing-key identifier.
+
+Immediately before a claim token can be issued, the server revalidates the approval expiry, the endpoint's staged release identity and the currently published signed release. If any identity component changed, the authorization is invalidated and the job is marked skipped before execution starts.
+
+Each approved agent-update ring gets its own fresh authorization window. Advancing a rollout does not extend an old authorization for endpoints that were already approved.
+
+The rollout preview is an operator aid, not a security decision point. The server recalculates eligibility when the rollout is created, when a new ring is approved and again before claim.
+
+Prometheus exports only aggregate approval counts. Endpoint names, release hashes, source commits and signing-key identifiers are not used as metric labels.
