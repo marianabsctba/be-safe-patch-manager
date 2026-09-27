@@ -352,6 +352,75 @@ A resposta do relatório de Asset Risk inclui para cada ativo:
 - `risk.risk_appetite`;
 - `risk.above_risk_appetite`.
 
+## 7.2. Asset Risk Acceptance
+
+Aceitação de risco é uma decisão de governança temporária para um ativo cujo score permanece acima do appetite efetivo.
+
+Ela **não altera o Asset Risk**.
+
+O ativo continua exibindo:
+
+- score original;
+- contributors originais;
+- policy efetiva;
+- appetite efetivo;
+- estado `above_risk_appetite = true`.
+
+A aceitação altera somente o estado de governança:
+
+```text
+within_appetite
+above_appetite
+accepted
+```
+
+Uma aceitação possui:
+
+- motivo;
+- aprovador;
+- validade;
+- data de criação;
+- revogação opcional;
+- autor da revogação;
+- motivo da revogação.
+
+Regras:
+
+- somente `admin` pode criar ou revogar;
+- validade precisa estar no futuro;
+- validade máxima: 365 dias;
+- só pode existir uma aceitação ativa por ativo;
+- expiração é calculada em leitura, sem scheduler;
+- aceitação expirada deixa de valer automaticamente;
+- revogação é auditada;
+- score e evidência permanecem intactos.
+
+APIs:
+
+```http
+GET  /api/admin/agents/{agent_id}/risk-acceptances
+POST /api/admin/agents/{agent_id}/risk-acceptances
+POST /api/admin/agents/{agent_id}/risk-acceptances/{acceptance_id}/revoke
+```
+
+Eventos:
+
+- `asset_risk.acceptance.created`
+- `asset_risk.acceptance.revoked`
+
+Exemplo operacional:
+
+```text
+DC-01
+Asset Risk: 780
+Appetite efetivo: 500
+Governance: accepted
+Aceite válido até: 2026-10-27
+Motivo: migração do sistema legado em andamento
+```
+
+O risco continua sendo 780. O sistema apenas registra que a organização decidiu aceitar temporariamente esse risco.
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
