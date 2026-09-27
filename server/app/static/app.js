@@ -298,6 +298,8 @@ function renderSummary(summary) {
     { label: 'Críticos', value: summary.critical_updates || 0, hint: 'prioridade alta', cls: summary.critical_updates ? 'danger' : 'ok' },
     { label: 'Reboot pendente', value: summary.reboot_required || 0, hint: 'endpoints', cls: summary.reboot_required ? 'warn' : 'ok' },
     { label: 'Falhas', value: summary.failed_jobs || 0, hint: 'jobs acumulados', cls: summary.failed_jobs ? 'danger' : 'ok' },
+    { label: 'SLA vencido', value: summary.sla_breached_vulnerabilities || 0, hint: 'vulnerabilidades abertas', cls: summary.sla_breached_vulnerabilities ? 'danger' : 'ok' },
+    { label: 'SLA próximo', value: summary.sla_due_soon_vulnerabilities || 0, hint: 'vence em até 24h', cls: summary.sla_due_soon_vulnerabilities ? 'warn' : 'ok' },
     { label: 'Agentes incompatíveis', value: Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0), hint: summary.compatibility_enforced ? 'enforcement ativo' : 'somente observação', cls: (Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0)) ? 'danger' : 'ok' },
     { label: 'Jobs bloqueados', value: summary.blocked_jobs || 0, hint: 'aguardando upgrade do agente', cls: summary.blocked_jobs ? 'danger' : 'ok' },
     { label: 'Update staged', value: summary.agent_update_staged || 0, hint: 'assinado e aguardando ativação', cls: summary.agent_update_staged ? 'accent' : 'ok' },
@@ -570,6 +572,14 @@ function remediationBadge(remediation) {
     '</span>';
 }
 
+function vulnerabilitySlaBadge(sla) {
+  if (!sla || !sla.state) return badge('-', 'info');
+  if (sla.state === 'breached') return badge('SLA vencido', 'fail');
+  if (sla.state === 'due_soon') return badge('SLA próximo', 'warn');
+  if (sla.state === 'within_sla') return badge('no SLA', 'ok');
+  return badge('fora do SLA ativo', 'info');
+}
+
 function renderVulnerabilities() {
   const open = state.vulnerabilities.filter((item) => item.status === 'open');
   const critical = open.filter((item) => item.severity === 'critical');
@@ -583,6 +593,8 @@ function renderVulnerabilities() {
     ['Altas', high.length, 'prioridade alta', high.length ? 'warn' : 'ok'],
     ['Correlacionadas', matched.length, 'com endpoint gerenciado', 'accent'],
     ['Sem endpoint', unmatched.length, 'exigem correlação', unmatched.length ? 'danger' : 'ok'],
+    ['SLA vencido', open.filter((item) => item.sla && item.sla.state === 'breached').length, 'prazo de remediação excedido', open.some((item) => item.sla && item.sla.state === 'breached') ? 'danger' : 'ok'],
+    ['SLA próximo', open.filter((item) => item.sla && item.sla.state === 'due_soon').length, 'vence em até 24h', open.some((item) => item.sla && item.sla.state === 'due_soon') ? 'warn' : 'ok'],
     ['Remediadas', state.vulnerabilities.filter((item) => item.status === 'remediated').length, 'status atual', 'ok'],
     ['Com evidência', state.vulnerabilities.filter((item) => item.remediation && item.remediation.status === 'verified').length, 'rescan pós-patch comprovado', 'ok'],
   ].map(([label, value, hint, cls]) => `
@@ -595,7 +607,7 @@ function renderVulnerabilities() {
 
   const items = filteredVulnerabilities();
   if (!items.length) {
-    $('#vulnerabilities').innerHTML = '<tr><td colspan="9"><div class="empty-state">Nenhum finding encontrado.</div></td></tr>';
+    $('#vulnerabilities').innerHTML = '<tr><td colspan="10"><div class="empty-state">Nenhum finding encontrado.</div></td></tr>';
     return;
   }
 
@@ -617,6 +629,10 @@ function renderVulnerabilities() {
       <td>
         ${badge(vulnerabilityStatusLabel(item.status), item.status === 'remediated' ? 'ok' : item.status === 'open' ? 'warn' : 'info')}
         <br><span class="vuln-remediation">${remediationBadge(item.remediation)}</span>
+      </td>
+      <td>
+        ${vulnerabilitySlaBadge(item.sla)}
+        <br><small class="muted">${item.sla && item.sla.active ? esc(String(item.sla.remaining_hours) + 'h restantes') : ''}</small>
       </td>
       <td>${when(item.last_seen)}</td>
       <td>
