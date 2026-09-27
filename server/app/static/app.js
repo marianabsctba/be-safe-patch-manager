@@ -301,6 +301,7 @@ function renderSummary(summary) {
     { label: 'SLA vencido', value: summary.sla_breached_vulnerabilities || 0, hint: 'vulnerabilidades abertas', cls: summary.sla_breached_vulnerabilities ? 'danger' : 'ok' },
     { label: 'SLA próximo', value: summary.sla_due_soon_vulnerabilities || 0, hint: 'vence em até 24h', cls: summary.sla_due_soon_vulnerabilities ? 'warn' : 'ok' },
     { label: 'Exceções SLA', value: summary.sla_exception_vulnerabilities || 0, hint: 'aprovadas e ainda válidas', cls: summary.sla_exception_vulnerabilities ? 'accent' : 'ok' },
+    { label: 'Risco urgente', value: summary.urgent_risk_vulnerabilities || 0, hint: 'priorização contextual', cls: summary.urgent_risk_vulnerabilities ? 'danger' : 'ok' },
     { label: 'Agentes incompatíveis', value: Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0), hint: summary.compatibility_enforced ? 'enforcement ativo' : 'somente observação', cls: (Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0)) ? 'danger' : 'ok' },
     { label: 'Jobs bloqueados', value: summary.blocked_jobs || 0, hint: 'aguardando upgrade do agente', cls: summary.blocked_jobs ? 'danger' : 'ok' },
     { label: 'Update staged', value: summary.agent_update_staged || 0, hint: 'assinado e aguardando ativação', cls: summary.agent_update_staged ? 'accent' : 'ok' },
@@ -442,6 +443,14 @@ function renderRiskEndpoints() {
 }
 
 
+
+function vulnerabilityRiskBadge(risk) {
+  if (!risk) return badge('-', 'info');
+  if (risk.level === 'urgent') return badge('URGENTE ' + risk.score, 'fail');
+  if (risk.level === 'high') return badge('ALTO ' + risk.score, 'warn');
+  if (risk.level === 'medium') return badge('MÉDIO ' + risk.score, 'info');
+  return badge('BAIXO ' + risk.score, 'muted-badge');
+}
 
 function vulnerabilitySeverityClass(severity) {
   if (severity === 'critical') return 'fail';
@@ -598,6 +607,7 @@ function renderVulnerabilities() {
     ['SLA vencido', open.filter((item) => item.sla && item.sla.state === 'breached').length, 'prazo de remediação excedido', open.some((item) => item.sla && item.sla.state === 'breached') ? 'danger' : 'ok'],
     ['SLA próximo', open.filter((item) => item.sla && item.sla.state === 'due_soon').length, 'vence em até 24h', open.some((item) => item.sla && item.sla.state === 'due_soon') ? 'warn' : 'ok'],
     ['Exceções SLA', open.filter((item) => item.sla && item.sla.state === 'exception').length, 'aprovação temporária', open.some((item) => item.sla && item.sla.state === 'exception') ? 'accent' : 'ok'],
+    ['Risco urgente', open.filter((item) => item.risk && item.risk.level === 'urgent').length, 'score contextual ≥ 80', open.some((item) => item.risk && item.risk.level === 'urgent') ? 'danger' : 'ok'],
     ['Remediadas', state.vulnerabilities.filter((item) => item.status === 'remediated').length, 'status atual', 'ok'],
     ['Com evidência', state.vulnerabilities.filter((item) => item.remediation && item.remediation.status === 'verified').length, 'rescan pós-patch comprovado', 'ok'],
   ].map(([label, value, hint, cls]) => `
@@ -610,7 +620,7 @@ function renderVulnerabilities() {
 
   const items = filteredVulnerabilities();
   if (!items.length) {
-    $('#vulnerabilities').innerHTML = '<tr><td colspan="10"><div class="empty-state">Nenhum finding encontrado.</div></td></tr>';
+    $('#vulnerabilities').innerHTML = '<tr><td colspan="11"><div class="empty-state">Nenhum finding encontrado.</div></td></tr>';
     return;
   }
 
@@ -619,6 +629,10 @@ function renderVulnerabilities() {
       <td><strong>${esc(item.cve || 'sem CVE')}</strong></td>
       <td>${badge(item.severity || 'unknown', vulnerabilitySeverityClass(item.severity))}</td>
       <td><strong>${Number(item.cvss || 0).toFixed(1)}</strong></td>
+      <td>
+        ${vulnerabilityRiskBadge(item.risk)}
+        <br><small class="muted">${item.risk && item.risk.kev ? 'KEV · ' : ''}${item.risk && item.risk.epss !== null && item.risk.epss !== undefined ? 'EPSS ' + Math.round(item.risk.epss * 100) + '%' : ''}</small>
+      </td>
       <td>
         ${item.matched
           ? '<strong>' + esc(item.hostname) + '</strong><br><small class="muted">' + esc(item.ip_address || item.host || '') + '</small>'
