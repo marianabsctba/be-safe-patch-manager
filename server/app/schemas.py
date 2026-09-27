@@ -191,6 +191,15 @@ class AgentMtlsBindRequest(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+class AssetRiskAcceptanceCreate(BaseModel):
+    reason: str = Field(min_length=5, max_length=1000)
+    expires_at: datetime
+
+
+class AssetRiskAcceptanceRevoke(BaseModel):
+    reason: str = Field(min_length=5, max_length=1000)
+
+
 class AssetRiskPolicyCreate(BaseModel):
     name: str = Field(min_length=3, max_length=128)
     target_tag: str = Field(min_length=1, max_length=128)
