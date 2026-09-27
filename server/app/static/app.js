@@ -633,6 +633,16 @@ function renderAgentDrawer(agent = selectedAgent()) {
   const risk = endpointRisk(agent);
   const patches = Array.isArray(agent.patch_scan) ? agent.patch_scan : [];
   const jobs = state.jobs.filter((job) => job.agent_id === agent.id).slice(0, 50);
+  const healthSnapshot = agent.inventory && agent.inventory.health && typeof agent.inventory.health === 'object'
+    ? agent.inventory.health
+    : {};
+  const healthServices = healthSnapshot.services && typeof healthSnapshot.services === 'object'
+    ? Object.values(healthSnapshot.services)
+    : [];
+  const healthApps = healthSnapshot.applications && typeof healthSnapshot.applications === 'object'
+    ? Object.values(healthSnapshot.applications)
+    : [];
+  const unhealthyChecks = [...healthServices, ...healthApps].filter((item) => item && item.healthy === false).length;
 
   $('#drawerHostname').textContent = agent.hostname || '-';
   $('#drawerSubtitle').textContent = ((agent.os_name || agent.os_family || '-') + ' ' + (agent.os_version || '')).trim();
@@ -655,6 +665,10 @@ function renderAgentDrawer(agent = selectedAgent()) {
     ['Reboot', agent.reboot_required ? 'SIM' : 'não', agent.reboot_required ? 'warn' : 'ok'],
     ['Último contato', shortWhen(agent.last_seen), isOnline(agent) ? 'ok' : 'neutral'],
     ['Rollback', agent.inventory && agent.inventory.rollback && agent.inventory.rollback.checkpoint_supported ? 'disponível' : 'indisponível', agent.inventory && agent.inventory.rollback && agent.inventory.rollback.checkpoint_supported ? 'ok' : 'neutral'],
+    ['CPU', healthSnapshot.cpu_percent == null ? '-' : Number(healthSnapshot.cpu_percent).toFixed(1) + '%', 'neutral'],
+    ['Memória', healthSnapshot.memory_percent == null ? '-' : Number(healthSnapshot.memory_percent).toFixed(1) + '%', 'neutral'],
+    ['Disco livre', healthSnapshot.disk && healthSnapshot.disk.free_percent != null ? Number(healthSnapshot.disk.free_percent).toFixed(1) + '%' : '-', 'neutral'],
+    ['Checks críticos', (healthServices.length + healthApps.length) ? (unhealthyChecks ? unhealthyChecks + ' falhando' : 'OK') : '-', unhealthyChecks ? 'danger' : 'ok'],
   ];
 
   $('#drawerMetrics').innerHTML = metrics.map((item) =>
@@ -799,7 +813,11 @@ function validationBadge(validation) {
     disabled: 'desativada',
   };
   const cls = status === 'passed' ? 'ok' : status === 'failed' ? 'fail' : status === 'waiting' ? 'warn' : 'info';
-  return badge(labels[status] || status, cls);
+  const issues = validation && validation.health_validation && Array.isArray(validation.health_validation.issues)
+    ? validation.health_validation.issues
+    : [];
+  const title = issues.length ? ' title="' + esc(issues.join('; ')) + '"' : '';
+  return '<span class="badge ' + cls + '"' + title + '>' + esc(labels[status] || status) + '</span>';
 }
 
 function healthReasonLabel(reason) {
@@ -811,6 +829,8 @@ function healthReasonLabel(reason) {
     'success rate below 90%': 'sucesso abaixo de 90%',
     'post-patch validation failed': 'validação pós-patch falhou',
     'waiting for post-patch validation': 'aguardando validação pós-patch',
+    'post-patch health regression or unhealthy critical check': 'regressão de saúde pós-patch',
+    'waiting for post-patch health telemetry': 'aguardando telemetria de saúde',
     'healthy': 'saudável',
   };
   return labels[reason] || reason || '';
@@ -835,6 +855,12 @@ function campaignCard(campaign, compact = false) {
   const ringReady = Boolean(health.ready);
   const healthRate = Number(health.success_rate || 0);
   const payload = campaign.payload || {};
+  const healthPolicy = payload.health_policy || {};
+  const healthIssues = (health.validation_details || [])
+    .flatMap((item) => item && item.health_validation && Array.isArray(item.health_validation.issues)
+      ? item.health_validation.issues
+      : [])
+    .slice(0, 3);
   const windowEnabled = Boolean(payload.maintenance_start && payload.maintenance_end);
   const windowText = windowEnabled
     ? payload.maintenance_start + '–' + payload.maintenance_end + ' · ' +
@@ -875,6 +901,15 @@ function campaignCard(campaign, compact = false) {
           <span>Janela: <strong>${esc(windowText)}</strong></span>
           <span>Reboot: <strong>${esc(rebootPolicyLabel(payload.reboot_policy))}</strong></span>
           <span>Pós-patch: <strong>${payload.post_patch_validation === false ? 'desativado' : 'obrigatório'}</strong></span>
+          <span>Saúde: <strong>${healthPolicy.enabled
+            ? 'CPU Δ' + esc(healthPolicy.cpu_max_delta) + ' · MEM Δ' + esc(healthPolicy.memory_max_delta) + ' · disco Δ' + esc(healthPolicy.disk_max_free_drop)
+            : 'desativada'}</strong></span>
+          ${healthPolicy.enabled && (healthPolicy.critical_services || []).length
+            ? '<span>Serviços: <strong>' + esc((healthPolicy.critical_services || []).length) + '</strong></span>'
+            : ''}
+          ${healthPolicy.enabled && (healthPolicy.application_checks || []).length
+            ? '<span>Apps: <strong>' + esc((healthPolicy.application_checks || []).length) + '</strong></span>'
+            : ''}
           <span>Rollback: <strong>${payload.prepare_rollback === false ? 'desativado' : payload.rollback_required ? 'checkpoint obrigatório' : 'checkpoint best effort'}</strong></span>
         </div>
 
@@ -888,6 +923,7 @@ function campaignCard(campaign, compact = false) {
           ${campaign.status === 'deployed' && Number(validation.waiting || 0) ? `<span>Validação aguardando: ${validation.waiting}</span>` : ''}
           ${campaign.status === 'deployed' && Number(validation.failed || 0) ? `<span class="text-danger">Validação falhou: ${validation.failed}</span>` : ''}
           ${campaign.status === 'deployed' && health.reason ? `<span>${esc(healthReasonLabel(health.reason))}</span>` : ''}
+          ${healthIssues.length ? `<span class="text-danger health-issue">${esc(healthIssues.join(' · '))}</span>` : ''}
         </div>
 
         <div class="progress">
@@ -1265,6 +1301,34 @@ $('.drawer-tab').forEach((button) => {
   button.addEventListener('click', () => setDrawerTab(button.dataset.drawerTab));
 });
 
+function parseCriticalServices(value) {
+  return String(value || '')
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseApplicationHealthChecks(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const separator = line.indexOf('=');
+      const hasName = separator > 0;
+      const name = hasName ? line.slice(0, separator).trim() : 'app-' + (index + 1);
+      const url = hasName ? line.slice(separator + 1).trim() : line;
+      return {
+        name,
+        url,
+        expected_status: 200,
+        body_contains: '',
+        timeout_seconds: 5,
+        verify_tls: true,
+      };
+    });
+}
+
 $('#campaignForm').addEventListener('submit', async (event) => {
   event.preventDefault();
 
@@ -1298,6 +1362,16 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     maintenance_timezone: form.get('maintenance_timezone') || 'America/Sao_Paulo',
     maintenance_days: dayPresets[form.get('maintenance_days')] || dayPresets.all,
     post_patch_validation: form.get('post_patch_validation') === 'on',
+    health_gate_enabled: form.get('health_gate_enabled') === 'on',
+    health_gate_require_telemetry: form.get('health_gate_require_telemetry') === 'on',
+    health_cpu_max_percent: Number(form.get('health_cpu_max_percent') || 95),
+    health_cpu_max_delta: Number(form.get('health_cpu_max_delta') || 40),
+    health_memory_max_percent: Number(form.get('health_memory_max_percent') || 95),
+    health_memory_max_delta: Number(form.get('health_memory_max_delta') || 20),
+    health_disk_min_free_percent: Number(form.get('health_disk_min_free_percent') || 5),
+    health_disk_max_free_drop: Number(form.get('health_disk_max_free_drop') || 10),
+    critical_services: parseCriticalServices(form.get('critical_services')),
+    application_health_checks: parseApplicationHealthChecks(form.get('application_health_urls')),
     prepare_rollback: form.get('prepare_rollback') === 'on',
     rollback_required: form.get('rollback_required') === 'on',
     target_agent_id: form.get('target_agent_id') || '',
@@ -1318,6 +1392,8 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     event.target.elements.ring_percent.value = 10;
     event.target.elements.maintenance_timezone.value = 'America/Sao_Paulo';
     event.target.elements.post_patch_validation.checked = true;
+    event.target.elements.health_gate_enabled.checked = true;
+    event.target.elements.health_gate_require_telemetry.checked = true;
     event.target.elements.prepare_rollback.checked = true;
     $('#campaignSourceContext').hidden = true;
     $('#campaignSourceContext').innerHTML = '';

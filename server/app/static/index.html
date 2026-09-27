@@ -316,6 +316,65 @@
                   <span>Exigir heartbeat e validação pós-patch antes de avançar o ring</span>
                 </label>
 
+                <details class="health-policy wide" open>
+                  <summary>Health gate avançado</summary>
+                  <div class="health-policy-grid">
+                    <label class="check wide">
+                      <input name="health_gate_enabled" type="checkbox" checked />
+                      <span>Comparar saúde do endpoint antes e depois do patch</span>
+                    </label>
+
+                    <label class="check wide">
+                      <input name="health_gate_require_telemetry" type="checkbox" checked />
+                      <span>Bloquear avanço se o agente não entregar telemetria de saúde</span>
+                    </label>
+
+                    <label>
+                      <span>CPU máxima (%)</span>
+                      <input name="health_cpu_max_percent" type="number" min="1" max="100" step="1" value="95" />
+                    </label>
+
+                    <label>
+                      <span>Aumento máx. CPU (p.p.)</span>
+                      <input name="health_cpu_max_delta" type="number" min="0" max="100" step="1" value="40" />
+                    </label>
+
+                    <label>
+                      <span>Memória máxima (%)</span>
+                      <input name="health_memory_max_percent" type="number" min="1" max="100" step="1" value="95" />
+                    </label>
+
+                    <label>
+                      <span>Aumento máx. memória (p.p.)</span>
+                      <input name="health_memory_max_delta" type="number" min="0" max="100" step="1" value="20" />
+                    </label>
+
+                    <label>
+                      <span>Disco livre mínimo (%)</span>
+                      <input name="health_disk_min_free_percent" type="number" min="0" max="100" step="1" value="5" />
+                    </label>
+
+                    <label>
+                      <span>Queda máx. disco livre (p.p.)</span>
+                      <input name="health_disk_max_free_drop" type="number" min="0" max="100" step="1" value="10" />
+                    </label>
+
+                    <label class="wide">
+                      <span>Serviços críticos</span>
+                      <input name="critical_services" placeholder="nginx, postgresql, spooler..." />
+                    </label>
+
+                    <label class="wide">
+                      <span>Health checks locais de aplicação</span>
+                      <textarea name="application_health_urls" placeholder="API local = http://127.0.0.1:8081/health&#10;ERP = http://localhost:9000/health"></textarea>
+                    </label>
+
+                    <p class="form-hint wide">
+                      Health URLs aceitam somente localhost/loopback. Formato por linha: nome = URL. Checks remotos ficam para Zabbix/sintéticos, não para o agente.
+                    </p>
+                  </div>
+                </details>
+
                 <label class="check wide">
                   <input name="prepare_rollback" type="checkbox" checked />
                   <span>Criar checkpoint de rollback antes de instalar, quando suportado</span>

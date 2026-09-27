@@ -1614,3 +1614,60 @@ button:disabled:hover {
   .user-layout { grid-template-columns:1fr; }
   .auth-user > div { min-width:auto; }
 }
+
+
+/* v0.11 health gate */
+.health-policy {
+  grid-column:1/-1;
+  border:1px solid #2a2a31;
+  border-radius:10px;
+  background:#111115;
+  overflow:hidden;
+}
+
+.health-policy summary {
+  padding:11px 13px;
+  cursor:pointer;
+  color:#e2e2e7;
+  font-size:11px;
+  font-weight:800;
+  user-select:none;
+}
+
+.health-policy[open] summary {
+  border-bottom:1px solid var(--border-soft);
+}
+
+.health-policy-grid {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:11px;
+  padding:13px;
+}
+
+.health-policy-grid .wide {
+  grid-column:1/-1;
+}
+
+.health-policy-grid label > span {
+  display:block;
+  margin-bottom:6px;
+  color:var(--muted);
+  font-size:10px;
+  font-weight:700;
+}
+
+.health-policy-grid .check > span {
+  margin:0;
+}
+
+.health-issue {
+  flex-basis:100%;
+  line-height:1.5;
+}
+
+@media (max-width:760px) {
+  .health-policy-grid {
+    grid-template-columns:1fr;
+  }
+}
