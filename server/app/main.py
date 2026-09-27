@@ -693,6 +693,252 @@ def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> 
     }
 
 
+ASSET_CRITICALITY_TAGS = {
+    "tier0": 5,
+    "mission-critical": 5,
+    "critical": 5,
+    "prod": 4,
+    "production": 4,
+    "database": 4,
+    "domain-controller": 5,
+    "identity": 5,
+    "internet-facing": 4,
+    "public": 4,
+    "dmz": 4,
+    "staging": 2,
+    "dev": 1,
+    "development": 1,
+    "lab": 1,
+}
+
+ASSET_RISK_SEVERITY_WEIGHTS = {
+    "critical": 2.0,
+    "high": 1.5,
+    "medium": 1.0,
+    "low": 0.5,
+    "unknown": 0.5,
+}
+
+
+def asset_criticality(agent: Agent | None) -> dict:
+    tags = []
+    if agent:
+        tags = [str(tag).strip().lower() for tag in load(agent.tags, []) if str(tag).strip()]
+    contributors = [
+        {"tag": tag, "score": ASSET_CRITICALITY_TAGS[tag]}
+        for tag in tags
+        if tag in ASSET_CRITICALITY_TAGS
+    ]
+    score = max([item["score"] for item in contributors], default=2)
+    return {
+        "score": score,
+        "source": "tags" if contributors else "default",
+        "contributors": sorted(contributors, key=lambda item: -item["score"]),
+        "tags": tags,
+    }
+
+
+def finding_detection_risk(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    raw = load(finding.raw_json, {})
+    threat = raw.get("threat_intel") if isinstance(raw.get("threat_intel"), dict) else raw
+    factors = []
+
+    cvss = max(0.0, min(10.0, float(finding.cvss or 0.0)))
+    cvss_points = cvss * 6.0
+    score = cvss_points
+    factors.append({"factor": "cvss", "points": round(cvss_points, 1), "value": cvss})
+
+    try:
+        epss = float(threat.get("epss")) if threat.get("epss") is not None else None
+    except (TypeError, ValueError):
+        epss = None
+    if epss is not None:
+        epss = max(0.0, min(1.0, epss))
+        points = epss * 20.0
+        score += points
+        factors.append({"factor": "epss", "points": round(points, 1), "value": epss})
+
+    kev = bool(threat.get("kev") or raw.get("known_exploited") or raw.get("cisa_kev"))
+    if kev:
+        score += 15
+        factors.append({"factor": "known_exploited", "points": 15, "value": True})
+
+    ransomware = str(threat.get("kev_ransomware_use") or "").strip().lower()
+    ransomware_known = ransomware in {"known", "yes", "true"} or bool(raw.get("ransomware"))
+    if ransomware_known:
+        score += 10
+        factors.append({"factor": "ransomware", "points": 10, "value": True})
+
+    first_seen = finding.first_seen or finding.created_at or reference
+    if first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (reference - first_seen).total_seconds() / 86400.0)
+    age_points = min(10.0, age_days / 9.0)
+    if age_points:
+        score += age_points
+        factors.append({"factor": "age", "points": round(age_points, 1), "value_days": round(age_days, 1)})
+
+    score = round(max(1.0, min(100.0, score)), 1)
+    if score >= 90:
+        level = "critical"
+    elif score >= 70:
+        level = "high"
+    elif score >= 40:
+        level = "medium"
+    else:
+        level = "low"
+
+    return {
+        "score": score,
+        "level": level,
+        "cvss": cvss,
+        "epss": epss,
+        "kev": kev,
+        "ransomware": ransomware_known,
+        "age_days": round(age_days, 1),
+        "factors": factors,
+    }
+
+
+def asset_exposure(agent: Agent | None) -> dict:
+    criticality = asset_criticality(agent)
+    tags = set(criticality["tags"])
+    external_tags = sorted(tags.intersection({"internet-facing", "public", "dmz", "external"}))
+    external = bool(external_tags)
+    return {
+        "external": external,
+        "multiplier": 1.2 if external else 1.0,
+        "contributors": external_tags,
+    }
+
+
+def asset_compensating_factor(agent: Agent | None) -> dict:
+    tags = set(asset_criticality(agent)["tags"])
+    controls = []
+    multiplier = 1.0
+    if "segmented" in tags:
+        multiplier *= 0.9
+        controls.append({"tag": "segmented", "multiplier": 0.9})
+    if "edr-protected" in tags:
+        multiplier *= 0.9
+        controls.append({"tag": "edr-protected", "multiplier": 0.9})
+    if "restricted-egress" in tags:
+        multiplier *= 0.95
+        controls.append({"tag": "restricted-egress", "multiplier": 0.95})
+    multiplier = max(0.6, round(multiplier, 4))
+    return {
+        "multiplier": multiplier,
+        "controls": controls,
+    }
+
+
+def asset_risk_score(agent: Agent, findings: list[VulnerabilityFinding], reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    open_findings = [finding for finding in findings if finding.status == "open"]
+    criticality = asset_criticality(agent)
+    exposure = asset_exposure(agent)
+    compensating = asset_compensating_factor(agent)
+
+    buckets = {}
+    top_factors = []
+    for finding in open_findings:
+        detection = finding_detection_risk(finding, reference)
+        severity = str(finding.severity or "unknown").lower()
+        bucket = buckets.setdefault(severity, [])
+        bucket.append(detection["score"])
+        if detection["kev"]:
+            top_factors.append("CISA KEV")
+        if detection["ransomware"]:
+            top_factors.append("ransomware")
+        if detection["epss"] is not None and detection["epss"] >= 0.5:
+            top_factors.append("EPSS alto")
+
+    weighted = 0.0
+    bucket_breakdown = {}
+    for severity, scores in buckets.items():
+        avg_score = sum(scores) / len(scores)
+        count_factor = math.pow(max(1, len(scores)), 0.01)
+        weight = ASSET_RISK_SEVERITY_WEIGHTS.get(severity, 0.5)
+        contribution = avg_score * count_factor * weight
+        weighted += contribution
+        bucket_breakdown[severity] = {
+            "count": len(scores),
+            "average_detection_risk": round(avg_score, 1),
+            "weight": weight,
+            "contribution": round(contribution, 1),
+        }
+
+    raw_score = (
+        criticality["score"]
+        * exposure["multiplier"]
+        * weighted
+        * compensating["multiplier"]
+    )
+    score = round(min(1000.0, raw_score), 1)
+
+    if score >= 850:
+        level = "critical"
+    elif score >= 700:
+        level = "high"
+    elif score >= 500:
+        level = "medium"
+    else:
+        level = "low"
+
+    if exposure["external"]:
+        top_factors.append("exposição externa")
+    if criticality["score"] >= 4:
+        top_factors.append("ativo crítico")
+
+    return {
+        "score": score,
+        "level": level,
+        "asset_criticality": criticality,
+        "exposure": exposure,
+        "compensating": compensating,
+        "open_findings": len(open_findings),
+        "buckets": bucket_breakdown,
+        "top_factors": sorted(set(top_factors)),
+    }
+
+
+def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    agents = db.query(Agent).order_by(Agent.hostname.asc()).all()
+    rows = []
+    for agent in agents:
+        findings = list(agent.vulnerabilities or [])
+        risk = asset_risk_score(agent, findings, reference)
+        rows.append({
+            "agent_id": agent.id,
+            "hostname": agent.hostname,
+            "ip_address": agent.ip_address,
+            "os_family": agent.os_family,
+            "tags": load(agent.tags, []),
+            "risk": risk,
+        })
+
+    rows.sort(key=lambda row: (-row["risk"]["score"], row["hostname"].lower()))
+    summary = {
+        "assets": len(rows),
+        "critical": sum(1 for row in rows if row["risk"]["level"] == "critical"),
+        "high": sum(1 for row in rows if row["risk"]["level"] == "high"),
+        "medium": sum(1 for row in rows if row["risk"]["level"] == "medium"),
+        "low": sum(1 for row in rows if row["risk"]["level"] == "low"),
+        "average_score": round(
+            sum(row["risk"]["score"] for row in rows) / len(rows), 1
+        ) if rows else 0.0,
+    }
+    return {
+        "generated_at": reference.isoformat(),
+        "model": "be_safe_asset_risk_v1",
+        "scale": {"min": 0, "max": 1000},
+        "summary": summary,
+        "assets": rows,
+    }
+
+
 RISK_ASSET_TAG_WEIGHTS = {
     "critical": 15,
     "mission-critical": 15,
@@ -3115,6 +3361,9 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             if vulnerability_risk(finding)["level"] == "urgent"
         ),
         "remediation_ready_vulnerabilities": remediation_queue_report(db)["summary"]["eligible_for_campaign"],
+        "critical_risk_assets": asset_risk_report(db)["summary"]["critical"],
+        "high_risk_assets": asset_risk_report(db)["summary"]["high"],
+        "average_asset_risk": asset_risk_report(db)["summary"]["average_score"],
         "agent_supported": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "supported"),
         "agent_outdated": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "outdated"),
         "agent_unknown": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "unknown"),
@@ -3162,6 +3411,14 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             )
         ),
     }
+
+
+@app.get("/api/admin/reports/asset-risk")
+def admin_asset_risk_report(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return asset_risk_report(db)
 
 
 @app.get("/api/admin/reports/remediation-queue")
