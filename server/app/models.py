@@ -32,6 +32,7 @@ class Agent(Base):
     vulnerabilities = relationship("VulnerabilityFinding", back_populates="agent")
     remediation_evidence = relationship("RemediationEvidence", back_populates="agent")
     risk_snapshots = relationship("AssetRiskSnapshot", back_populates="agent", cascade="all, delete-orphan")
+    risk_profile = relationship("AssetRiskProfile", back_populates="agent", cascade="all, delete-orphan", uselist=False)
 
 
 class Campaign(Base):
@@ -154,6 +155,20 @@ class RemediationEvidence(Base):
     campaign = relationship("Campaign", back_populates="remediation_evidence")
     job = relationship("PatchJob", back_populates="remediation_evidence")
     agent = relationship("Agent", back_populates="remediation_evidence")
+
+
+class AssetRiskProfile(Base):
+    __tablename__ = "asset_risk_profiles"
+
+    agent_id = Column(String(36), ForeignKey("agents.id"), primary_key=True)
+    criticality_override = Column(Integer, nullable=True)
+    external_override = Column(Boolean, nullable=True)
+    controls_json = Column(Text, nullable=True)
+    reason = Column(Text, nullable=False, default="")
+    updated_by = Column(String(255), nullable=False, default="")
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    agent = relationship("Agent", back_populates="risk_profile")
 
 
 class AssetRiskSnapshot(Base):
