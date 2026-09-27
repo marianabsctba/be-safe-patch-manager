@@ -487,6 +487,9 @@ function renderGreenboneIntegration() {
     ['Findings no último sync', details.findings == null ? '-' : details.findings],
     ['Correlacionados', details.matched == null ? '-' : details.matched],
     ['Relatórios', details.reports == null ? '-' : details.reports],
+    ['Remediações verificadas', details.remediation_verified == null ? '-' : details.remediation_verified],
+    ['Ainda detectadas', details.remediation_still_detected == null ? '-' : details.remediation_still_detected],
+    ['Rescans aguardando', details.remediation_waiting == null ? '-' : details.remediation_waiting],
     ['Ausentes', config.reconcile_absent ? 'marcar not_detected' : 'não reconciliar'],
   ];
 
@@ -504,6 +507,43 @@ function renderGreenboneIntegration() {
   $('#greenboneSync').disabled = !config.configured || status === 'running';
 }
 
+function remediationStatusLabel(status) {
+  const labels = {
+    waiting_validation: 'aguardando validação',
+    rescan_requested: 'rescan solicitado',
+    verified: 'remediação comprovada',
+    still_detected: 'ainda detectada',
+    error: 'erro no rescan',
+    unsupported: 'rescan indisponível',
+  };
+  return labels[status] || status || 'sem evidência';
+}
+
+function remediationBadge(remediation) {
+  if (!remediation) return badge('sem evidência', 'info');
+  const status = remediation.status || '';
+  const cls = status === 'verified'
+    ? 'ok'
+    : ['still_detected', 'error'].includes(status)
+      ? 'fail'
+      : ['waiting_validation', 'rescan_requested'].includes(status)
+        ? 'warn'
+        : 'info';
+
+  const proof = remediation.evidence && remediation.evidence.verification
+    ? remediation.evidence.verification
+    : {};
+  const titleParts = [];
+  if (remediation.rescan_report_id) titleParts.push('report ' + remediation.rescan_report_id);
+  if (proof.checked_at) titleParts.push('verificado ' + when(proof.checked_at));
+  if (remediation.error) titleParts.push(remediation.error);
+
+  const title = titleParts.length ? ' title="' + esc(titleParts.join(' · ')) + '"' : '';
+  return '<span class="badge ' + cls + '"' + title + '>' +
+    esc(remediationStatusLabel(status)) +
+    '</span>';
+}
+
 function renderVulnerabilities() {
   const open = state.vulnerabilities.filter((item) => item.status === 'open');
   const critical = open.filter((item) => item.severity === 'critical');
@@ -517,7 +557,8 @@ function renderVulnerabilities() {
     ['Altas', high.length, 'prioridade alta', high.length ? 'warn' : 'ok'],
     ['Correlacionadas', matched.length, 'com endpoint gerenciado', 'accent'],
     ['Sem endpoint', unmatched.length, 'exigem correlação', unmatched.length ? 'danger' : 'ok'],
-    ['Remediadas', state.vulnerabilities.filter((item) => item.status === 'remediated').length, 'confirmadas por status/rescan', 'ok'],
+    ['Remediadas', state.vulnerabilities.filter((item) => item.status === 'remediated').length, 'status atual', 'ok'],
+    ['Com evidência', state.vulnerabilities.filter((item) => item.remediation && item.remediation.status === 'verified').length, 'rescan pós-patch comprovado', 'ok'],
   ].map(([label, value, hint, cls]) => `
     <article class="card ${cls}">
       <span>${esc(label)}</span>
@@ -547,16 +588,42 @@ function renderVulnerabilities() {
         <br><small class="muted">${esc(item.port || item.external_id || '')}</small>
       </td>
       <td>${badge(item.source || '-', 'info')}</td>
-      <td>${badge(vulnerabilityStatusLabel(item.status), item.status === 'remediated' ? 'ok' : item.status === 'open' ? 'warn' : 'info')}</td>
+      <td>
+        ${badge(vulnerabilityStatusLabel(item.status), item.status === 'remediated' ? 'ok' : item.status === 'open' ? 'warn' : 'info')}
+        <br><span class="vuln-remediation">${remediationBadge(item.remediation)}</span>
+      </td>
       <td>${when(item.last_seen)}</td>
       <td>
         ${item.status === 'open' && item.matched && roleAtLeast('operator')
           ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + item.id + '\')">Criar campanha</button>'
           : ''}
+        ${item.remediation && ['error','still_detected'].includes(item.remediation.status) && roleAtLeast('operator')
+          ? '<button class="row-action" onclick="retryRemediationRescan(\'' + item.remediation.id + '\')">Novo rescan</button>'
+          : ''}
       </td>
     </tr>
   `).join('');
 }
+
+window.retryRemediationRescan = async (evidenceId) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+  const reason = prompt('Motivo para solicitar um novo rescan Greenbone:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+
+  try {
+    await api('/api/admin/remediation-evidence/' + evidenceId + '/rescan', {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    toast('Novo rescan solicitado ao Greenbone.');
+    await load();
+  } catch (error) {
+    toast('Rescan: ' + error.message, 'fail');
+  }
+};
 
 window.prepareCampaignFromFinding = (findingId) => {
   if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
