@@ -20,8 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskSnapshot, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskProfile, AssetRiskSnapshot, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskProfileUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -721,10 +721,38 @@ ASSET_RISK_SEVERITY_WEIGHTS = {
 }
 
 
+def serialize_asset_risk_profile(profile: AssetRiskProfile | None) -> dict | None:
+    if not profile:
+        return None
+    return {
+        "agent_id": profile.agent_id,
+        "criticality": profile.criticality_override,
+        "external": profile.external_override,
+        "compensating_controls": (
+            load(profile.controls_json, [])
+            if profile.controls_json is not None
+            else None
+        ),
+        "reason": profile.reason,
+        "updated_by": profile.updated_by,
+        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
+    }
+
+
 def asset_criticality(agent: Agent | None) -> dict:
     tags = []
     if agent:
         tags = [str(tag).strip().lower() for tag in load(agent.tags, []) if str(tag).strip()]
+
+    if agent and agent.risk_profile and agent.risk_profile.criticality_override is not None:
+        score = max(1, min(5, int(agent.risk_profile.criticality_override)))
+        return {
+            "score": score,
+            "source": "profile",
+            "contributors": [{"profile": True, "score": score}],
+            "tags": tags,
+        }
+
     contributors = [
         {"tag": tag, "score": ASSET_CRITICALITY_TAGS[tag]}
         for tag in tags
@@ -805,17 +833,38 @@ def finding_detection_risk(finding: VulnerabilityFinding, reference: datetime | 
 def asset_exposure(agent: Agent | None) -> dict:
     criticality = asset_criticality(agent)
     tags = set(criticality["tags"])
+
+    if agent and agent.risk_profile and agent.risk_profile.external_override is not None:
+        external = bool(agent.risk_profile.external_override)
+        return {
+            "external": external,
+            "multiplier": 1.2 if external else 1.0,
+            "contributors": ["risk_profile"],
+            "source": "profile",
+        }
+
     external_tags = sorted(tags.intersection({"internet-facing", "public", "dmz", "external"}))
     external = bool(external_tags)
     return {
         "external": external,
         "multiplier": 1.2 if external else 1.0,
         "contributors": external_tags,
+        "source": "tags" if external_tags else "default",
     }
 
 
 def asset_compensating_factor(agent: Agent | None) -> dict:
     tags = set(asset_criticality(agent)["tags"])
+    source = "tags"
+
+    if agent and agent.risk_profile and agent.risk_profile.controls_json is not None:
+        tags = {
+            str(value).strip().lower()
+            for value in load(agent.risk_profile.controls_json, [])
+            if str(value).strip()
+        }
+        source = "profile"
+
     controls = []
     multiplier = 1.0
     if "segmented" in tags:
@@ -831,6 +880,7 @@ def asset_compensating_factor(agent: Agent | None) -> dict:
     return {
         "multiplier": multiplier,
         "controls": controls,
+        "source": source,
     }
 
 
@@ -1034,6 +1084,7 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
             "ip_address": agent.ip_address,
             "os_family": agent.os_family,
             "tags": load(agent.tags, []),
+            "risk_profile": serialize_asset_risk_profile(agent.risk_profile),
             "risk": risk,
         })
 
@@ -3631,6 +3682,106 @@ def remediation_queue(
 @app.get("/api/admin/reports/vulnerability-sla")
 def admin_vulnerability_sla_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return vulnerability_sla_report(db)
+
+
+@app.get("/api/admin/agents/{agent_id}/risk-profile")
+def get_asset_risk_profile(
+    agent_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return {
+        "agent_id": agent.id,
+        "hostname": agent.hostname,
+        "profile": serialize_asset_risk_profile(agent.risk_profile),
+        "effective": {
+            "criticality": asset_criticality(agent),
+            "exposure": asset_exposure(agent),
+            "compensating": asset_compensating_factor(agent),
+        },
+    }
+
+
+@app.put("/api/admin/agents/{agent_id}/risk-profile")
+def update_asset_risk_profile(
+    agent_id: str,
+    body: AssetRiskProfileUpdate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    allowed_controls = {"segmented", "edr-protected", "restricted-egress"}
+    controls = body.compensating_controls
+    normalized_controls = None
+    if controls is not None:
+        normalized_controls = sorted({
+            str(value).strip().lower()
+            for value in controls
+            if str(value).strip()
+        })
+        invalid = [value for value in normalized_controls if value not in allowed_controls]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "unsupported compensating control", "controls": invalid},
+            )
+
+    profile = agent.risk_profile
+    if not profile:
+        profile = AssetRiskProfile(agent_id=agent.id)
+        db.add(profile)
+
+    before = serialize_asset_risk_profile(profile)
+    profile.criticality_override = body.criticality
+    profile.external_override = body.external
+    profile.controls_json = (
+        dump(normalized_controls)
+        if normalized_controls is not None
+        else None
+    )
+    profile.reason = body.reason.strip()
+    profile.updated_by = principal["actor"]
+    profile.updated_at = now()
+    db.commit()
+    db.refresh(profile)
+
+    capture_asset_risk_snapshots(
+        db,
+        source=f"risk_profile:{principal['actor']}",
+        minimum_interval_seconds=0,
+    )
+    result = serialize_asset_risk_profile(profile)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.profile.updated",
+        "agent",
+        agent.id,
+        {
+            "before": before,
+            "after": result,
+            "effective": {
+                "criticality": asset_criticality(agent),
+                "exposure": asset_exposure(agent),
+                "compensating": asset_compensating_factor(agent),
+            },
+        },
+    )
+    return {
+        "ok": True,
+        "profile": result,
+        "effective": {
+            "criticality": asset_criticality(agent),
+            "exposure": asset_exposure(agent),
+            "compensating": asset_compensating_factor(agent),
+        },
+    }
 
 
 @app.get("/api/admin/agents")
