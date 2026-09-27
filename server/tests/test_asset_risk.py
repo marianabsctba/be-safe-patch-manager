@@ -158,3 +158,25 @@ def test_detection_risk_is_explainable():
 
     assert result["score"] <= 100
     assert {"cvss", "epss", "known_exploited", "ransomware", "age"}.issubset(factors)
+
+
+
+def test_asset_risk_report_applies_configured_risk_appetite(db, monkeypatch):
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 700)
+    agent = make_agent("appetite-asset", ["tier0", "internet-facing"])
+    db.add_all([
+        agent,
+        make_finding(
+            "appetite-f",
+            agent,
+            "critical",
+            9.8,
+            {"threat_intel": {"epss": 0.95, "kev": True, "kev_ransomware_use": "Known"}},
+        ),
+    ])
+    db.commit()
+
+    report = main.asset_risk_report(db, REFERENCE)
+
+    assert report["summary"]["risk_appetite"] == 700
+    assert report["summary"]["above_risk_appetite"] == 1
