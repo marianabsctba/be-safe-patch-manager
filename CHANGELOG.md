@@ -23,6 +23,9 @@
 - findings elegíveis podem abrir a campanha pré-preenchida, mas continuam exigindo revisão humana antes do deploy;
 - adicionada camada de risco por ativo 0–1000, criticidade 1–5, exposição externa e fatores compensatórios;
 - adicionado risk appetite configurável e contagem de ativos acima do limite;
+- adicionados snapshots persistentes do risco por ativo e migration `0007_risk_history`;
+- Greenbone e Threat Intel geram snapshots com intervalo mínimo para evitar ruído;
+- console mostra tendência de risco (`up`, `down`, `flat`, `new`) e permite snapshot manual auditado;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
