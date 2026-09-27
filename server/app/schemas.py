@@ -133,6 +133,15 @@ class VulnerabilityStatusUpdate(BaseModel):
     status: str
 
 
+class VulnerabilitySlaExceptionCreate(BaseModel):
+    reason: str = Field(min_length=5, max_length=1000)
+    expires_at: datetime
+
+
+class VulnerabilitySlaExceptionRevoke(BaseModel):
+    reason: str = Field(min_length=5, max_length=1000)
+
+
 class RingAdvance(BaseModel):
     target_percent: int = Field(ge=1, le=100)
     override_health_gate: bool = False
