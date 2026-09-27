@@ -30,7 +30,7 @@ PKG_RE = re.compile(r"^[A-Za-z0-9._+:-]{1,128}$")
 KB_RE = re.compile(r"^KB\d{4,10}$", re.I)
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@:-]{1,128}$")
 
-AGENT_VERSION = "0.15.0"
+AGENT_VERSION = "0.16.0"
 AGENT_PROTOCOL = 2
 AGENT_CAPABILITIES = (
     "scan_updates",
@@ -42,6 +42,7 @@ AGENT_CAPABILITIES = (
     "mtls_client_v1",
     "signed_update_staging_v1",
     "signed_update_activation_v1",
+    "signed_update_quarantine_v1",
 )
 
 UPDATE_PRODUCT = "be-safe-patch-agent"
@@ -393,6 +394,22 @@ def stage_signed_update(cfg):
     if not version_newer(version, AGENT_VERSION):
         raise RuntimeError("refusing non-upgrade agent release")
 
+    activation_state = read_activation_state(cfg)
+    if (
+        activation_state.get("status") == "rolled_back"
+        and str(activation_state.get("target_version") or "") == version
+    ):
+        return write_update_state(cfg, {
+            "status": "quarantined",
+            "checked_at": checked_at,
+            "latest_version": version,
+            "staged_version": version,
+            "quarantined_version": version,
+            "quarantined_at": activation_state.get("rolled_back_at") or utcnow(),
+            "quarantine_reason": activation_state.get("rollback_reason") or "watchdog rollback",
+            "activation": "blocked_after_rollback",
+        })
+
     artifact = manifest["artifact"]
     artifact_url = str(metadata.get("artifact_url") or "")
     expected_url = (
@@ -514,10 +531,11 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
-def verified_staged_release(cfg, expected_version):
+def verified_staged_release(cfg, expected_version, allowed_statuses=None):
     state = read_update_state(cfg)
-    if state.get("status") != "staged":
-        raise RuntimeError("agent update is not staged")
+    allowed_statuses = set(allowed_statuses or {"staged"})
+    if state.get("status") not in allowed_statuses:
+        raise RuntimeError("agent update is not in an allowed staged state")
     if str(state.get("staged_version") or "") != str(expected_version or ""):
         raise RuntimeError("staged agent version does not match approved version")
     if not version_newer(expected_version, AGENT_VERSION):
@@ -562,12 +580,58 @@ def verified_staged_release(cfg, expected_version):
     }
 
 
+def clear_update_quarantine(cfg, expected_version, reason, job_id):
+    expected_version = str(expected_version or "").strip()
+    reason = str(reason or "").strip()
+    if not UPDATE_VERSION_RE.fullmatch(expected_version):
+        raise RuntimeError("quarantine release version is invalid")
+    if len(reason) < 5:
+        raise RuntimeError("quarantine clear reason is required")
+
+    activation_state = read_activation_state(cfg)
+    if activation_state.get("status") != "rolled_back":
+        raise RuntimeError("agent activation is not quarantined after rollback")
+    if str(activation_state.get("target_version") or "") != expected_version:
+        raise RuntimeError("quarantined version does not match requested release")
+
+    release = verified_staged_release(
+        cfg,
+        expected_version,
+        allowed_statuses={"quarantined"},
+    )
+
+    cleared_at = utcnow()
+    write_activation_state(cfg, {
+        **activation_state,
+        "status": "quarantine_cleared",
+        "quarantine_cleared_at": cleared_at,
+        "quarantine_clear_reason": reason,
+        "quarantine_clear_job_id": str(job_id or ""),
+    })
+
+    write_update_state(cfg, {
+        **release["state"],
+        "status": "staged",
+        "staged_version": expected_version,
+        "staged_at": release["state"].get("staged_at") or cleared_at,
+        "quarantine_cleared_at": cleared_at,
+        "quarantine_clear_reason": reason,
+        "activation": "manual",
+    })
+
+    return {
+        "status": "quarantine_cleared",
+        "version": expected_version,
+        "cleared_at": cleared_at,
+    }
+
+
 def _safe_live_release(cfg):
     base = agent_base_dir(cfg).resolve()
     releases = (base / "releases").resolve()
     current = base / "current"
     if not current.is_symlink():
-        raise RuntimeError("managed release layout is not installed; run the v0.15 installer once")
+        raise RuntimeError("managed release layout is not installed; run the v0.15+ installer once")
 
     try:
         target = current.resolve(strict=True)
@@ -590,7 +654,7 @@ def _atomic_current_symlink(current, target_dir):
 
 def activate_staged_update(cfg, expected_version, job_id):
     if os.name == "nt":
-        raise RuntimeError("automatic agent activation is not supported on Windows in v0.15")
+        raise RuntimeError("automatic agent activation is not supported on Windows in v0.16")
 
     expected_version = str(expected_version or "").strip()
     if not UPDATE_VERSION_RE.fullmatch(expected_version):
@@ -1412,6 +1476,14 @@ def execute_job(cfg, job, cfg_path=None):
                 jid,
             )
             restart_after_success = True
+        elif action == "clear_agent_update_quarantine":
+            payload = job.get("payload") or {}
+            result = clear_update_quarantine(
+                cfg,
+                str(payload.get("expected_version") or ""),
+                str(payload.get("approved_reason") or ""),
+                jid,
+            )
         else:
             raise RuntimeError(f"Ação não permitida: {action}")
         send_job_result(cfg,jid,"success",claim_token,result=result,started_at=started,finished_at=utcnow())
