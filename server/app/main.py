@@ -3734,7 +3734,7 @@ def update_asset_risk_profile(
 
     profile = agent.risk_profile
     if not profile:
-        profile = AssetRiskProfile(agent_id=agent.id)
+        profile = AssetRiskProfile(agent=agent)
         db.add(profile)
 
     before = serialize_asset_risk_profile(profile)
