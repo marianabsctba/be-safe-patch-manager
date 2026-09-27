@@ -33,6 +33,7 @@ class Agent(Base):
     remediation_evidence = relationship("RemediationEvidence", back_populates="agent")
     risk_snapshots = relationship("AssetRiskSnapshot", back_populates="agent", cascade="all, delete-orphan")
     risk_profile = relationship("AssetRiskProfile", back_populates="agent", cascade="all, delete-orphan", uselist=False)
+    risk_acceptances = relationship("AssetRiskAcceptance", back_populates="agent", cascade="all, delete-orphan")
 
 
 class Campaign(Base):
@@ -171,6 +172,22 @@ class AssetRiskPolicy(Base):
     updated_by = Column(String(255), nullable=False, default="")
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AssetRiskAcceptance(Base):
+    __tablename__ = "asset_risk_acceptances"
+
+    id = Column(String(36), primary_key=True)
+    agent_id = Column(String(36), ForeignKey("agents.id"), nullable=False, index=True)
+    reason = Column(Text, nullable=False)
+    approved_by = Column(String(255), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by = Column(String(255), nullable=False, default="")
+    revoke_reason = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    agent = relationship("Agent", back_populates="risk_acceptances")
 
 
 class AssetRiskProfile(Base):
