@@ -23,10 +23,13 @@ from .security import create_session, hash_token, new_token, password_hash, pass
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
 from .greenbone import public_config as public_greenbone_config
+from .observability import metrics_response, prometheus_http_middleware, readiness_response
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.9.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.10.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+app.middleware("http")(prometheus_http_middleware)
 
 
 def _seconds_setting(name: str, default: int, minimum: int) -> int:
@@ -1119,7 +1122,17 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "time": now().isoformat()}
+    return {"status": "ok", "version": "0.10.0", "time": now().isoformat()}
+
+
+@app.get("/ready")
+def ready():
+    return readiness_response()
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    return metrics_response()
 
 
 @app.post("/api/agent/register", response_model=RegisterResponse)
