@@ -18,6 +18,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - relatório consolidado de SLA em `GET /api/admin/reports/vulnerability-sla`;
 - exceções temporárias de SLA com aprovação administrativa, motivo, expiração e revogação auditada;
 - priorização contextual de vulnerabilidades com score explicável de 0–100 usando CVSS, EPSS/KEV quando disponíveis, idade e criticidade/exposição por tags do ativo;
+- enriquecimento opcional automático de CVEs usando FIRST EPSS e o catálogo CISA KEV, com cache no finding e modo degradado quando apenas uma fonte responde;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
 - rescan Greenbone automático após patch validado;
@@ -869,6 +870,7 @@ Próximas evoluções planejadas:
 - ingestão de CVEs do Wazuh;
 - patching de aplicações de terceiros;
 - integração ITSM/SOAR;
+- enriquecimentos adicionais de threat intelligence quando houver fonte confiável e necessidade operacional;
 - relatórios consolidados exportáveis;
 - testes de integração reais em endpoints Windows/Linux;
 - ativação segura equivalente do agente no Windows;
