@@ -262,6 +262,96 @@ A console mostra:
 
 O appetite não altera o score. Ele funciona apenas como limite operacional.
 
+## 7.1. Risk Appetite Policies por tag
+
+Além do appetite global, o Be Safe permite políticas específicas por grupo de ativos.
+
+Cada `AssetRiskPolicy` possui:
+
+- nome;
+- tag alvo;
+- risk appetite `1–1000`;
+- prioridade;
+- status habilitada/desabilitada;
+- motivo;
+- criador e último editor;
+- timestamps.
+
+Exemplo:
+
+```text
+Tier 0
+tag: tier0
+appetite: 500
+priority: 500
+
+Production
+tag: prod
+appetite: 650
+priority: 100
+
+Lab
+tag: lab
+appetite: 850
+priority: 50
+```
+
+Se um ativo possuir múltiplas tags com políticas aplicáveis, vence a política habilitada com maior prioridade.
+
+```text
+maior priority > menor priority > appetite global
+```
+
+Empates de prioridade são resolvidos deterministicamente pelo nome da política.
+
+Se nenhuma política habilitada casar com as tags do ativo, vale:
+
+```dotenv
+ASSET_RISK_APPETITE=700
+```
+
+A política altera apenas o limite usado para classificar o ativo como `above_risk_appetite`. Ela não altera o score do Asset Risk.
+
+Isso é importante porque dois ativos podem ter o mesmo score e posturas operacionais diferentes.
+
+Exemplo:
+
+```text
+DC-01
+Asset Risk: 620
+policy: Tier 0
+appetite: 500
+resultado: acima do appetite
+
+LAB-01
+Asset Risk: 620
+policy: Lab
+appetite: 850
+resultado: dentro do appetite
+```
+
+### APIs
+
+```http
+GET  /api/admin/risk-policies
+POST /api/admin/risk-policies
+PUT  /api/admin/risk-policies/{policy_id}
+```
+
+Criação e alteração exigem `admin` e motivo.
+
+Eventos de auditoria:
+
+- `asset_risk.policy.created`
+- `asset_risk.policy.updated`
+
+A resposta do relatório de Asset Risk inclui para cada ativo:
+
+- `risk_policy.source`: `policy` ou `global`;
+- `risk_policy.policy`: política efetiva quando existir;
+- `risk.risk_appetite`;
+- `risk.above_risk_appetite`.
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
