@@ -36,6 +36,10 @@
 - políticas possuem prioridade, enable/disable, auditoria e fallback para `ASSET_RISK_APPETITE`;
 - relatório de Asset Risk passa a indicar policy efetiva, appetite por ativo e estado acima/abaixo do limite;
 - console permite criar e editar políticas de appetite por tag;
+- adicionada aceitação temporária de Asset Risk via `asset_risk_acceptances` e migration `0010_risk_accept`;
+- aceite não reduz score nem altera evidência; apenas muda o estado de governança para `accepted` enquanto válido;
+- aceitações exigem admin, motivo e validade de até 365 dias, com revogação e auditoria;
+- console separa ativos acima do appetite em aceitos e não aceitos;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
