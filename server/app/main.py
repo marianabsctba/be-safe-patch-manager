@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import ipaddress
 import hmac
@@ -27,6 +28,7 @@ from .greenbone import get_config as get_greenbone_config
 from .greenbone import public_config as public_greenbone_config
 from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
+from .agent_updates import AgentReleaseError, load_signed_release
 
 app = FastAPI(title="Be Safe Patch Manager", version="0.13.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -56,6 +58,11 @@ AGENT_MTLS_REQUIRED = _bool_setting("AGENT_MTLS_REQUIRED", False)
 AGENT_MIN_VERSION = os.getenv("AGENT_MIN_VERSION", "0.13.0").strip() or "0.13.0"
 AGENT_MIN_PROTOCOL = _seconds_setting("AGENT_MIN_PROTOCOL", 2, 1)
 AGENT_ENFORCE_COMPATIBILITY = _bool_setting("AGENT_ENFORCE_COMPATIBILITY", False)
+AGENT_UPDATE_ENABLED = _bool_setting("AGENT_UPDATE_ENABLED", False)
+AGENT_RELEASE_DIR = Path(os.getenv("AGENT_RELEASE_DIR", "/agent-releases"))
+AGENT_UPDATE_PUBLIC_KEY_FILE = Path(
+    os.getenv("AGENT_UPDATE_PUBLIC_KEY_FILE", "/update-trust/agent-update-public.pem")
+)
 TERMINAL_JOB_STATUSES = {"success", "failed", "skipped"}
 
 
@@ -1920,6 +1927,101 @@ def register_agent(
         },
     )
     return RegisterResponse(agent_id=agent_id, agent_token=raw_token)
+
+
+def signed_agent_release():
+    if not AGENT_UPDATE_ENABLED:
+        raise AgentReleaseError("agent update distribution is disabled")
+    return load_signed_release(
+        AGENT_RELEASE_DIR,
+        AGENT_UPDATE_PUBLIC_KEY_FILE,
+    )
+
+
+@app.get("/api/agent/{agent_id}/updates/latest")
+def agent_update_latest(
+    agent_id: str,
+    x_agent_token: str | None = Header(default=None),
+    x_client_cert_fingerprint: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    agent = get_agent(db, agent_id, x_agent_token, x_client_cert_fingerprint)
+    runtime = agent_runtime_metadata(agent)
+
+    if not AGENT_UPDATE_ENABLED:
+        return {
+            "enabled": False,
+            "available": False,
+            "status": "disabled",
+            "current_version": runtime.get("version", ""),
+        }
+
+    try:
+        release = signed_agent_release()
+    except AgentReleaseError as exc:
+        return {
+            "enabled": True,
+            "available": False,
+            "status": "unavailable",
+            "current_version": runtime.get("version", ""),
+            "error": str(exc)[:500],
+        }
+
+    manifest = release["manifest"]
+    current_version = runtime.get("version", "")
+    available = bool(
+        current_version
+        and manifest["version"] != current_version
+        and version_at_least(manifest["version"], current_version)
+    )
+
+    response = {
+        "enabled": True,
+        "available": available,
+        "status": "available" if available else "current",
+        "current_version": current_version,
+        "latest_version": manifest["version"],
+    }
+    if available:
+        response.update({
+            "manifest": manifest,
+            "signature": base64.b64encode(release["signature"]).decode("ascii"),
+            "artifact_url": (
+                f"/api/agent/{agent.id}/updates/artifact/"
+                f"{manifest['artifact']['filename']}"
+            ),
+        })
+    return response
+
+
+@app.get("/api/agent/{agent_id}/updates/artifact/{filename}")
+def agent_update_artifact(
+    agent_id: str,
+    filename: str,
+    x_agent_token: str | None = Header(default=None),
+    x_client_cert_fingerprint: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    get_agent(db, agent_id, x_agent_token, x_client_cert_fingerprint)
+
+    try:
+        release = signed_agent_release()
+    except AgentReleaseError:
+        raise HTTPException(status_code=404, detail="signed agent release unavailable")
+
+    expected = release["manifest"]["artifact"]["filename"]
+    if filename != expected:
+        raise HTTPException(status_code=404, detail="agent release artifact not found")
+
+    return FileResponse(
+        path=release["artifact_path"],
+        filename=expected,
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.post("/api/agent/{agent_id}/heartbeat")
