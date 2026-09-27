@@ -3,6 +3,7 @@ import math
 import json
 import os
 import re
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,13 +15,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from .database import Base, engine, get_db
-from .models import Agent, AuditEvent, Campaign, PatchJob, VulnerabilityFinding
+from .database import Base, SessionLocal, engine, get_db
+from .models import Agent, AuditEvent, Campaign, IntegrationState, PatchJob, VulnerabilityFinding
 from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, VulnerabilityImportRequest, VulnerabilityStatusUpdate
 from .security import hash_token, new_token, require_admin, require_enrollment
+from .greenbone import fetch_findings as fetch_greenbone_findings
+from .greenbone import get_config as get_greenbone_config
+from .greenbone import public_config as public_greenbone_config
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="Be Safe Patch Manager", version="0.5.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.6.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -160,6 +164,211 @@ def serialize_vulnerability(v: VulnerabilityFinding):
         "resolved_at": v.resolved_at.isoformat() if v.resolved_at else None,
     }
 
+
+
+GREENBONE_SYNC_LOCK = threading.Lock()
+GREENBONE_STOP = threading.Event()
+
+
+def integration_state(db: Session, name: str) -> IntegrationState:
+    state = db.get(IntegrationState, name)
+    if not state:
+        state = IntegrationState(name=name)
+        db.add(state)
+        db.commit()
+    return state
+
+
+def serialize_integration_state(state: IntegrationState, config: dict):
+    return {
+        "name": state.name,
+        "enabled": config.get("enabled", False),
+        "configured": config.get("configured", False),
+        "status": state.status,
+        "last_attempt_at": state.last_attempt_at.isoformat() if state.last_attempt_at else None,
+        "last_success_at": state.last_success_at.isoformat() if state.last_success_at else None,
+        "last_error": state.last_error,
+        "details": load(state.details_json, {}),
+        "config": config,
+    }
+
+
+def upsert_vulnerability_findings(db: Session, source: str, scan_id: str, findings):
+    imported = 0
+    created = 0
+    updated = 0
+    matched = 0
+    seen_ids = set()
+    timestamp = now()
+
+    for finding in findings:
+        value = finding if isinstance(finding, dict) else finding.model_dump()
+        cves = sorted({normalize_cve(cve) for cve in value.get("cves", []) if normalize_cve(cve)})
+        if not cves:
+            cves = [""]
+
+        agent = match_agent_for_vulnerability(db, value.get("host", ""), value.get("ip_address", ""))
+        if agent:
+            matched += len(cves)
+
+        for cve in cves:
+            external_id = str(value.get("external_id") or "")
+            item = db.query(VulnerabilityFinding).filter(
+                VulnerabilityFinding.source == source,
+                VulnerabilityFinding.external_id == external_id,
+                VulnerabilityFinding.cve == cve,
+            ).first()
+
+            if not item:
+                item = VulnerabilityFinding(
+                    id=str(uuid.uuid4()),
+                    source=source,
+                    external_id=external_id,
+                    cve=cve,
+                    first_seen=timestamp,
+                )
+                db.add(item)
+                created += 1
+            else:
+                updated += 1
+
+            raw = value.get("raw") or {}
+            item.scan_id = str(raw.get("greenbone_report_id") or scan_id or "")
+            item.agent_id = agent.id if agent else None
+            item.host = str(value.get("host") or "")
+            item.ip_address = str(value.get("ip_address") or "")
+            item.title = str(value.get("title") or "")
+            item.severity = severity_from_cvss(value.get("cvss", 0), value.get("severity", ""))
+            item.cvss = float(value.get("cvss") or 0)
+            item.port = str(value.get("port") or "")
+            item.solution = str(value.get("solution") or "")
+            item.patch_refs_json = dump(sorted(set(value.get("patch_refs") or [])))
+            item.raw_json = dump(raw)
+            item.last_seen = timestamp
+
+            if value.get("resolved"):
+                item.status = "remediated"
+                item.resolved_at = timestamp
+            elif item.status not in {"accepted_risk", "false_positive"}:
+                item.status = "open"
+                item.resolved_at = None
+
+            imported += 1
+            seen_ids.add(external_id)
+
+    db.commit()
+    return {
+        "normalized": imported,
+        "created": created,
+        "updated": updated,
+        "matched": matched,
+        "seen_ids": seen_ids,
+    }
+
+
+def reconcile_greenbone_absent(db: Session, reports, source: str = "openvas"):
+    marked = 0
+    for report in reports:
+        task_id = str(report.get("task_id") or "")
+        if not task_id:
+            continue
+        seen = set(report.get("external_ids") or [])
+        prefix = f"{task_id}:%"
+        candidates = db.query(VulnerabilityFinding).filter(
+            VulnerabilityFinding.source == source,
+            VulnerabilityFinding.status == "open",
+            VulnerabilityFinding.external_id.like(prefix),
+        ).all()
+        for item in candidates:
+            if item.external_id not in seen:
+                item.status = "not_detected"
+                item.resolved_at = None
+                marked += 1
+    if marked:
+        db.commit()
+    return marked
+
+
+def run_greenbone_sync():
+    if not GREENBONE_SYNC_LOCK.acquire(blocking=False):
+        raise RuntimeError("Greenbone sync is already running")
+
+    db = SessionLocal()
+    state = integration_state(db, "greenbone")
+    config_obj = get_greenbone_config()
+    config = public_greenbone_config(config_obj)
+    try:
+        state.enabled = config["enabled"]
+        state.status = "running"
+        state.last_attempt_at = now()
+        state.last_error = ""
+        db.commit()
+
+        data = fetch_greenbone_findings(config_obj)
+        report_ids = [item["report_id"] for item in data["reports"]]
+        scan_id = report_ids[0] if len(report_ids) == 1 else f"multi:{len(report_ids)}"
+        stats = upsert_vulnerability_findings(db, "openvas", scan_id, data["findings"])
+        not_detected = 0
+        if config_obj.reconcile_absent:
+            not_detected = reconcile_greenbone_absent(db, data["reports"])
+
+        details = {
+            "manager_version": data.get("manager_version", ""),
+            "reports": len(data["reports"]),
+            "findings": len(data["findings"]),
+            "created": stats["created"],
+            "updated": stats["updated"],
+            "matched": stats["matched"],
+            "not_detected": not_detected,
+        }
+        state.status = "ok"
+        state.last_success_at = now()
+        state.last_error = ""
+        state.details_json = dump(details)
+        db.commit()
+        audit(db, "integration:greenbone", "greenbone.sync.success", "integration", "greenbone", details)
+        return details
+    except Exception as exc:
+        state.status = "error"
+        state.last_error = str(exc)[:2000]
+        db.commit()
+        audit(
+            db,
+            "integration:greenbone",
+            "greenbone.sync.failed",
+            "integration",
+            "greenbone",
+            {"error": str(exc)[:1000]},
+        )
+        raise
+    finally:
+        db.close()
+        GREENBONE_SYNC_LOCK.release()
+
+
+def greenbone_worker():
+    config = get_greenbone_config()
+    if not config.enabled:
+        return
+    delay = 10
+    while not GREENBONE_STOP.wait(delay):
+        try:
+            run_greenbone_sync()
+        except Exception:
+            pass
+        delay = get_greenbone_config().interval_seconds
+
+
+@app.on_event("startup")
+def start_greenbone_worker():
+    if get_greenbone_config().enabled:
+        thread = threading.Thread(target=greenbone_worker, name="greenbone-sync", daemon=True)
+        thread.start()
+
+
+@app.on_event("shutdown")
+def stop_greenbone_worker():
+    GREENBONE_STOP.set()
 
 def parse_clock(value: str) -> int:
     try:
@@ -652,6 +861,26 @@ def update_tags(agent_id: str, body: TagUpdate, _=Depends(require_admin), db: Se
     return serialize_agent(agent)
 
 
+@app.get("/api/admin/integrations/greenbone")
+def greenbone_status(_=Depends(require_admin), db: Session = Depends(get_db)):
+    config = public_greenbone_config()
+    state = integration_state(db, "greenbone")
+    state.enabled = config["enabled"]
+    db.commit()
+    return serialize_integration_state(state, config)
+
+
+@app.post("/api/admin/integrations/greenbone/sync")
+def greenbone_sync_now(_=Depends(require_admin)):
+    config = public_greenbone_config()
+    if not config["configured"]:
+        raise HTTPException(status_code=409, detail="Greenbone integration is not fully configured")
+    try:
+        return {"ok": True, "result": run_greenbone_sync()}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/admin/vulnerabilities")
 def list_vulnerabilities(
     status: str | None = None,
@@ -683,58 +912,7 @@ def import_vulnerabilities(
     if not re.fullmatch(r"[a-z0-9._-]{1,64}", source):
         raise HTTPException(status_code=400, detail="invalid vulnerability source")
 
-    imported = 0
-    created = 0
-    updated = 0
-    matched = 0
-    timestamp = now()
-
-    for finding in body.findings:
-        cves = sorted({normalize_cve(cve) for cve in finding.cves if normalize_cve(cve)})
-        if not cves:
-            cves = [""]
-
-        agent = match_agent_for_vulnerability(db, finding.host, finding.ip_address)
-        if agent:
-            matched += len(cves)
-
-        for cve in cves:
-            item = db.query(VulnerabilityFinding).filter(
-                VulnerabilityFinding.source == source,
-                VulnerabilityFinding.external_id == finding.external_id,
-                VulnerabilityFinding.cve == cve,
-            ).first()
-
-            if not item:
-                item = VulnerabilityFinding(
-                    id=str(uuid.uuid4()),
-                    source=source,
-                    external_id=finding.external_id,
-                    cve=cve,
-                    first_seen=timestamp,
-                )
-                db.add(item)
-                created += 1
-            else:
-                updated += 1
-
-            item.scan_id = body.scan_id
-            item.agent_id = agent.id if agent else None
-            item.host = finding.host
-            item.ip_address = finding.ip_address
-            item.title = finding.title
-            item.severity = severity_from_cvss(finding.cvss, finding.severity)
-            item.cvss = float(finding.cvss or 0)
-            item.port = finding.port
-            item.solution = finding.solution
-            item.patch_refs_json = dump(sorted(set(finding.patch_refs)))
-            item.raw_json = dump(finding.raw)
-            item.last_seen = timestamp
-            item.status = "remediated" if finding.resolved else "open"
-            item.resolved_at = timestamp if finding.resolved else None
-            imported += 1
-
-    db.commit()
+    stats = upsert_vulnerability_findings(db, source, body.scan_id, body.findings)
     audit(
         db,
         "admin",
@@ -744,10 +922,10 @@ def import_vulnerabilities(
         {
             "scan_id": body.scan_id,
             "received": len(body.findings),
-            "normalized": imported,
-            "created": created,
-            "updated": updated,
-            "matched": matched,
+            "normalized": stats["normalized"],
+            "created": stats["created"],
+            "updated": stats["updated"],
+            "matched": stats["matched"],
         },
     )
     return {
@@ -755,10 +933,10 @@ def import_vulnerabilities(
         "source": source,
         "scan_id": body.scan_id,
         "received": len(body.findings),
-        "normalized": imported,
-        "created": created,
-        "updated": updated,
-        "matched": matched,
+        "normalized": stats["normalized"],
+        "created": stats["created"],
+        "updated": stats["updated"],
+        "matched": stats["matched"],
     }
 
 
@@ -769,7 +947,7 @@ def update_vulnerability_status(
     _=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    allowed = {"open", "remediated", "accepted_risk", "false_positive"}
+    allowed = {"open", "not_detected", "remediated", "accepted_risk", "false_positive"}
     status = body.status.strip().lower()
     if status not in allowed:
         raise HTTPException(status_code=400, detail="invalid vulnerability status")

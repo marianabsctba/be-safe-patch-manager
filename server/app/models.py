@@ -99,6 +99,19 @@ class VulnerabilityFinding(Base):
     agent = relationship("Agent", back_populates="vulnerabilities")
 
 
+class IntegrationState(Base):
+    __tablename__ = "integration_states"
+
+    name = Column(String(64), primary_key=True)
+    enabled = Column(Boolean, default=False, nullable=False)
+    status = Column(String(32), nullable=False, default="idle")
+    last_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    last_success_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=False, default="")
+    details_json = Column(Text, nullable=False, default="{}")
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
     id = Column(Integer, primary_key=True, autoincrement=True)
