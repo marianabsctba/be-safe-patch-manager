@@ -193,7 +193,10 @@
                 <p class="section-kicker">RISCO POR ATIVO</p>
                 <h2>Be Safe Asset Risk</h2>
               </div>
-              <span class="metric-pill">0–1000</span>
+              <div class="integration-actions">
+                <span class="metric-pill">0–1000</span>
+                <button id="assetRiskSnapshot" class="row-action" data-min-role="operator" hidden>Salvar snapshot</button>
+              </div>
             </div>
             <div id="assetRiskStats" class="integration-details"></div>
             <div class="vuln-note">
@@ -205,6 +208,7 @@
                   <tr>
                     <th>Ativo</th>
                     <th>Asset Risk</th>
+                    <th>Tendência</th>
                     <th>Criticidade</th>
                     <th>Exposição</th>
                     <th>Findings</th>
