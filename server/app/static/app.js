@@ -114,7 +114,7 @@ function isOnline(agent) {
 
 function jobClass(status) {
   if (status === 'success') return 'ok';
-  if (status === 'failed' || status === 'stalled') return 'fail';
+  if (status === 'failed' || status === 'stalled' || status === 'blocked') return 'fail';
   if (status === 'running' || status === 'claimed') return 'warn';
   return 'info';
 }
@@ -130,6 +130,7 @@ function statusLabel(status) {
     draft: 'Rascunho',
     deployed: 'Implantada',
     pending: 'Pendente',
+    blocked: 'Bloqueado',
     claimed: 'Recebida',
     running: 'Executando',
     stalled: 'Travado / revisão',
@@ -290,6 +291,8 @@ function renderSummary(summary) {
     { label: 'Críticos', value: summary.critical_updates || 0, hint: 'prioridade alta', cls: summary.critical_updates ? 'danger' : 'ok' },
     { label: 'Reboot pendente', value: summary.reboot_required || 0, hint: 'endpoints', cls: summary.reboot_required ? 'warn' : 'ok' },
     { label: 'Falhas', value: summary.failed_jobs || 0, hint: 'jobs acumulados', cls: summary.failed_jobs ? 'danger' : 'ok' },
+    { label: 'Agentes incompatíveis', value: Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0), hint: summary.compatibility_enforced ? 'enforcement ativo' : 'somente observação', cls: (Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0)) ? 'danger' : 'ok' },
+    { label: 'Jobs bloqueados', value: summary.blocked_jobs || 0, hint: 'aguardando upgrade do agente', cls: summary.blocked_jobs ? 'danger' : 'ok' },
   ];
 
   $('#summary').innerHTML = entries.map((item) => `
@@ -340,6 +343,7 @@ function filteredAgents() {
     if (filter === 'reboot' && !agent.reboot_required) return false;
     if (filter === 'online' && !isOnline(agent)) return false;
     if (filter === 'offline' && isOnline(agent)) return false;
+    if (filter === 'outdated' && (!agent.runtime || agent.runtime.status === 'supported')) return false;
 
     return true;
   });
@@ -351,7 +355,7 @@ function renderAgents() {
   if (!items.length) {
     $('#agents').innerHTML = `
       <tr>
-        <td colspan="9"><div class="empty-state">Nenhum endpoint encontrado.</div></td>
+        <td colspan="10"><div class="empty-state">Nenhum endpoint encontrado.</div></td>
       </tr>`;
     return;
   }
@@ -368,6 +372,13 @@ function renderAgents() {
         ${esc(agent.os_name || agent.os_family || '-')}
         <br />
         <small class="muted">${esc(agent.os_version || '')}</small>
+      </td>
+      <td>
+        <strong>${esc(agent.runtime && agent.runtime.version ? 'v' + agent.runtime.version : 'desconhecido')}</strong>
+        <br />
+        ${agent.runtime && agent.runtime.status === 'supported'
+          ? badge('compatível', 'ok')
+          : badge(agent.runtime && agent.runtime.status === 'outdated' ? 'desatualizado' : 'incompatível', 'fail')}
       </td>
       <td>${(agent.tags || []).map((tag) => badge(tag, 'info')).join('') || '-'}</td>
       <td>${when(agent.last_seen)}</td>
@@ -717,6 +728,9 @@ function renderAgentDrawer(agent = selectedAgent()) {
   $('#drawerBadges').innerHTML = [
     isOnline(agent) ? badge('online', 'ok') : badge('offline', 'muted-badge'),
     badge(risk.label, risk.cls),
+    agent.runtime && agent.runtime.status === 'supported'
+      ? badge('agente compatível', 'ok')
+      : badge('agente ' + esc(agent.runtime && agent.runtime.status ? agent.runtime.status : 'unknown'), 'fail'),
     agent.reboot_required ? badge('reboot pendente', 'warn') : '',
     agent.mtls && agent.mtls.bound
       ? badge('mTLS vinculado', 'ok')
@@ -736,6 +750,9 @@ function renderAgentDrawer(agent = selectedAgent()) {
     ['Memória', healthSnapshot.memory_percent == null ? '-' : Number(healthSnapshot.memory_percent).toFixed(1) + '%', 'neutral'],
     ['Disco livre', healthSnapshot.disk && healthSnapshot.disk.free_percent != null ? Number(healthSnapshot.disk.free_percent).toFixed(1) + '%' : '-', 'neutral'],
     ['Checks críticos', (healthServices.length + healthApps.length) ? (unhealthyChecks ? unhealthyChecks + ' falhando' : 'OK') : '-', unhealthyChecks ? 'danger' : 'ok'],
+    ['Versão agente', agent.runtime && agent.runtime.version ? agent.runtime.version : '-', agent.runtime && agent.runtime.status === 'supported' ? 'ok' : 'danger'],
+    ['Protocolo', agent.runtime && agent.runtime.protocol ? agent.runtime.protocol : '-', agent.runtime && agent.runtime.protocol_supported ? 'ok' : 'danger'],
+    ['Capabilities', agent.runtime && agent.runtime.capabilities ? agent.runtime.capabilities.length : 0, 'neutral'],
   ];
 
   $('#drawerMetrics').innerHTML = metrics.map((item) =>
@@ -753,6 +770,9 @@ function renderAgentDrawer(agent = selectedAgent()) {
     ['Família', agent.os_family || '-'],
     ['Arquitetura', agent.arch || '-'],
     ['mTLS', agent.mtls && agent.mtls.bound ? 'vinculado' : 'não vinculado'],
+    ['Agente', agent.runtime && agent.runtime.version ? 'v' + agent.runtime.version : 'desconhecido'],
+    ['Protocolo', agent.runtime && agent.runtime.protocol ? String(agent.runtime.protocol) : '-'],
+    ['Capabilities', agent.runtime && agent.runtime.capabilities ? agent.runtime.capabilities.join(', ') : '-'],
     ['Fingerprint', agent.mtls && agent.mtls.fingerprint ? agent.mtls.fingerprint : '-'],
     ['Criado em', when(agent.created_at)],
     ['Último contato', when(agent.last_seen)],
@@ -891,6 +911,7 @@ function healthReasonLabel(reason) {
   const labels = {
     'no jobs in current ring': 'sem jobs no ring',
     'current ring has stalled jobs': 'há job travado exigindo revisão',
+    'current ring has compatibility-blocked jobs': 'há job bloqueado por compatibilidade do agente',
     'current ring still has active jobs': 'jobs ainda em execução',
     'current ring has non-terminal jobs': 'jobs ainda não finalizados',
     'success rate below 90%': 'sucesso abaixo de 90%',
