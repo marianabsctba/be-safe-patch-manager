@@ -202,7 +202,8 @@ def test_manual_retry_invalidates_old_claim(db):
 
     retry = main.retry_stalled_job(
         job.id,
-        JobRetryRequest(reason="Revisado pelo operador", acknowledge_risk=True),
+        JobRetryRequest(reason="Revisado pelo administrador", acknowledge_risk=True),
+        principal={"actor": "user:test-admin", "role": "admin", "user_id": "test-admin"},
         db=db,
     )
     assert retry["ok"] is True
