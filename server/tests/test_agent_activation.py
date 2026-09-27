@@ -172,7 +172,7 @@ def test_launcher_rolls_back_after_repeated_unconfirmed_boots(tmp_path):
     target.joinpath("patch_agent.py").write_text("raise SystemExit(1)\n", encoding="utf-8")
     target.joinpath("requirements.txt").write_text("same\n", encoding="utf-8")
     (base / "current").unlink()
-    os.symlink("releases/0.16.0", base / "current")
+    os.symlink("releases/0.17.0", base / "current")
 
     state_path = tmp_path / "activation.json"
     launcher.write_state(state_path, {
