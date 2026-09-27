@@ -19,8 +19,8 @@ os.environ["THREAT_INTEL_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine
 from app import main
-from app.models import Agent, AssetRiskProfile, AuditEvent
-from app.schemas import AssetRiskProfileUpdate
+from app.models import Agent, AssetRiskPolicy, AssetRiskProfile, AuditEvent
+from app.schemas import AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate
 
 
 REFERENCE = datetime(2026, 9, 27, 20, 0, tzinfo=timezone.utc)
@@ -171,3 +171,112 @@ def test_invalid_compensating_control_is_rejected(db):
         )
 
     assert exc.value.status_code == 400
+
+
+
+def test_risk_policy_selects_highest_priority_matching_tag(db):
+    agent = make_agent(tags=["prod", "tier0"])
+    db.add_all([
+        agent,
+        AssetRiskPolicy(
+            id="policy-prod",
+            name="Production",
+            target_tag="prod",
+            risk_appetite=650,
+            priority=100,
+            enabled=True,
+            reason="Produção",
+            created_by="user:admin",
+            updated_by="user:admin",
+        ),
+        AssetRiskPolicy(
+            id="policy-tier0",
+            name="Tier 0",
+            target_tag="tier0",
+            risk_appetite=500,
+            priority=500,
+            enabled=True,
+            reason="Ativos Tier 0",
+            created_by="user:admin",
+            updated_by="user:admin",
+        ),
+    ])
+    db.commit()
+
+    effective = main.effective_asset_risk_policy(db, agent)
+
+    assert effective["source"] == "policy"
+    assert effective["policy"]["id"] == "policy-tier0"
+    assert effective["risk_appetite"] == 500
+
+
+def test_risk_policy_falls_back_to_global_appetite(db, monkeypatch):
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 700)
+    agent = make_agent(tags=["lab"])
+    db.add(agent)
+    db.commit()
+
+    effective = main.effective_asset_risk_policy(db, agent)
+
+    assert effective["source"] == "global"
+    assert effective["policy"] is None
+    assert effective["risk_appetite"] == 700
+
+
+def test_disabled_risk_policy_does_not_match(db, monkeypatch):
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 700)
+    agent = make_agent(tags=["prod"])
+    policy = AssetRiskPolicy(
+        id="policy-disabled",
+        name="Disabled",
+        target_tag="prod",
+        risk_appetite=400,
+        priority=999,
+        enabled=False,
+        reason="Desativada",
+        created_by="user:admin",
+        updated_by="user:admin",
+    )
+    db.add_all([agent, policy])
+    db.commit()
+
+    effective = main.effective_asset_risk_policy(db, agent)
+
+    assert effective["source"] == "global"
+    assert effective["risk_appetite"] == 700
+
+
+def test_create_and_update_risk_policy_are_audited(db):
+    created = main.create_asset_risk_policy(
+        AssetRiskPolicyCreate(
+            name="Tier 0",
+            target_tag="tier0",
+            risk_appetite=500,
+            priority=500,
+            enabled=True,
+            reason="Limite mais restritivo para identidade",
+        ),
+        principal={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+    policy_id = created["policy"]["id"]
+
+    updated = main.update_asset_risk_policy(
+        policy_id,
+        AssetRiskPolicyUpdate(
+            risk_appetite=450,
+            priority=600,
+            reason="Aperto após revisão de risco",
+        ),
+        principal={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+
+    assert updated["policy"]["risk_appetite"] == 450
+    events = db.query(AuditEvent).filter(
+        AuditEvent.object_type == "asset_risk_policy"
+    ).order_by(AuditEvent.id.asc()).all()
+    assert [event.event_type for event in events] == [
+        "asset_risk.policy.created",
+        "asset_risk.policy.updated",
+    ]
