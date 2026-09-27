@@ -20,8 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskProfile, AssetRiskSnapshot, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskProfileUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -721,6 +721,50 @@ ASSET_RISK_SEVERITY_WEIGHTS = {
 }
 
 
+def serialize_asset_risk_policy(policy: AssetRiskPolicy) -> dict:
+    return {
+        "id": policy.id,
+        "name": policy.name,
+        "target_tag": policy.target_tag,
+        "risk_appetite": policy.risk_appetite,
+        "priority": policy.priority,
+        "enabled": policy.enabled,
+        "reason": policy.reason,
+        "created_by": policy.created_by,
+        "updated_by": policy.updated_by,
+        "created_at": policy.created_at.isoformat() if policy.created_at else None,
+        "updated_at": policy.updated_at.isoformat() if policy.updated_at else None,
+    }
+
+
+def effective_asset_risk_policy(db: Session, agent: Agent) -> dict:
+    tags = {
+        str(tag).strip().lower()
+        for tag in load(agent.tags, [])
+        if str(tag).strip()
+    }
+    policies = db.query(AssetRiskPolicy).filter(
+        AssetRiskPolicy.enabled.is_(True)
+    ).order_by(
+        AssetRiskPolicy.priority.desc(),
+        AssetRiskPolicy.name.asc(),
+    ).all()
+
+    for policy in policies:
+        if str(policy.target_tag or "").strip().lower() in tags:
+            return {
+                "source": "policy",
+                "policy": serialize_asset_risk_policy(policy),
+                "risk_appetite": policy.risk_appetite,
+            }
+
+    return {
+        "source": "global",
+        "policy": None,
+        "risk_appetite": min(1000, ASSET_RISK_APPETITE),
+    }
+
+
 def serialize_asset_risk_profile(profile: AssetRiskProfile | None) -> dict | None:
     if not profile:
         return None
@@ -1078,6 +1122,9 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
     for agent in agents:
         findings = list(agent.vulnerabilities or [])
         risk = asset_risk_score(agent, findings, reference)
+        policy = effective_asset_risk_policy(db, agent)
+        risk["risk_appetite"] = policy["risk_appetite"]
+        risk["above_risk_appetite"] = risk["score"] >= policy["risk_appetite"]
         rows.append({
             "agent_id": agent.id,
             "hostname": agent.hostname,
@@ -1085,6 +1132,7 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
             "os_family": agent.os_family,
             "tags": load(agent.tags, []),
             "risk_profile": serialize_asset_risk_profile(agent.risk_profile),
+            "risk_policy": policy,
             "risk": risk,
         })
 
@@ -1138,9 +1186,10 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
         "low": sum(1 for row in rows if row["risk"]["level"] == "low"),
         "external": sum(1 for row in rows if row["risk"]["exposure"]["external"]),
         "risk_appetite": min(1000, ASSET_RISK_APPETITE),
+        "risk_policies": db.query(AssetRiskPolicy).filter(AssetRiskPolicy.enabled.is_(True)).count(),
         "above_risk_appetite": sum(
             1 for row in rows
-            if row["risk"]["score"] >= min(1000, ASSET_RISK_APPETITE)
+            if row["risk"]["above_risk_appetite"]
         ),
         "average_score": round(
             sum(row["risk"]["score"] for row in rows) / len(rows), 1
@@ -3682,6 +3731,103 @@ def remediation_queue(
 @app.get("/api/admin/reports/vulnerability-sla")
 def admin_vulnerability_sla_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return vulnerability_sla_report(db)
+
+
+@app.get("/api/admin/risk-policies")
+def list_asset_risk_policies(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return [
+        serialize_asset_risk_policy(policy)
+        for policy in db.query(AssetRiskPolicy).order_by(
+            AssetRiskPolicy.priority.desc(),
+            AssetRiskPolicy.name.asc(),
+        ).all()
+    ]
+
+
+@app.post("/api/admin/risk-policies")
+def create_asset_risk_policy(
+    body: AssetRiskPolicyCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    name = body.name.strip()
+    target_tag = body.target_tag.strip().lower()
+    if db.query(AssetRiskPolicy).filter(AssetRiskPolicy.name == name).first():
+        raise HTTPException(status_code=409, detail="risk policy name already exists")
+
+    policy = AssetRiskPolicy(
+        id=str(uuid.uuid4()),
+        name=name,
+        target_tag=target_tag,
+        risk_appetite=body.risk_appetite,
+        priority=body.priority,
+        enabled=body.enabled,
+        reason=body.reason.strip(),
+        created_by=principal["actor"],
+        updated_by=principal["actor"],
+    )
+    db.add(policy)
+    db.commit()
+    db.refresh(policy)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.policy.created",
+        "asset_risk_policy",
+        policy.id,
+        serialize_asset_risk_policy(policy),
+    )
+    return {"ok": True, "policy": serialize_asset_risk_policy(policy)}
+
+
+@app.put("/api/admin/risk-policies/{policy_id}")
+def update_asset_risk_policy(
+    policy_id: str,
+    body: AssetRiskPolicyUpdate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    policy = db.get(AssetRiskPolicy, policy_id)
+    if not policy:
+        raise HTTPException(status_code=404, detail="risk policy not found")
+
+    before = serialize_asset_risk_policy(policy)
+    if body.name is not None:
+        name = body.name.strip()
+        duplicate = db.query(AssetRiskPolicy).filter(
+            AssetRiskPolicy.name == name,
+            AssetRiskPolicy.id != policy.id,
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="risk policy name already exists")
+        policy.name = name
+    if body.target_tag is not None:
+        policy.target_tag = body.target_tag.strip().lower()
+    if body.risk_appetite is not None:
+        policy.risk_appetite = body.risk_appetite
+    if body.priority is not None:
+        policy.priority = body.priority
+    if body.enabled is not None:
+        policy.enabled = body.enabled
+    policy.reason = body.reason.strip()
+    policy.updated_by = principal["actor"]
+    policy.updated_at = now()
+    db.commit()
+    db.refresh(policy)
+
+    after = serialize_asset_risk_policy(policy)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.policy.updated",
+        "asset_risk_policy",
+        policy.id,
+        {"before": before, "after": after},
+    )
+    return {"ok": True, "policy": after}
 
 
 @app.get("/api/admin/agents/{agent_id}/risk-profile")
