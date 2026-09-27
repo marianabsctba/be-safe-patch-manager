@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.12.0
+
+- backend passa para versão 0.12.0;
+- adicionada migration `0005_remediation_evidence`;
+- criada entidade persistente de evidência de remediação;
+- evidência vincula finding, campanha, job, endpoint, task Greenbone e reports;
+- rescan só é solicitado após validação pós-patch `passed`;
+- integração usa `start_task()` na task do finding original;
+- report retornado pelo rescan fica persistido na evidência;
+- reconciliação exige task correta, report exato e task `Done`;
+- prova usa `external_id + CVE`;
+- ausência comprovada gera `verified` e pode marcar finding como `remediated`;
+- presença confirmada gera `still_detected`;
+- `accepted_risk` e `false_positive` não são sobrescritos;
+- novo rescan manual exige operator e motivo;
+- dashboard exibe estado da evidência e retry quando aplicável;
+- Prometheus/Grafana recebem métricas do ciclo de evidência;
+- adicionados testes do ciclo de remediação.
+
+
 ## 0.11.0
 
 - backend passa para versão 0.11.0;

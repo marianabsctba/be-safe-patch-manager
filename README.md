@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.11. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.12. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -15,6 +15,13 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - correlação de finding por hostname/IP com endpoint gerenciado;
 - CVE, severidade, CVSS, solução e referências de patch por finding;
 - criação de campanha a partir de finding correlacionado;
+- evidência de remediação vinculando finding, campanha, job e endpoint;
+- rescan Greenbone automático após patch validado;
+- reconciliação pelo report exato retornado pelo `start_task()`;
+- prova por combinação `external_id + CVE`;
+- estado `verified` somente após report pós-patch concluído sem a CVE;
+- estado `still_detected` quando o rescan confirma persistência da vulnerabilidade;
+- novo rescan manual auditado para erro ou finding ainda detectado;
 - Windows Update Agent via COM no Windows;
 - `apt`, `dnf` e `yum` no Linux;
 - campanhas por SO, tag, pacote/KB e percentual;
@@ -89,6 +96,8 @@ A v0.6 possui ingestão normalizada, correlação com endpoints e sync opcional 
 A v0.8 adiciona autenticação humana e RBAC no próprio Patch Manager. Leituras administrativas exigem pelo menos `viewer`; operação de campanhas, tags, vulnerabilidades e sync exige `operator`; gestão de usuários, retry de jobs `stalled` e rollback exigem `admin`.
 
 A v0.11 adiciona baseline de saúde coletado pelo agente imediatamente antes da instalação e comparação pós-patch antes da promoção do ring. A política pode considerar CPU, memória, espaço livre em disco, serviços críticos e health endpoints locais da aplicação.
+
+A v0.12 fecha o ciclo de remediação para findings Greenbone vinculados a campanhas de patch. Depois que o job termina e a validação pós-patch passa, o worker solicita um novo scan da task original via GMP, acompanha o report retornado por esse `start_task()` e registra evidência de presença ou ausência da mesma combinação `external_id + CVE`.
 
 ## Fluxo seguro de implantação
 
@@ -180,7 +189,7 @@ O servidor tenta correlacionar o finding com um agente por IP ou hostname. Findi
 
 A interface permite preparar uma campanha diretamente a partir de um finding correlacionado. A campanha fica vinculada ao `agent_id` no payload, sem criar tags temporárias.
 
-**Importante:** instalar um patch não altera automaticamente o finding para remediado. A confirmação deve vir de rescan ou de atualização explícita do status.
+**Importante:** instalar um patch continua não sendo prova de remediação. Quando a campanha é criada a partir de um finding Greenbone e executa `install_updates`, a v0.12 cria uma evidência vinculada ao job. O finding só é marcado automaticamente como `remediated` quando o rescan pós-patch termina e a mesma combinação `external_id + CVE` não aparece no report exato retornado pelo Greenbone.
 
 ### Sync automático via GMP
 
@@ -215,6 +224,26 @@ Estado da integração:
 
 Por segurança, `GREENBONE_RECONCILE_ABSENT=false` é o padrão. Quando habilitado, um finding que desaparece do último relatório da mesma task vira `not_detected`, nunca `remediated` automaticamente.
 
+### Ciclo de remediação com evidência
+
+Para uma campanha criada a partir de finding OpenVAS/Greenbone:
+
+1. o finding guarda a task Greenbone e o report em que foi detectado;
+2. o job de `install_updates` cria uma evidência em `waiting_validation`;
+3. patch, heartbeat e health gate precisam terminar com validação `passed`;
+4. o worker chama `start_task(task_id)`;
+5. o `report_id` retornado pelo Greenbone fica persistido;
+6. a reconciliação só acontece quando essa task está `Done` e esse mesmo report está disponível;
+7. a prova compara `external_id + CVE`.
+
+Estados principais: `waiting_validation`, `rescan_requested`, `verified`, `still_detected`, `error` e `unsupported`.
+
+`verified` pode atualizar findings `open` ou `not_detected` para `remediated`. Estados humanos como `accepted_risk` e `false_positive` não são sobrescritos automaticamente.
+
+Novo rescan manual só é permitido para `error` ou `still_detected`, exige perfil `operator` e motivo, e fica auditado.
+
+A automação reutiliza a task registrada no finding original. Ela não cria targets, scanners ou tasks arbitrárias no Greenbone.
+
 ## Rollback
 
 Rollback não é tratado como uma operação genérica ou automática.
@@ -233,7 +262,7 @@ O job de rollback usa somente o restore point registrado e agenda o reboot neces
 
 ### Linux
 
-O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.11, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
+O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.12, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
 
 A campanha pode usar dois modos:
 
@@ -269,7 +298,7 @@ Depois do primeiro login confirmado, os valores `BOOTSTRAP_ADMIN_USERNAME` e `BO
 
 O Compose sobe PostgreSQL, aguarda o healthcheck do banco e executa `alembic upgrade head` antes de iniciar a API.
 
-> A v0.11 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
+> A v0.12 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
 
 Para laboratório local:
 
@@ -596,8 +625,6 @@ be-safe-patch-manager/
 
 Próximas evoluções planejadas:
 
-- disparo controlado de rescan após patching;
-- reconciliação completa CVE → endpoint → patch → rescan → evidência;
 - ingestão de CVEs do Wazuh;
 - patching de aplicações de terceiros;
 - integração ITSM/SOAR;
