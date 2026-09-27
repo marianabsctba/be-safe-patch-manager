@@ -20,6 +20,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - priorização contextual de vulnerabilidades com score explicável de 0–100 usando CVSS, EPSS/KEV quando disponíveis, idade e criticidade/exposição por tags do ativo;
 - enriquecimento opcional automático de CVEs usando FIRST EPSS e o catálogo CISA KEV, com cache no finding e modo degradado quando apenas uma fonte responde;
 - fila de remediação explicável que combina risco e SLA para recomendar patch imediato, agendamento, planejamento, triagem ou correlação de ativo, sem deploy automático;
+- risco agregado por ativo em escala 0–1000, com criticidade 1–5, exposição externa, fatores compensatórios e risk appetite configurável;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
 - rescan Greenbone automático após patch validado;
