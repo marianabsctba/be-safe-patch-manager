@@ -8,6 +8,7 @@
 - estados não abertos permanecem visíveis como `excluded` e não inflam breach counters;
 - novo endpoint `GET /api/admin/reports/vulnerability-sla` consolida política, totais, severidade e findings priorizados;
 - summary administrativo passa a expor vulnerabilidades em breach e próximas do vencimento;
+- dashboard mostra cards de SLA e estado por finding na tabela de vulnerabilidades;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
 
