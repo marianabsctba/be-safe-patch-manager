@@ -141,3 +141,22 @@ groups:
         annotations:
           summary: Falha no staging de update do agente
           description: Um ou mais agentes não conseguiram verificar ou preparar a release assinada.
+
+
+      - alert: PatchManagerAgentActivationRollback
+        expr: patch_manager_agent_activation_state{status="rolled_back"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Update do agente sofreu rollback automático
+          description: O watchdog reverteu pelo menos um endpoint para a versão anterior do agente.
+
+      - alert: PatchManagerAgentActivationPendingTooLong
+        expr: sum(patch_manager_agent_activation_state{status=~"pending|switching"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ativação do agente não foi confirmada
+          description: Há endpoint aguardando confirmação de heartbeat após troca da release do agente.

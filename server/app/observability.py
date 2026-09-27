@@ -14,7 +14,7 @@ from .database import SessionLocal
 from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
 
 
-APP_VERSION = "0.14.0"
+APP_VERSION = "0.15.0"
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -212,6 +212,7 @@ class PatchManagerCollector:
                 "unknown": 0,
             }
             update_counts = {}
+            activation_counts = {}
 
             for agent in agents:
                 family = (agent.os_family or "unknown").lower()
@@ -234,6 +235,9 @@ class PatchManagerCollector:
                 update_state = inventory.get("update") if isinstance(inventory.get("update"), dict) else {}
                 update_status = str(update_state.get("status") or "unknown")
                 update_counts[update_status] = update_counts.get(update_status, 0) + 1
+                activation_state = inventory.get("activation") if isinstance(inventory.get("activation"), dict) else {}
+                activation_status = str(activation_state.get("status") or "idle")
+                activation_counts[activation_status] = activation_counts.get(activation_status, 0) + 1
                 health = inventory.get("health") if isinstance(inventory.get("health"), dict) else {}
                 if health:
                     health_reporting += 1
@@ -295,6 +299,15 @@ class PatchManagerCollector:
                 1 if os.getenv("AGENT_UPDATE_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"} else 0,
             )
             yield update_distribution
+
+            activation_state_metric = GaugeMetricFamily(
+                "patch_manager_agent_activation_state",
+                "Managed agents by self-update activation state.",
+                labels=["status"],
+            )
+            for status, count in sorted(activation_counts.items()):
+                activation_state_metric.add_metric([status], count)
+            yield activation_state_metric
 
             for name, description, value in [
                 ("patch_manager_agents_online", "Agents seen inside the online threshold.", online),
