@@ -24,6 +24,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - histórico persistente de Asset Risk com snapshots automáticos após syncs relevantes, delta de tendência e histórico consultável por endpoint;
 - perfil de risco explícito por ativo, com override governado de criticidade, exposição e controles compensatórios; tags permanecem como fallback automático;
 - risk appetite policies por tag/grupo, com prioridade, fallback global e auditoria; cada ativo pode ter um limite operacional diferente sem alterar seu score;
+- aceitação temporária de risco por ativo, com motivo, aprovador, validade, revogação e auditoria; o score permanece intacto;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
 - rescan Greenbone automático após patch validado;
