@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
 from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -1275,6 +1275,77 @@ def rollback_state(job: PatchJob):
 
 def job_post_patch_validation(job: PatchJob):
     payload = load(job.payload_json, {})
+
+    if job.action == "activate_agent_update":
+        if job.status != "success":
+            return {"status": "waiting", "reason": "agent activation job has not succeeded"}
+
+        agent = job.agent
+        if not agent:
+            return {"status": "failed", "reason": "agent unavailable"}
+
+        expected_version = str(payload.get("expected_version") or "")
+        inventory = load(agent.inventory_json, {})
+        activation = inventory.get("activation") if isinstance(inventory.get("activation"), dict) else {}
+        update_state = inventory.get("update") if isinstance(inventory.get("update"), dict) else {}
+        activation_status = str(activation.get("status") or "")
+
+        if (
+            update_state.get("status") == "quarantined"
+            and str(update_state.get("quarantined_version") or update_state.get("staged_version") or "") == expected_version
+        ):
+            return {
+                "status": "failed",
+                "reason": "agent release entered quarantine after watchdog rollback",
+                "activation": activation,
+            }
+
+        if activation_status == "rolled_back" and str(activation.get("target_version") or "") == expected_version:
+            return {
+                "status": "failed",
+                "reason": "agent update was rolled back by watchdog",
+                "activation": activation,
+            }
+
+        if activation_status in {"aborted_before_switch", "error"} and str(activation.get("target_version") or "") == expected_version:
+            return {
+                "status": "failed",
+                "reason": "agent update activation failed",
+                "activation": activation,
+            }
+
+        runtime = agent_runtime_metadata(agent)
+        committed = (
+            activation_status == "committed"
+            and str(activation.get("confirmed_version") or "") == expected_version
+            and str(runtime.get("version") or "") == expected_version
+        )
+        if committed:
+            if job.finished_at and agent.last_seen:
+                finished = job.finished_at
+                last_seen = agent.last_seen
+                if finished.tzinfo is None:
+                    finished = finished.replace(tzinfo=timezone.utc)
+                if last_seen.tzinfo is None:
+                    last_seen = last_seen.replace(tzinfo=timezone.utc)
+                if last_seen <= finished:
+                    return {
+                        "status": "waiting",
+                        "reason": "waiting for fresh heartbeat from activated agent",
+                        "activation": activation,
+                    }
+            return {
+                "status": "passed",
+                "reason": "agent update committed and confirmed by heartbeat",
+                "activation": activation,
+            }
+
+        return {
+            "status": "waiting",
+            "reason": "waiting for agent activation heartbeat confirmation",
+            "activation": activation,
+        }
+
     if job.action != "install_updates" or not payload.get("post_patch_validation", True):
         return {"status": "disabled", "reason": "post-patch validation disabled"}
 
@@ -1378,7 +1449,7 @@ def ring_bucket(agent_id: str) -> int:
 def campaign_ring_jobs(c: Campaign):
     marked = [
         job for job in c.jobs
-        if job.action in {"scan_updates", "install_updates"}
+        if job.action in {"scan_updates", "install_updates", "activate_agent_update"}
         and int(load(job.payload_json, {}).get("_ring_percent", -1)) == int(c.ring_percent)
     ]
     return marked if marked else list(c.jobs)
@@ -2829,6 +2900,145 @@ def list_campaigns(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return [serialize_campaign(c) for c in campaigns]
 
 
+def agent_update_rollout_eligibility(
+    db: Session,
+    agent: Agent,
+    expected_version: str,
+    target_tag: str = "",
+) -> tuple[bool, str]:
+    if str(agent.os_family or "").lower() != "linux":
+        return False, "not_linux"
+
+    tags = load(agent.tags, [])
+    if target_tag and target_tag not in tags:
+        return False, "tag_mismatch"
+
+    runtime = agent_runtime_metadata(agent)
+    if "signed_update_activation_v1" not in set(runtime.get("capabilities") or []):
+        return False, "activation_capability_missing"
+
+    current_version = str(runtime.get("version") or "")
+    if not current_version or not version_at_least(expected_version, current_version) or expected_version == current_version:
+        return False, "version_not_upgrade"
+
+    inventory = load(agent.inventory_json, {})
+    update_state = inventory.get("update") if isinstance(inventory.get("update"), dict) else {}
+    activation_state = inventory.get("activation") if isinstance(inventory.get("activation"), dict) else {}
+
+    if update_state.get("status") != "staged":
+        return False, "not_staged"
+    if str(update_state.get("staged_version") or "") != expected_version:
+        return False, "staged_version_mismatch"
+    if activation_state.get("status") in {"switching", "pending", "rolled_back"}:
+        return False, "activation_not_eligible"
+
+    busy = db.query(PatchJob).filter(
+        PatchJob.agent_id == agent.id,
+        PatchJob.status.in_(["claimed", "running", "stalled"]),
+    ).first()
+    if busy:
+        return False, "active_execution"
+
+    return True, "eligible"
+
+
+@app.post("/api/admin/agent-update-rollouts")
+def create_agent_update_rollout(
+    body: AgentUpdateRolloutCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if not body.acknowledge_risk:
+        raise HTTPException(
+            status_code=400,
+            detail="explicit agent update rollout risk acknowledgement is required",
+        )
+    if body.ring_percent not in {10, 30, 100}:
+        raise HTTPException(status_code=400, detail="agent update ring must be 10, 30 or 100")
+
+    eligible = []
+    skipped = {}
+    for agent in db.query(Agent).order_by(Agent.id.asc()).all():
+        ok, reason = agent_update_rollout_eligibility(
+            db,
+            agent,
+            body.expected_version,
+            body.target_tag.strip(),
+        )
+        if ok:
+            eligible.append(agent)
+        else:
+            skipped[reason] = skipped.get(reason, 0) + 1
+
+    if not eligible:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "no eligible staged Linux agents matched rollout", "skipped": skipped},
+        )
+
+    snapshot_ids = sorted(agent.id for agent in eligible)
+    payload = {
+        "rollout_type": "agent_update",
+        "expected_version": body.expected_version,
+        "approved_reason": body.reason,
+        "approved_by": principal["actor"],
+        "target_agent_ids": snapshot_ids,
+        "post_patch_validation": True,
+        "health_gate_override_allowed": False,
+        "prepare_rollback": False,
+        "rollback_required": False,
+        "reboot_policy": "never",
+        "maintenance_start": "",
+        "maintenance_end": "",
+        "maintenance_timezone": "UTC",
+        "maintenance_days": list(range(7)),
+    }
+
+    campaign = Campaign(
+        id=str(uuid.uuid4()),
+        name=body.name,
+        description=body.description or body.reason,
+        target_os="linux",
+        target_tag=body.target_tag.strip(),
+        ring_percent=body.ring_percent,
+        action="activate_agent_update",
+        payload_json=dump(payload),
+        allow_reboot=False,
+        status="deployed",
+    )
+    db.add(campaign)
+    db.flush()
+
+    selected = agents_for_ring(db, campaign, body.ring_percent)
+    jobs = add_ring_jobs(db, campaign, selected, body.ring_percent)
+    db.commit()
+
+    audit(
+        db,
+        principal["actor"],
+        "agent.update.rollout.created",
+        "campaign",
+        campaign.id,
+        {
+            "expected_version": body.expected_version,
+            "ring_percent": body.ring_percent,
+            "eligible_agents": len(snapshot_ids),
+            "initial_agents": len(jobs),
+            "target_tag": body.target_tag.strip(),
+            "skipped": skipped,
+            "reason": body.reason,
+        },
+    )
+
+    return {
+        "ok": True,
+        "eligible_agents": len(snapshot_ids),
+        "initial_agents": len(jobs),
+        "skipped": skipped,
+        "campaign": serialize_campaign(campaign),
+    }
+
+
 @app.post("/api/admin/campaigns")
 def create_campaign(body: CampaignCreate, principal=Depends(require_operator), db: Session = Depends(get_db)):
     if body.action not in {"scan_updates", "install_updates"}:
@@ -2919,8 +3129,16 @@ def campaign_candidates(db: Session, campaign: Campaign):
     candidates = []
     payload = load(campaign.payload_json, {})
     target_agent_id = str(payload.get("target_agent_id") or "")
+    snapshot_ids = payload.get("target_agent_ids")
+    snapshot_set = (
+        {str(item) for item in snapshot_ids if str(item)}
+        if isinstance(snapshot_ids, list) and snapshot_ids
+        else set()
+    )
     for agent in db.query(Agent).all():
         if target_agent_id and agent.id != target_agent_id:
+            continue
+        if snapshot_set and agent.id not in snapshot_set:
             continue
         if campaign.target_os != "all" and agent.os_family != campaign.target_os:
             continue
@@ -3011,7 +3229,14 @@ def advance_campaign(
         raise HTTPException(status_code=400, detail="target ring must be greater than current ring")
 
     health = campaign_health(campaign)
-    if not health["ready"] and not body.override_health_gate:
+    if campaign.action == "activate_agent_update" and body.override_health_gate:
+        raise HTTPException(
+            status_code=400,
+            detail="health gate override is disabled for agent update rollouts",
+        )
+    if not health["ready"] and (
+        campaign.action == "activate_agent_update" or not body.override_health_gate
+    ):
         raise HTTPException(
             status_code=409,
             detail={"message": "health gate blocked ring advance", "health": health},
@@ -3020,6 +3245,32 @@ def advance_campaign(
     target_agents = agents_for_ring(db, campaign, body.target_percent)
     existing_agent_ids = {job.agent_id for job in campaign.jobs}
     new_agents = [agent for agent in target_agents if agent.id not in existing_agent_ids]
+
+    if campaign.action == "activate_agent_update":
+        payload = load(campaign.payload_json, {})
+        expected_version = str(payload.get("expected_version") or "")
+        unavailable = []
+        for agent in new_agents:
+            ok, reason = agent_update_rollout_eligibility(
+                db,
+                agent,
+                expected_version,
+                campaign.target_tag,
+            )
+            if not ok:
+                unavailable.append({
+                    "agent_id": agent.id,
+                    "hostname": agent.hostname,
+                    "reason": reason,
+                })
+        if unavailable:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "one or more agents are no longer eligible for rollout advance",
+                    "unavailable": unavailable[:20],
+                },
+            )
 
     previous_ring = campaign.ring_percent
     add_ring_jobs(db, campaign, new_agents, body.target_percent)

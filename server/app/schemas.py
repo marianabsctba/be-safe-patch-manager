@@ -143,6 +143,20 @@ class RollbackRequest(BaseModel):
     acknowledge_risk: bool = False
 
 
+class AgentUpdateRolloutCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
+    description: str = Field(default="", max_length=1000)
+    target_tag: str = Field(default="", max_length=128)
+    ring_percent: int = Field(default=10, ge=1, le=100)
+    expected_version: str = Field(
+        min_length=5,
+        max_length=64,
+        pattern=r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$",
+    )
+    reason: str = Field(min_length=5, max_length=500)
+    acknowledge_risk: bool = False
+
+
 class AgentUpdateActivationRequest(BaseModel):
     expected_version: str = Field(
         min_length=5,
