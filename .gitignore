@@ -54,3 +54,7 @@ dist/
 # Runtime observability state
 /runtime/*
 !/runtime/.gitkeep
+
+# Signed agent release artifacts are built locally/CI, never committed
+/releases/*
+!/releases/.gitkeep
