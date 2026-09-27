@@ -19,6 +19,7 @@ class Agent(Base):
     ip_address = Column(String(128), nullable=False, default="")
     tags = Column(Text, nullable=False, default="[]")
     token_hash = Column(String(64), nullable=False, unique=True)
+    client_cert_fingerprint = Column(String(64), nullable=True, unique=True, index=True)
     last_seen = Column(DateTime(timezone=True), nullable=True)
     reboot_required = Column(Boolean, default=False, nullable=False)
     pending_updates = Column(Integer, default=0, nullable=False)

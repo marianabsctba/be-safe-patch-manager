@@ -24,7 +24,7 @@ from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
 from .greenbone import public_config as public_greenbone_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.8.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.9.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -37,8 +37,16 @@ def _seconds_setting(name: str, default: int, minimum: int) -> int:
     return max(minimum, value)
 
 
+def _bool_setting(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 JOB_CLAIM_LEASE_SECONDS = _seconds_setting("JOB_CLAIM_LEASE_SECONDS", 300, 60)
 JOB_RUNNING_LEASE_SECONDS = _seconds_setting("JOB_RUNNING_LEASE_SECONDS", 7200, 300)
+AGENT_MTLS_REQUIRED = _bool_setting("AGENT_MTLS_REQUIRED", False)
 TERMINAL_JOB_STATUSES = {"success", "failed", "skipped"}
 
 
@@ -125,12 +133,47 @@ def bootstrap_authentication():
     ensure_bootstrap_admin()
 
 
-def get_agent(db: Session, agent_id: str, token: str | None) -> Agent:
+def normalize_client_cert_fingerprint(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = re.sub(r"[^0-9a-fA-F]", "", value).lower()
+    if not normalized:
+        return ""
+    if len(normalized) != 40 or not re.fullmatch(r"[0-9a-f]{40}", normalized):
+        raise HTTPException(status_code=400, detail="invalid client certificate fingerprint")
+    return normalized
+
+
+def require_agent_mtls_fingerprint(value) -> str:
+    fingerprint = normalize_client_cert_fingerprint(value)
+    if AGENT_MTLS_REQUIRED and not fingerprint:
+        raise HTTPException(status_code=401, detail="mTLS client certificate is required")
+    return fingerprint
+
+
+def get_agent(
+    db: Session,
+    agent_id: str,
+    token: str | None,
+    client_cert_fingerprint=None,
+) -> Agent:
     if not token:
         raise HTTPException(status_code=401, detail="missing agent token")
     agent = db.get(Agent, agent_id)
-    if not agent or agent.token_hash != hash_token(token):
+    if not agent or not hmac.compare_digest(agent.token_hash, hash_token(token)):
         raise HTTPException(status_code=401, detail="invalid agent credentials")
+
+    presented = require_agent_mtls_fingerprint(client_cert_fingerprint)
+    bound = str(agent.client_cert_fingerprint or "").lower()
+
+    if AGENT_MTLS_REQUIRED:
+        if not bound:
+            raise HTTPException(status_code=401, detail="agent is not bound to an mTLS certificate")
+        if not hmac.compare_digest(bound, presented):
+            raise HTTPException(status_code=401, detail="mTLS certificate does not match this agent")
+    elif bound and presented and not hmac.compare_digest(bound, presented):
+        raise HTTPException(status_code=401, detail="mTLS certificate does not match this agent")
+
     return agent
 
 
@@ -144,6 +187,11 @@ def serialize_agent(a: Agent):
         "arch": a.arch,
         "ip_address": a.ip_address,
         "tags": load(a.tags, []),
+        "mtls": {
+            "required": AGENT_MTLS_REQUIRED,
+            "bound": bool(a.client_cert_fingerprint),
+            "fingerprint": a.client_cert_fingerprint or "",
+        },
         "last_seen": a.last_seen.isoformat() if a.last_seen else None,
         "reboot_required": a.reboot_required,
         "pending_updates": a.pending_updates,
@@ -1075,7 +1123,19 @@ def health():
 
 
 @app.post("/api/agent/register", response_model=RegisterResponse)
-def register_agent(body: RegisterRequest, _=Depends(require_enrollment), db: Session = Depends(get_db)):
+def register_agent(
+    body: RegisterRequest,
+    _=Depends(require_enrollment),
+    x_client_cert_fingerprint: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    fingerprint = require_agent_mtls_fingerprint(x_client_cert_fingerprint)
+
+    if fingerprint:
+        existing = db.query(Agent).filter(Agent.client_cert_fingerprint == fingerprint).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="client certificate is already bound to an agent")
+
     agent_id = str(uuid.uuid4())
     raw_token = new_token()
     agent = Agent(
@@ -1088,17 +1148,35 @@ def register_agent(body: RegisterRequest, _=Depends(require_enrollment), db: Ses
         ip_address=body.ip_address,
         tags=dump(body.tags),
         token_hash=hash_token(raw_token),
+        client_cert_fingerprint=fingerprint or None,
         last_seen=now(),
     )
     db.add(agent)
     db.commit()
-    audit(db, f"agent:{agent_id}", "agent.registered", "agent", agent_id, {"hostname": body.hostname})
+    audit(
+        db,
+        f"agent:{agent_id}",
+        "agent.registered",
+        "agent",
+        agent_id,
+        {
+            "hostname": body.hostname,
+            "mtls_bound": bool(fingerprint),
+            "client_cert_fingerprint": fingerprint,
+        },
+    )
     return RegisterResponse(agent_id=agent_id, agent_token=raw_token)
 
 
 @app.post("/api/agent/{agent_id}/heartbeat")
-def heartbeat(agent_id: str, body: HeartbeatRequest, x_agent_token: str | None = Header(default=None), db: Session = Depends(get_db)):
-    agent = get_agent(db, agent_id, x_agent_token)
+def heartbeat(
+    agent_id: str,
+    body: HeartbeatRequest,
+    x_agent_token: str | None = Header(default=None),
+    x_client_cert_fingerprint: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    agent = get_agent(db, agent_id, x_agent_token, x_client_cert_fingerprint)
     agent.last_seen = now()
     agent.inventory_json = dump(body.inventory)
     agent.patch_scan_json = dump(body.patch_scan)
@@ -1110,8 +1188,13 @@ def heartbeat(agent_id: str, body: HeartbeatRequest, x_agent_token: str | None =
 
 
 @app.get("/api/agent/{agent_id}/jobs")
-def poll_jobs(agent_id: str, x_agent_token: str | None = Header(default=None), db: Session = Depends(get_db)):
-    agent = get_agent(db, agent_id, x_agent_token)
+def poll_jobs(
+    agent_id: str,
+    x_agent_token: str | None = Header(default=None),
+    x_client_cert_fingerprint: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    agent = get_agent(db, agent_id, x_agent_token, x_client_cert_fingerprint)
     sweep_expired_job_leases(db, agent.id)
     t = now()
 
@@ -1174,9 +1257,10 @@ def renew_job_lease(
     job_id: str,
     body: LeaseRenewRequest,
     x_agent_token: str | None = Header(default=None),
+    x_client_cert_fingerprint: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    agent = get_agent(db, agent_id, x_agent_token)
+    agent = get_agent(db, agent_id, x_agent_token, x_client_cert_fingerprint)
     job = db.get(PatchJob, job_id)
     if not job or job.agent_id != agent.id:
         raise HTTPException(status_code=404, detail="job not found")
@@ -1199,8 +1283,15 @@ def renew_job_lease(
 
 
 @app.post("/api/agent/{agent_id}/jobs/{job_id}/result")
-def job_result(agent_id: str, job_id: str, body: JobResultRequest, x_agent_token: str | None = Header(default=None), db: Session = Depends(get_db)):
-    agent = get_agent(db, agent_id, x_agent_token)
+def job_result(
+    agent_id: str,
+    job_id: str,
+    body: JobResultRequest,
+    x_agent_token: str | None = Header(default=None),
+    x_client_cert_fingerprint: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    agent = get_agent(db, agent_id, x_agent_token, x_client_cert_fingerprint)
     job = db.get(PatchJob, job_id)
     if not job or job.agent_id != agent.id:
         raise HTTPException(status_code=404, detail="job not found")
