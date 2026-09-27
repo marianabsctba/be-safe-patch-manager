@@ -74,3 +74,22 @@ groups:
         annotations:
           summary: Taxa persistente de erros HTTP 5xx
           description: O Patch Manager está retornando erros 5xx de forma persistente.
+
+
+      - alert: PatchManagerCriticalHealthChecksFailing
+        expr: (patch_manager_health_services_unhealthy + patch_manager_health_applications_unhealthy) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Health checks críticos falhando
+          description: Há serviço crítico ou health check de aplicação reportado como não saudável por endpoints gerenciados.
+
+      - alert: PatchManagerHealthTelemetryErrors
+        expr: patch_manager_health_collection_errors > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Erros persistentes na coleta de telemetria
+          description: Um ou mais agentes não conseguem coletar alguma métrica de saúde esperada.

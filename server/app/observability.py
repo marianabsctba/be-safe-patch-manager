@@ -167,6 +167,10 @@ class PatchManagerCollector:
             pending_updates = 0
             critical_updates = 0
             reboot_required = 0
+            health_reporting = 0
+            unhealthy_services = 0
+            unhealthy_applications = 0
+            health_collection_errors = 0
 
             for agent in agents:
                 family = (agent.os_family or "unknown").lower()
@@ -179,6 +183,25 @@ class PatchManagerCollector:
                 pending_updates += int(agent.pending_updates or 0)
                 critical_updates += int(agent.critical_updates or 0)
                 reboot_required += 1 if agent.reboot_required else 0
+
+                try:
+                    inventory = json.loads(agent.inventory_json or "{}")
+                except Exception:
+                    inventory = {}
+                health = inventory.get("health") if isinstance(inventory.get("health"), dict) else {}
+                if health:
+                    health_reporting += 1
+                    health_collection_errors += len(health.get("errors") or [])
+                    services = health.get("services") if isinstance(health.get("services"), dict) else {}
+                    applications = health.get("applications") if isinstance(health.get("applications"), dict) else {}
+                    unhealthy_services += sum(
+                        1 for item in services.values()
+                        if isinstance(item, dict) and item.get("healthy") is False
+                    )
+                    unhealthy_applications += sum(
+                        1 for item in applications.values()
+                        if isinstance(item, dict) and item.get("healthy") is False
+                    )
 
             agent_family = GaugeMetricFamily(
                 "patch_manager_agents",
@@ -196,6 +219,10 @@ class PatchManagerCollector:
                 ("patch_manager_pending_updates", "Total pending updates reported by agents.", pending_updates),
                 ("patch_manager_critical_updates", "Total critical/security updates reported by agents.", critical_updates),
                 ("patch_manager_reboot_required_agents", "Agents reporting reboot required.", reboot_required),
+                ("patch_manager_health_telemetry_agents", "Agents currently reporting health telemetry.", health_reporting),
+                ("patch_manager_health_services_unhealthy", "Critical service checks currently unhealthy.", unhealthy_services),
+                ("patch_manager_health_applications_unhealthy", "Application health checks currently unhealthy.", unhealthy_applications),
+                ("patch_manager_health_collection_errors", "Current health telemetry collection errors reported by agents.", health_collection_errors),
             ]:
                 metric = GaugeMetricFamily(name, description)
                 metric.add_metric([], value)
