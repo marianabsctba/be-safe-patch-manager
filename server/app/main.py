@@ -29,6 +29,7 @@ from .greenbone import public_config as public_greenbone_config
 from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 from .agent_updates import AgentReleaseError, load_signed_release
+from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 
 app = FastAPI(title="Be Safe Patch Manager", version="0.18.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -580,6 +581,7 @@ RISK_ASSET_TAG_WEIGHTS = {
 def vulnerability_risk(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
     reference = reference or now()
     raw = load(finding.raw_json, {})
+    threat = raw.get("threat_intel") if isinstance(raw.get("threat_intel"), dict) else raw
     reasons = []
 
     cvss = max(0.0, min(10.0, float(finding.cvss or 0.0)))
@@ -587,7 +589,7 @@ def vulnerability_risk(finding: VulnerabilityFinding, reference: datetime | None
     score = cvss_points
     reasons.append({"factor": "cvss", "points": cvss_points, "value": cvss})
 
-    epss_value = raw.get("epss")
+    epss_value = threat.get("epss")
     try:
         epss = float(epss_value) if epss_value is not None else None
     except (TypeError, ValueError):
@@ -598,7 +600,7 @@ def vulnerability_risk(finding: VulnerabilityFinding, reference: datetime | None
         score += epss_points
         reasons.append({"factor": "epss", "points": epss_points, "value": epss})
 
-    kev = bool(raw.get("kev") or raw.get("known_exploited") or raw.get("cisa_kev"))
+    kev = bool(threat.get("kev") or raw.get("known_exploited") or raw.get("cisa_kev"))
     if kev:
         score += 20
         reasons.append({"factor": "known_exploited", "points": 20, "value": True})
@@ -733,6 +735,8 @@ def serialize_vulnerability(v: VulnerabilityFinding):
 
 GREENBONE_SYNC_LOCK = threading.Lock()
 GREENBONE_STOP = threading.Event()
+THREAT_INTEL_SYNC_LOCK = threading.Lock()
+THREAT_INTEL_STOP = threading.Event()
 
 
 def integration_state(db: Session, name: str) -> IntegrationState:
@@ -798,6 +802,12 @@ def upsert_vulnerability_findings(db: Session, source: str, scan_id: str, findin
                 updated += 1
 
             raw = value.get("raw") or {}
+            previous_raw = load(item.raw_json, {}) if item.raw_json else {}
+            if (
+                isinstance(previous_raw.get("threat_intel"), dict)
+                and "threat_intel" not in raw
+            ):
+                raw["threat_intel"] = previous_raw["threat_intel"]
             item.scan_id = str(raw.get("greenbone_report_id") or scan_id or "")
             item.agent_id = agent.id if agent else None
             item.host = str(value.get("host") or "")
@@ -1166,6 +1176,161 @@ def run_greenbone_sync():
     finally:
         db.close()
         GREENBONE_SYNC_LOCK.release()
+
+
+def run_threat_intel_sync():
+    if not THREAT_INTEL_SYNC_LOCK.acquire(blocking=False):
+        raise RuntimeError("threat intel sync is already running")
+
+    db = SessionLocal()
+    state = integration_state(db, "threat_intel")
+    config = get_threat_intel_config()
+    public = public_threat_intel_config(config)
+    try:
+        state.enabled = public["enabled"]
+        state.status = "running"
+        state.last_attempt_at = now()
+        state.last_error = ""
+        db.commit()
+
+        findings = db.query(VulnerabilityFinding).filter(
+            VulnerabilityFinding.status == "open",
+            VulnerabilityFinding.cve != "",
+        ).all()
+        cves = sorted({finding.cve.upper() for finding in findings if finding.cve})
+        epss_data = {}
+        kev_data = {}
+        errors = {}
+
+        try:
+            epss_data = fetch_epss(cves, config)
+        except Exception as exc:
+            errors["epss"] = str(exc)[:1000]
+
+        try:
+            kev_data = fetch_kev(config)
+        except Exception as exc:
+            errors["kev"] = str(exc)[:1000]
+
+        if len(errors) == 2:
+            raise RuntimeError(
+                "threat intel sources failed: "
+                + "; ".join(f"{name}: {message}" for name, message in sorted(errors.items()))
+            )
+
+        updated = 0
+        epss_enriched = 0
+        kev_enriched = 0
+        timestamp = now().isoformat()
+
+        for finding in findings:
+            cve = finding.cve.upper()
+            raw = load(finding.raw_json, {})
+            threat = raw.get("threat_intel") if isinstance(raw.get("threat_intel"), dict) else {}
+
+            if "epss" not in errors:
+                epss_row = epss_data.get(cve)
+                if epss_row:
+                    threat.update(epss_row)
+                    epss_enriched += 1
+                else:
+                    for key in ("epss", "epss_percentile", "epss_date"):
+                        threat.pop(key, None)
+
+            if "kev" not in errors:
+                kev_row = kev_data.get(cve)
+                if kev_row:
+                    threat.update(kev_row)
+                    kev_enriched += 1
+                else:
+                    threat["kev"] = False
+                    for key in (
+                        "kev_date_added",
+                        "kev_due_date",
+                        "kev_vendor_project",
+                        "kev_product",
+                        "kev_required_action",
+                        "kev_ransomware_use",
+                    ):
+                        threat.pop(key, None)
+
+            threat["updated_at"] = timestamp
+            threat["sources"] = {
+                "epss": "FIRST EPSS",
+                "kev": "CISA KEV",
+            }
+            raw["threat_intel"] = threat
+            finding.raw_json = dump(raw)
+            updated += 1
+
+        details = {
+            "findings_considered": len(findings),
+            "unique_cves": len(cves),
+            "updated": updated,
+            "epss_enriched": epss_enriched,
+            "kev_enriched": kev_enriched,
+            "source_errors": errors,
+        }
+        state.status = "degraded" if errors else "ok"
+        state.last_success_at = now()
+        state.last_error = "; ".join(
+            f"{name}: {message}" for name, message in sorted(errors.items())
+        )
+        state.details_json = dump(details)
+        db.commit()
+        audit(
+            db,
+            "integration:threat_intel",
+            "threat_intel.sync.success",
+            "integration",
+            "threat_intel",
+            details,
+        )
+        return details
+    except Exception as exc:
+        state.status = "error"
+        state.last_error = str(exc)[:2000]
+        db.commit()
+        audit(
+            db,
+            "integration:threat_intel",
+            "threat_intel.sync.failed",
+            "integration",
+            "threat_intel",
+            {"error": str(exc)[:1000]},
+        )
+        raise
+    finally:
+        db.close()
+        THREAT_INTEL_SYNC_LOCK.release()
+
+
+def threat_intel_worker():
+    config = get_threat_intel_config()
+    if not config.enabled:
+        return
+    next_sync_at = now()
+    while not THREAT_INTEL_STOP.wait(30):
+        current = now()
+        if current < next_sync_at:
+            continue
+        try:
+            run_threat_intel_sync()
+        except Exception:
+            pass
+        next_sync_at = now() + timedelta(seconds=get_threat_intel_config().interval_seconds)
+
+
+@app.on_event("startup")
+def start_threat_intel_worker():
+    if get_threat_intel_config().enabled:
+        thread = threading.Thread(target=threat_intel_worker, name="threat-intel-sync", daemon=True)
+        thread.start()
+
+
+@app.on_event("shutdown")
+def stop_threat_intel_worker():
+    THREAT_INTEL_STOP.set()
 
 
 def greenbone_worker():
@@ -3183,6 +3348,35 @@ def greenbone_sync_now(principal=Depends(require_operator), db: Session = Depend
     try:
         result = run_greenbone_sync()
         audit(db, principal["actor"], "greenbone.sync.requested", "integration", "greenbone", result)
+        return {"ok": True, "result": result}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/integrations/threat-intel")
+def threat_intel_status(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    config = public_threat_intel_config()
+    state = integration_state(db, "threat_intel")
+    state.enabled = config["enabled"]
+    db.commit()
+    return serialize_integration_state(state, config)
+
+
+@app.post("/api/admin/integrations/threat-intel/sync")
+def threat_intel_sync_now(principal=Depends(require_operator), db: Session = Depends(get_db)):
+    config = public_threat_intel_config()
+    if not config["configured"]:
+        raise HTTPException(status_code=409, detail="threat intel integration is not configured")
+    try:
+        result = run_threat_intel_sync()
+        audit(
+            db,
+            principal["actor"],
+            "threat_intel.sync.requested",
+            "integration",
+            "threat_intel",
+            result,
+        )
         return {"ok": True, "result": result}
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
