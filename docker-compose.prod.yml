@@ -2,6 +2,7 @@ services:
   patch-manager:
     environment:
       AGENT_MTLS_REQUIRED: "true"
+      AGENT_ENFORCE_COMPATIBILITY: "true"
 
   reverse-proxy:
     image: nginx:stable-alpine
