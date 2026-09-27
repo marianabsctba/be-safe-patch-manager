@@ -300,6 +300,7 @@ function renderSummary(summary) {
     { label: 'Falhas', value: summary.failed_jobs || 0, hint: 'jobs acumulados', cls: summary.failed_jobs ? 'danger' : 'ok' },
     { label: 'SLA vencido', value: summary.sla_breached_vulnerabilities || 0, hint: 'vulnerabilidades abertas', cls: summary.sla_breached_vulnerabilities ? 'danger' : 'ok' },
     { label: 'SLA próximo', value: summary.sla_due_soon_vulnerabilities || 0, hint: 'vence em até 24h', cls: summary.sla_due_soon_vulnerabilities ? 'warn' : 'ok' },
+    { label: 'Exceções SLA', value: summary.sla_exception_vulnerabilities || 0, hint: 'aprovadas e ainda válidas', cls: summary.sla_exception_vulnerabilities ? 'accent' : 'ok' },
     { label: 'Agentes incompatíveis', value: Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0), hint: summary.compatibility_enforced ? 'enforcement ativo' : 'somente observação', cls: (Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0)) ? 'danger' : 'ok' },
     { label: 'Jobs bloqueados', value: summary.blocked_jobs || 0, hint: 'aguardando upgrade do agente', cls: summary.blocked_jobs ? 'danger' : 'ok' },
     { label: 'Update staged', value: summary.agent_update_staged || 0, hint: 'assinado e aguardando ativação', cls: summary.agent_update_staged ? 'accent' : 'ok' },
@@ -577,6 +578,7 @@ function vulnerabilitySlaBadge(sla) {
   if (sla.state === 'breached') return badge('SLA vencido', 'fail');
   if (sla.state === 'due_soon') return badge('SLA próximo', 'warn');
   if (sla.state === 'within_sla') return badge('no SLA', 'ok');
+  if (sla.state === 'exception') return badge('exceção SLA', 'info');
   return badge('fora do SLA ativo', 'info');
 }
 
@@ -595,6 +597,7 @@ function renderVulnerabilities() {
     ['Sem endpoint', unmatched.length, 'exigem correlação', unmatched.length ? 'danger' : 'ok'],
     ['SLA vencido', open.filter((item) => item.sla && item.sla.state === 'breached').length, 'prazo de remediação excedido', open.some((item) => item.sla && item.sla.state === 'breached') ? 'danger' : 'ok'],
     ['SLA próximo', open.filter((item) => item.sla && item.sla.state === 'due_soon').length, 'vence em até 24h', open.some((item) => item.sla && item.sla.state === 'due_soon') ? 'warn' : 'ok'],
+    ['Exceções SLA', open.filter((item) => item.sla && item.sla.state === 'exception').length, 'aprovação temporária', open.some((item) => item.sla && item.sla.state === 'exception') ? 'accent' : 'ok'],
     ['Remediadas', state.vulnerabilities.filter((item) => item.status === 'remediated').length, 'status atual', 'ok'],
     ['Com evidência', state.vulnerabilities.filter((item) => item.remediation && item.remediation.status === 'verified').length, 'rescan pós-patch comprovado', 'ok'],
   ].map(([label, value, hint, cls]) => `
@@ -632,12 +635,18 @@ function renderVulnerabilities() {
       </td>
       <td>
         ${vulnerabilitySlaBadge(item.sla)}
-        <br><small class="muted">${item.sla && item.sla.active ? esc(String(item.sla.remaining_hours) + 'h restantes') : ''}</small>
+        <br><small class="muted">${item.sla && item.sla.state === 'exception' && item.sla.exception ? 'até ' + when(item.sla.exception.expires_at) : item.sla && item.sla.active ? esc(String(item.sla.remaining_hours) + 'h restantes') : ''}</small>
       </td>
       <td>${when(item.last_seen)}</td>
       <td>
         ${item.status === 'open' && item.matched && roleAtLeast('operator')
           ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + item.id + '\')">Criar campanha</button>'
+          : ''}
+        ${item.status === 'open' && roleAtLeast('admin') && (!item.sla || item.sla.state !== 'exception')
+          ? '<button class="row-action" onclick="createSlaException(\'' + item.id + '\')">Criar exceção SLA</button>'
+          : ''}
+        ${item.status === 'open' && roleAtLeast('admin') && item.sla && item.sla.state === 'exception' && item.sla.exception
+          ? '<button class="row-action" onclick="revokeSlaException(\'' + item.id + '\', \'' + item.sla.exception.id + '\')">Revogar exceção</button>'
           : ''}
         ${item.remediation && ['error','still_detected'].includes(item.remediation.status) && roleAtLeast('operator')
           ? '<button class="row-action" onclick="retryRemediationRescan(\'' + item.remediation.id + '\')">Novo rescan</button>'
@@ -646,6 +655,51 @@ function renderVulnerabilities() {
     </tr>
   `).join('');
 }
+
+window.createSlaException = async (findingId) => {
+  if (!requireRole('admin', 'Perfil admin necessário.')) return;
+  const reason = prompt('Motivo da exceção de SLA:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+  const daysRaw = prompt('Validade da exceção em dias:', '7');
+  const days = Number(daysRaw);
+  if (!Number.isFinite(days) || days <= 0 || days > 365) {
+    toast('Informe uma validade entre 1 e 365 dias.', 'fail');
+    return;
+  }
+  const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  try {
+    await api('/api/admin/vulnerabilities/' + findingId + '/sla-exceptions', {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim(), expires_at: expiresAt }),
+    });
+    toast('Exceção de SLA aprovada.');
+    await load();
+  } catch (error) {
+    toast('Exceção SLA: ' + error.message, 'fail');
+  }
+};
+
+window.revokeSlaException = async (findingId, exceptionId) => {
+  if (!requireRole('admin', 'Perfil admin necessário.')) return;
+  const reason = prompt('Motivo da revogação da exceção:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+  try {
+    await api('/api/admin/vulnerabilities/' + findingId + '/sla-exceptions/' + exceptionId + '/revoke', {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    toast('Exceção de SLA revogada.');
+    await load();
+  } catch (error) {
+    toast('Revogação SLA: ' + error.message, 'fail');
+  }
+};
 
 window.retryRemediationRescan = async (evidenceId) => {
   if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
