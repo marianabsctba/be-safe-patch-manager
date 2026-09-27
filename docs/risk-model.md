@@ -85,6 +85,74 @@ Quando nenhuma tag conhecida está presente, o default é **2**.
 
 A origem da criticidade é retornada como `tags` ou `default`.
 
+## 2.1. Perfil de risco explícito
+
+Além das tags, cada endpoint pode possuir um `AssetRiskProfile` persistente.
+
+O perfil permite definir explicitamente:
+
+- criticidade `1–5`;
+- exposição `externo` ou `interno`;
+- controles compensatórios;
+- motivo da alteração;
+- ator responsável;
+- data/hora da última atualização.
+
+A precedência é:
+
+```text
+perfil explícito > tags > default
+```
+
+Campos individuais podem permanecer em modo automático. Isso significa que é possível, por exemplo, fixar somente a criticidade e continuar derivando exposição e controles por tags.
+
+### Semântica de auto
+
+- `criticality = null`: usa tags/default;
+- `external = null`: usa tags/default;
+- `compensating_controls = null`: usa tags;
+- `compensating_controls = []`: override explícito sem controles reconhecidos.
+
+Essa distinção entre `null` e lista vazia é intencional.
+
+### Governança
+
+Somente `admin` pode alterar o perfil.
+
+Toda alteração:
+
+- exige motivo;
+- registra o ator;
+- gera evento de auditoria `asset_risk.profile.updated`;
+- registra estado anterior e posterior;
+- recalcula o contexto efetivo;
+- cria snapshot de Asset Risk.
+
+Leitura é permitida para `viewer`.
+
+APIs:
+
+```http
+GET /api/admin/agents/{agent_id}/risk-profile
+PUT /api/admin/agents/{agent_id}/risk-profile
+```
+
+Exemplo:
+
+```json
+{
+  "criticality": 5,
+  "external": true,
+  "compensating_controls": [
+    "segmented",
+    "edr-protected"
+  ],
+  "reason": "Ativo Tier 0 exposto externamente"
+}
+```
+
+Para devolver um campo ao modo automático, envie `null`.
+
 ## 3. Exposição
 
 Tags reconhecidas como exposição externa:
