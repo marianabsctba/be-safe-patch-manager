@@ -9,6 +9,7 @@ const state = {
   agents: [],
   vulnerabilities: [],
   greenbone: null,
+  threatIntel: null,
   agentRelease: null,
   campaigns: [],
   jobs: [],
@@ -231,11 +232,12 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
       api('/api/admin/integrations/greenbone'),
+      api('/api/admin/integrations/threat-intel'),
       api('/api/admin/agent-release'),
       api('/api/admin/campaigns'),
       api('/api/admin/jobs'),
@@ -247,6 +249,7 @@ async function load() {
     state.agents = agents;
     state.vulnerabilities = vulnerabilities;
     state.greenbone = greenbone;
+    state.threatIntel = threatIntel;
     state.agentRelease = agentRelease;
     state.campaigns = campaigns;
     state.jobs = jobs;
@@ -279,6 +282,7 @@ function renderAll() {
   renderAgents();
   renderRiskEndpoints();
   renderGreenboneIntegration();
+  renderThreatIntelIntegration();
   renderVulnerabilities();
   renderCampaigns();
   renderOverviewCampaigns();
@@ -544,6 +548,65 @@ function renderGreenboneIntegration() {
 
   $('#greenboneSync').disabled = !config.configured || status === 'running';
 }
+
+function renderThreatIntelIntegration() {
+  const data = state.threatIntel || {};
+  const config = data.config || {};
+  const details = data.details || {};
+  const status = data.status || (config.enabled ? 'idle' : 'disabled');
+  const labels = {
+    disabled: 'desativado',
+    idle: config.configured ? 'pronto' : 'não configurado',
+    running: 'sincronizando',
+    ok: 'OK',
+    degraded: 'degradado',
+    error: 'erro',
+  };
+  const cls = status === 'ok'
+    ? 'ok'
+    : status === 'error'
+      ? 'fail'
+      : ['running', 'degraded'].includes(status)
+        ? 'warn'
+        : 'info';
+
+  $('#threatIntelStatusBadge').className = 'metric-pill ' + cls;
+  $('#threatIntelStatusBadge').textContent = labels[status] || status;
+
+  const rows = [
+    ['Modo', config.enabled ? 'automático' : 'manual / desativado'],
+    ['Fontes', 'FIRST EPSS + CISA KEV'],
+    ['Último sucesso', data.last_success_at ? when(data.last_success_at) : 'nunca'],
+    ['CVEs consideradas', details.unique_cves == null ? '-' : details.unique_cves],
+    ['EPSS enriquecidas', details.epss_enriched == null ? '-' : details.epss_enriched],
+    ['KEV encontradas', details.kev_enriched == null ? '-' : details.kev_enriched],
+    ['Findings atualizados', details.updated == null ? '-' : details.updated],
+  ];
+
+  $('#threatIntelDetails').innerHTML = rows.map((row) =>
+    '<div><span>' + esc(row[0]) + '</span><strong>' + esc(row[1]) + '</strong></div>'
+  ).join('');
+
+  const sourceErrors = details.source_errors && typeof details.source_errors === 'object'
+    ? Object.entries(details.source_errors)
+    : [];
+  if (sourceErrors.length) {
+    $('#threatIntelDetails').insertAdjacentHTML(
+      'beforeend',
+      '<div class="integration-error"><span>Fonte degradada</span><strong>' +
+      esc(sourceErrors.map(([name, message]) => name + ': ' + message).join(' · ')) +
+      '</strong></div>'
+    );
+  } else if (data.last_error) {
+    $('#threatIntelDetails').insertAdjacentHTML(
+      'beforeend',
+      '<div class="integration-error"><span>Último erro</span><strong>' + esc(data.last_error) + '</strong></div>'
+    );
+  }
+
+  $('#threatIntelSync').disabled = !config.configured || status === 'running';
+}
+
 
 function remediationStatusLabel(status) {
   const labels = {
@@ -1508,6 +1571,28 @@ $('#greenboneSync').addEventListener('click', async () => {
     $('#greenboneSync').textContent = 'Sincronizar agora';
   }
 });
+
+
+
+$('#threatIntelSync').addEventListener('click', async () => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+
+  $('#threatIntelSync').disabled = true;
+  $('#threatIntelSync').textContent = 'Enriquecendo...';
+
+  try {
+    const result = await api('/api/admin/integrations/threat-intel/sync', { method: 'POST' });
+    const stats = result.result || {};
+    toast('Threat Intel: ' + Number(stats.updated || 0) + ' finding(s) enriquecido(s).');
+    await load();
+  } catch (error) {
+    toast('Threat Intel: ' + error.message, 'fail');
+    await load();
+  } finally {
+    $('#threatIntelSync').textContent = 'Sincronizar agora';
+  }
+});
+
 
 
 
