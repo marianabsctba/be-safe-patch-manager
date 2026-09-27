@@ -641,6 +641,11 @@ function renderAgentDrawer(agent = selectedAgent()) {
     isOnline(agent) ? badge('online', 'ok') : badge('offline', 'muted-badge'),
     badge(risk.label, risk.cls),
     agent.reboot_required ? badge('reboot pendente', 'warn') : '',
+    agent.mtls && agent.mtls.bound
+      ? badge('mTLS vinculado', 'ok')
+      : agent.mtls && agent.mtls.required
+        ? badge('mTLS pendente', 'fail')
+        : badge('mTLS opcional', 'info'),
     ...(agent.tags || []).map((tag) => badge(tag, 'info')),
   ].join('');
 
@@ -666,6 +671,8 @@ function renderAgentDrawer(agent = selectedAgent()) {
     ['IP', agent.ip_address || '-'],
     ['Família', agent.os_family || '-'],
     ['Arquitetura', agent.arch || '-'],
+    ['mTLS', agent.mtls && agent.mtls.bound ? 'vinculado' : 'não vinculado'],
+    ['Fingerprint', agent.mtls && agent.mtls.fingerprint ? agent.mtls.fingerprint : '-'],
     ['Criado em', when(agent.created_at)],
     ['Último contato', when(agent.last_seen)],
   ];
@@ -1226,6 +1233,33 @@ document.addEventListener('keydown', (event) => {
 $('#closeDrawer').addEventListener('click', closeAgent);
 $('#drawerBackdrop').addEventListener('click', closeAgent);
 $('#saveTags').addEventListener('click', saveAgentTags);
+
+$('#bindMtls').addEventListener('click', async () => {
+  if (!requireRole('admin', 'Somente admin pode vincular ou rotacionar certificado mTLS.')) return;
+  const agent = selectedAgent();
+  if (!agent) return;
+
+  const fingerprint = prompt('Fingerprint SHA-1 do certificado cliente (com ou sem dois-pontos):');
+  if (!fingerprint) return;
+
+  const reason = prompt('Motivo do vínculo/rotação (obrigatório):');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+
+  try {
+    await api('/api/admin/agents/' + agent.id + '/mtls', {
+      method: 'PUT',
+      body: JSON.stringify({ fingerprint: fingerprint.trim(), reason: reason.trim() }),
+    });
+    toast('Certificado mTLS vinculado ao endpoint.');
+    await load();
+    renderAgentDrawer();
+  } catch (error) {
+    toast('mTLS: ' + error.message, 'fail');
+  }
+});
 
 $('.drawer-tab').forEach((button) => {
   button.addEventListener('click', () => setDrawerTab(button.dataset.drawerTab));
