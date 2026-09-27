@@ -235,7 +235,7 @@ def test_activation_rejects_legacy_non_symlink_layout(tmp_path):
     cfg = config(tmp_path, base, staging, public)
     mark_staged(cfg)
 
-    with pytest.raises(RuntimeError, match="v0.15 installer"):
+    with pytest.raises(RuntimeError, match=r"v0\.15\+ installer"):
         patch_agent.activate_staged_update(cfg, "0.17.0", "job-one")
 
 
