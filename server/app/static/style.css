@@ -1298,3 +1298,34 @@ button:disabled:hover {
 .campaign-meta strong {
   color:#ededf0;
 }
+
+
+/* Maintenance window / reboot / post-patch validation */
+.form-hint {
+  margin:0;
+  padding:9px 11px;
+  border:1px dashed #303038;
+  border-radius:8px;
+  background:#121216;
+  color:var(--muted-2);
+  font-size:9px;
+  line-height:1.5;
+}
+
+.campaign-policy {
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px 14px;
+  margin-top:9px;
+  padding:8px 10px;
+  border:1px solid #24242b;
+  border-radius:8px;
+  background:#101014;
+  color:var(--muted-2);
+  font-size:9px;
+}
+
+.campaign-policy strong {
+  color:#c8c8cf;
+  font-weight:650;
+}

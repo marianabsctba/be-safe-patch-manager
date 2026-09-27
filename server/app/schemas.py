@@ -37,12 +37,17 @@ class CampaignCreate(BaseModel):
     description: str = ""
     target_os: str = "all"
     target_tag: str = ""
-    ring_percent: int = Field(default=100, ge=1, le=100)
+    ring_percent: int = Field(default=10, ge=1, le=100)
     action: str = "install_updates"
     payload: Dict[str, Any] = Field(default_factory=dict)
     not_before: Optional[datetime] = None
     allow_reboot: bool = False
-
+    reboot_policy: str = "never"
+    maintenance_start: str = ""
+    maintenance_end: str = ""
+    maintenance_timezone: str = "America/Sao_Paulo"
+    maintenance_days: List[int] = Field(default_factory=lambda: list(range(7)))
+    post_patch_validation: bool = True
 
 class RingAdvance(BaseModel):
     target_percent: int = Field(ge=1, le=100)

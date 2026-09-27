@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -18,7 +19,7 @@ from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, Registe
 from .security import hash_token, new_token, require_admin, require_enrollment
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="Be Safe Patch Manager", version="0.2.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.3.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -79,6 +80,176 @@ def serialize_agent(a: Agent):
 
 
 
+
+def parse_clock(value: str) -> int:
+    try:
+        hour_text, minute_text = value.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except Exception as exc:
+        raise ValueError("time must use HH:MM") from exc
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError("time must use HH:MM")
+    return hour * 60 + minute
+
+
+def maintenance_window_state(payload: dict, instant=None):
+    start_text = str(payload.get("maintenance_start") or "").strip()
+    end_text = str(payload.get("maintenance_end") or "").strip()
+    timezone_name = str(payload.get("maintenance_timezone") or "UTC").strip() or "UTC"
+
+    if not start_text and not end_text:
+        return {
+            "enabled": False,
+            "eligible_now": True,
+            "reason": "maintenance window disabled",
+            "timezone": timezone_name,
+            "start": "",
+            "end": "",
+            "days": [],
+        }
+
+    if not start_text or not end_text:
+        return {
+            "enabled": True,
+            "eligible_now": False,
+            "reason": "maintenance window is incomplete",
+            "timezone": timezone_name,
+            "start": start_text,
+            "end": end_text,
+            "days": payload.get("maintenance_days") or [],
+        }
+
+    try:
+        start = parse_clock(start_text)
+        end = parse_clock(end_text)
+        zone = ZoneInfo(timezone_name)
+    except (ValueError, ZoneInfoNotFoundError):
+        return {
+            "enabled": True,
+            "eligible_now": False,
+            "reason": "invalid maintenance window",
+            "timezone": timezone_name,
+            "start": start_text,
+            "end": end_text,
+            "days": payload.get("maintenance_days") or [],
+        }
+
+    days = payload.get("maintenance_days")
+    if not isinstance(days, list) or not days:
+        days = list(range(7))
+    days = sorted({int(day) for day in days if isinstance(day, int) or str(day).isdigit()})
+    days = [day for day in days if 0 <= day <= 6]
+
+    current = (instant or now()).astimezone(zone)
+    minute = current.hour * 60 + current.minute
+    weekday = current.weekday()
+
+    if start == end:
+        eligible = weekday in days
+    elif start < end:
+        eligible = weekday in days and start <= minute < end
+    elif minute >= start:
+        eligible = weekday in days
+    elif minute < end:
+        eligible = ((weekday - 1) % 7) in days
+    else:
+        eligible = False
+
+    return {
+        "enabled": True,
+        "eligible_now": eligible,
+        "reason": "inside maintenance window" if eligible else "outside maintenance window",
+        "timezone": timezone_name,
+        "start": start_text,
+        "end": end_text,
+        "days": days,
+        "local_time": current.isoformat(),
+    }
+
+
+def validate_campaign_policy(body):
+    if body.reboot_policy not in {"never", "if_required"}:
+        raise HTTPException(status_code=400, detail="unsupported reboot policy")
+
+    start = body.maintenance_start.strip()
+    end = body.maintenance_end.strip()
+    if bool(start) != bool(end):
+        raise HTTPException(status_code=400, detail="maintenance start and end must be provided together")
+
+    if start:
+        try:
+            parse_clock(start)
+            parse_clock(end)
+            ZoneInfo(body.maintenance_timezone)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=f"invalid maintenance window: {exc}") from exc
+
+        if not body.maintenance_days:
+            raise HTTPException(status_code=400, detail="maintenance days cannot be empty")
+        if any(day < 0 or day > 6 for day in body.maintenance_days):
+            raise HTTPException(status_code=400, detail="maintenance days must be between 0 and 6")
+
+
+def job_post_patch_validation(job: PatchJob):
+    payload = load(job.payload_json, {})
+    if job.action != "install_updates" or not payload.get("post_patch_validation", True):
+        return {"status": "disabled", "reason": "post-patch validation disabled"}
+
+    if job.status != "success":
+        return {"status": "waiting", "reason": "job has not succeeded"}
+
+    agent = job.agent
+    if not agent:
+        return {"status": "failed", "reason": "agent unavailable"}
+
+    if not job.finished_at:
+        return {"status": "waiting", "reason": "job completion timestamp unavailable"}
+
+    finished = job.finished_at
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
+
+    last_seen = agent.last_seen
+    if not last_seen:
+        return {"status": "waiting", "reason": "waiting for post-patch heartbeat"}
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    if last_seen <= finished:
+        return {"status": "waiting", "reason": "waiting for fresh post-patch heartbeat"}
+
+    if agent.reboot_required:
+        return {"status": "waiting", "reason": "reboot is still required"}
+
+    baseline_pending = int(payload.get("_baseline_pending_updates", agent.pending_updates))
+    baseline_critical = int(payload.get("_baseline_critical_updates", agent.critical_updates))
+
+    if agent.critical_updates > baseline_critical:
+        return {
+            "status": "failed",
+            "reason": "critical updates increased after patching",
+            "baseline_critical": baseline_critical,
+            "current_critical": agent.critical_updates,
+        }
+
+    if agent.pending_updates > baseline_pending:
+        return {
+            "status": "failed",
+            "reason": "pending updates increased after patching",
+            "baseline_pending": baseline_pending,
+            "current_pending": agent.pending_updates,
+        }
+
+    return {
+        "status": "passed",
+        "reason": "fresh heartbeat received with no patch regression",
+        "baseline_pending": baseline_pending,
+        "current_pending": agent.pending_updates,
+        "baseline_critical": baseline_critical,
+        "current_critical": agent.critical_updates,
+    }
+
+
 def ring_bucket(agent_id: str) -> int:
     return int(hashlib.sha256(agent_id.encode()).hexdigest()[:8], 16) % 10000
 
@@ -91,16 +262,38 @@ def campaign_ring_jobs(c: Campaign):
     return marked if marked else list(c.jobs)
 
 
+
 def campaign_health(c: Campaign):
     jobs = campaign_ring_jobs(c)
     counts = {"pending": 0, "claimed": 0, "running": 0, "success": 0, "failed": 0, "skipped": 0}
+    validations = {"passed": 0, "waiting": 0, "failed": 0, "disabled": 0}
+    validation_details = []
+
     for job in jobs:
         counts[job.status] = counts.get(job.status, 0) + 1
+        if job.status == "success":
+            validation = job_post_patch_validation(job)
+            status = validation.get("status", "waiting")
+            validations[status] = validations.get(status, 0) + 1
+            if status in {"waiting", "failed"}:
+                validation_details.append({
+                    "job_id": job.id,
+                    "agent_id": job.agent_id,
+                    "hostname": job.agent.hostname if job.agent else "",
+                    **validation,
+                })
 
     active = counts["pending"] + counts["claimed"] + counts["running"]
     terminal = counts["success"] + counts["failed"] + counts["skipped"]
     success_rate = round((counts["success"] / terminal * 100), 1) if terminal else 0.0
-    ready = bool(jobs) and active == 0 and terminal == len(jobs) and success_rate >= 90.0
+    validation_blocked = validations["failed"] > 0 or validations["waiting"] > 0
+    ready = (
+        bool(jobs)
+        and active == 0
+        and terminal == len(jobs)
+        and success_rate >= 90.0
+        and not validation_blocked
+    )
 
     if not jobs:
         reason = "no jobs in current ring"
@@ -110,6 +303,10 @@ def campaign_health(c: Campaign):
         reason = "current ring has non-terminal jobs"
     elif success_rate < 90.0:
         reason = "success rate below 90%"
+    elif validations["failed"]:
+        reason = "post-patch validation failed"
+    elif validations["waiting"]:
+        reason = "waiting for post-patch validation"
     else:
         reason = "healthy"
 
@@ -120,9 +317,12 @@ def campaign_health(c: Campaign):
         "active": active,
         "terminal": terminal,
         "success_rate": success_rate,
+        "validation": validations,
+        "validation_details": validation_details[:20],
         "ready": ready,
         "reason": reason,
     }
+
 
 def serialize_campaign(c: Campaign):
     counts = {"pending": 0, "claimed": 0, "running": 0, "success": 0, "failed": 0, "skipped": 0}
@@ -164,6 +364,8 @@ def serialize_job(j: PatchJob):
         "finished_at": j.finished_at.isoformat() if j.finished_at else None,
         "result": load(j.result_json, {}),
         "error": j.error,
+        "validation": job_post_patch_validation(j),
+        "maintenance_window": maintenance_window_state(load(j.payload_json, {})),
     }
 
 
@@ -225,6 +427,9 @@ def poll_jobs(agent_id: str, x_agent_token: str | None = Header(default=None), d
                 nb = nb.replace(tzinfo=timezone.utc)
             if nb > t:
                 continue
+        payload = load(job.payload_json, {})
+        if not maintenance_window_state(payload, t)["eligible_now"]:
+            continue
         job.status = "claimed"
         job.claimed_at = t
         ready.append(serialize_job(job))
@@ -310,6 +515,25 @@ def list_campaigns(_=Depends(require_admin), db: Session = Depends(get_db)):
 def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session = Depends(get_db)):
     if body.action not in {"scan_updates", "install_updates"}:
         raise HTTPException(status_code=400, detail="unsupported action")
+
+    validate_campaign_policy(body)
+
+    reboot_policy = body.reboot_policy
+    if body.allow_reboot and reboot_policy == "never":
+        reboot_policy = "if_required"
+    allow_reboot = reboot_policy == "if_required"
+
+    policy_payload = {
+        **body.payload,
+        "allow_reboot": allow_reboot,
+        "reboot_policy": reboot_policy,
+        "maintenance_start": body.maintenance_start.strip(),
+        "maintenance_end": body.maintenance_end.strip(),
+        "maintenance_timezone": body.maintenance_timezone,
+        "maintenance_days": body.maintenance_days,
+        "post_patch_validation": body.post_patch_validation,
+    }
+
     campaign = Campaign(
         id=str(uuid.uuid4()),
         name=body.name,
@@ -318,16 +542,27 @@ def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session 
         target_tag=body.target_tag,
         ring_percent=body.ring_percent,
         action=body.action,
-        payload_json=dump({**body.payload, "allow_reboot": body.allow_reboot}),
+        payload_json=dump(policy_payload),
         not_before=body.not_before,
-        allow_reboot=body.allow_reboot,
+        allow_reboot=allow_reboot,
         status="draft",
     )
     db.add(campaign)
     db.commit()
-    audit(db, "admin", "campaign.created", "campaign", campaign.id, {"name": campaign.name})
+    audit(
+        db,
+        "admin",
+        "campaign.created",
+        "campaign",
+        campaign.id,
+        {
+            "name": campaign.name,
+            "reboot_policy": reboot_policy,
+            "maintenance_window": maintenance_window_state(policy_payload),
+            "post_patch_validation": body.post_patch_validation,
+        },
+    )
     return serialize_campaign(campaign)
-
 
 
 def campaign_candidates(db: Session, campaign: Campaign):
@@ -354,7 +589,12 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
     base_payload = load(campaign.payload_json, {})
     created = []
     for agent in agents:
-        payload = {**base_payload, "_ring_percent": ring_percent}
+        payload = {
+            **base_payload,
+            "_ring_percent": ring_percent,
+            "_baseline_pending_updates": agent.pending_updates,
+            "_baseline_critical_updates": agent.critical_updates,
+        }
         job = PatchJob(
             id=str(uuid.uuid4()),
             campaign_id=campaign.id,

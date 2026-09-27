@@ -475,10 +475,50 @@ async function saveAgentTags() {
 }
 
 
+
+function rebootPolicyLabel(policy) {
+  return policy === 'if_required' ? 'reboot se necessário' : 'sem reboot automático';
+}
+
+function maintenanceDaysLabel(days) {
+  const normalized = Array.isArray(days) ? [...days].sort().join(',') : '';
+  if (normalized === '0,1,2,3,4,5,6') return 'todos os dias';
+  if (normalized === '0,1,2,3,4') return 'seg-sex';
+  if (normalized === '5,6') return 'fim de semana';
+  if (normalized === '6') return 'domingo';
+  return 'dias customizados';
+}
+
+function validationBadge(validation) {
+  const status = validation && validation.status ? validation.status : 'waiting';
+  const labels = {
+    passed: 'validado',
+    waiting: 'aguardando',
+    failed: 'falhou',
+    disabled: 'desativada',
+  };
+  const cls = status === 'passed' ? 'ok' : status === 'failed' ? 'fail' : status === 'waiting' ? 'warn' : 'info';
+  return badge(labels[status] || status, cls);
+}
+
+function healthReasonLabel(reason) {
+  const labels = {
+    'no jobs in current ring': 'sem jobs no ring',
+    'current ring still has active jobs': 'jobs ainda em execução',
+    'current ring has non-terminal jobs': 'jobs ainda não finalizados',
+    'success rate below 90%': 'sucesso abaixo de 90%',
+    'post-patch validation failed': 'validação pós-patch falhou',
+    'waiting for post-patch validation': 'aguardando validação pós-patch',
+    'healthy': 'saudável',
+  };
+  return labels[reason] || reason || '';
+}
+
 function nextRingPercent(current) {
   const presets = [10, 30, 100];
   return presets.find((value) => value > Number(current || 0)) || null;
 }
+
 
 function campaignCard(campaign, compact = false) {
   const counts = campaign.job_counts || {};
@@ -488,9 +528,16 @@ function campaignCard(campaign, compact = false) {
   const finished = success + failed + Number(counts.skipped || 0);
   const progress = total ? Math.round((finished / total) * 100) : 0;
   const health = campaign.health || {};
+  const validation = health.validation || {};
   const nextRing = nextRingPercent(campaign.ring_percent);
   const ringReady = Boolean(health.ready);
   const healthRate = Number(health.success_rate || 0);
+  const payload = campaign.payload || {};
+  const windowEnabled = Boolean(payload.maintenance_start && payload.maintenance_end);
+  const windowText = windowEnabled
+    ? payload.maintenance_start + '–' + payload.maintenance_end + ' · ' +
+      maintenanceDaysLabel(payload.maintenance_days) + ' · ' + (payload.maintenance_timezone || 'UTC')
+    : 'sem janela restritiva';
 
   let action = '';
   if (campaign.status === 'draft') {
@@ -498,7 +545,7 @@ function campaignCard(campaign, compact = false) {
   } else if (campaign.status === 'deployed' && nextRing) {
     action = ringReady
       ? '<button onclick="advanceCampaign(\'' + campaign.id + '\',' + nextRing + ')">Avançar para ' + nextRing + '%</button>'
-      : '<button disabled title="' + esc(health.reason || 'Health gate aguardando') + '">Gate aguardando</button>';
+      : '<button disabled title="' + esc(healthReasonLabel(health.reason)) + '">Gate aguardando</button>';
   }
 
   return `
@@ -520,6 +567,12 @@ function campaignCard(campaign, compact = false) {
           ${campaign.not_before ? `<span>Após ${esc(shortWhen(campaign.not_before))}</span>` : ''}
         </div>
 
+        <div class="campaign-policy">
+          <span>Janela: <strong>${esc(windowText)}</strong></span>
+          <span>Reboot: <strong>${esc(rebootPolicyLabel(payload.reboot_policy))}</strong></span>
+          <span>Pós-patch: <strong>${payload.post_patch_validation === false ? 'desativado' : 'obrigatório'}</strong></span>
+        </div>
+
         <div class="campaign-meta">
           ${campaign.status === 'deployed'
             ? badge(ringReady ? 'health gate OK' : 'health gate bloqueado', ringReady ? 'ok' : 'warn')
@@ -527,6 +580,9 @@ function campaignCard(campaign, compact = false) {
           ${campaign.status === 'deployed' ? `<span>Ring: ${Number(health.jobs || 0)} job(s)</span>` : ''}
           ${campaign.status === 'deployed' ? `<span>Sucesso: ${healthRate}%</span>` : ''}
           ${campaign.status === 'deployed' && Number(health.active || 0) ? `<span>Ativos: ${health.active}</span>` : ''}
+          ${campaign.status === 'deployed' && Number(validation.waiting || 0) ? `<span>Validação aguardando: ${validation.waiting}</span>` : ''}
+          ${campaign.status === 'deployed' && Number(validation.failed || 0) ? `<span class="text-danger">Validação falhou: ${validation.failed}</span>` : ''}
+          ${campaign.status === 'deployed' && health.reason ? `<span>${esc(healthReasonLabel(health.reason))}</span>` : ''}
         </div>
 
         <div class="progress">
@@ -565,7 +621,7 @@ function renderJobs() {
   if (!state.jobs.length) {
     $('#jobs').innerHTML = `
       <tr>
-        <td colspan="7"><div class="empty-state">Nenhuma execução registrada.</div></td>
+        <td colspan="8"><div class="empty-state">Nenhuma execução registrada.</div></td>
       </tr>`;
     return;
   }
@@ -578,6 +634,7 @@ function renderJobs() {
       <td>${badge(statusLabel(job.status), jobClass(job.status))}</td>
       <td>${when(job.started_at || job.claimed_at)}</td>
       <td>${when(job.finished_at)}</td>
+      <td>${validationBadge(job.validation)}</td>
       <td class="error-cell">${esc(job.error || '')}</td>
     </tr>
   `).join('');
@@ -710,14 +767,28 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     .map((item) => item.trim())
     .filter(Boolean);
 
+  const dayPresets = {
+    all: [0, 1, 2, 3, 4, 5, 6],
+    weekdays: [0, 1, 2, 3, 4],
+    weekend: [5, 6],
+    sunday: [6],
+  };
+  const rebootPolicy = form.get('reboot_policy') || 'never';
+
   const body = {
     name: form.get('name'),
     description: form.get('description') || '',
     target_os: form.get('target_os'),
     target_tag: form.get('target_tag') || '',
-    ring_percent: Number(form.get('ring_percent') || 100),
+    ring_percent: Number(form.get('ring_percent') || 10),
     action: form.get('action'),
-    allow_reboot: form.get('allow_reboot') === 'on',
+    allow_reboot: rebootPolicy === 'if_required',
+    reboot_policy: rebootPolicy,
+    maintenance_start: form.get('maintenance_start') || '',
+    maintenance_end: form.get('maintenance_end') || '',
+    maintenance_timezone: form.get('maintenance_timezone') || 'America/Sao_Paulo',
+    maintenance_days: dayPresets[form.get('maintenance_days')] || dayPresets.all,
+    post_patch_validation: form.get('post_patch_validation') === 'on',
     not_before: form.get('not_before')
       ? new Date(form.get('not_before')).toISOString()
       : null,

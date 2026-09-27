@@ -197,6 +197,39 @@
                   <input name="not_before" type="datetime-local" />
                 </label>
 
+                <label>
+                  <span>Política de reboot</span>
+                  <select name="reboot_policy">
+                    <option value="never">Nunca reiniciar automaticamente</option>
+                    <option value="if_required">Reiniciar se o patch exigir</option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>Início da janela (opcional)</span>
+                  <input name="maintenance_start" type="time" />
+                </label>
+
+                <label>
+                  <span>Fim da janela (opcional)</span>
+                  <input name="maintenance_end" type="time" />
+                </label>
+
+                <label>
+                  <span>Fuso da janela</span>
+                  <input name="maintenance_timezone" value="America/Sao_Paulo" placeholder="America/Sao_Paulo" />
+                </label>
+
+                <label>
+                  <span>Dias permitidos</span>
+                  <select name="maintenance_days">
+                    <option value="all">Todos os dias</option>
+                    <option value="weekdays">Segunda a sexta</option>
+                    <option value="weekend">Sábado e domingo</option>
+                    <option value="sunday">Somente domingo</option>
+                  </select>
+                </label>
+
                 <label class="wide">
                   <span>Pacotes / KBs</span>
                   <input name="packages" placeholder="KB5030219, openssl, curl..." />
@@ -208,9 +241,13 @@
                 </label>
 
                 <label class="check wide">
-                  <input name="allow_reboot" type="checkbox" />
-                  <span>Permitir reboot quando necessário</span>
+                  <input name="post_patch_validation" type="checkbox" checked />
+                  <span>Exigir heartbeat e validação pós-patch antes de avançar o ring</span>
                 </label>
+
+                <p class="form-hint wide">
+                  Sem horário de início/fim, a campanha pode executar a qualquer momento após o campo “Executar a partir de”.
+                </p>
 
                 <button type="submit" class="primary wide">Criar campanha</button>
               </form>
@@ -248,6 +285,7 @@
                     <th>Status</th>
                     <th>Início</th>
                     <th>Fim</th>
+                    <th>Validação</th>
                     <th>Erro</th>
                   </tr>
                 </thead>
