@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import ipaddress
 import json
 import os
 import platform
@@ -10,14 +11,17 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 
+import psutil
 import requests
 
 DEFAULT_CONFIG = Path(os.getenv("PATCH_AGENT_CONFIG", "/etc/patch-manager/agent.json" if os.name != "nt" else r"C:\ProgramData\PatchManager\agent.json"))
 PKG_RE = re.compile(r"^[A-Za-z0-9._+:-]{1,128}$")
 KB_RE = re.compile(r"^KB\d{4,10}$", re.I)
+SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@:-]{1,128}$")
 
 
 def utcnow():
@@ -78,7 +82,7 @@ def api(cfg, method, path, *, json_body=None, headers=None, timeout=60):
     if not url.lower().startswith("https://"):
         raise RuntimeError("server_url must use https://")
 
-    h = {"User-Agent": "PatchManagerAgent/0.9.0"}
+    h = {"User-Agent": "PatchManagerAgent/0.11.0"}
     if headers:
         h.update(headers)
 
@@ -117,6 +121,213 @@ def get_ip():
         return ip
     except Exception:
         return ""
+
+
+
+def _loopback_health_url(url):
+    try:
+        parsed = urlparse(str(url or ""))
+    except Exception:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    if parsed.username or parsed.password:
+        return None
+    host = parsed.hostname.lower()
+    if host == "localhost":
+        return parsed
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return parsed
+    except ValueError:
+        pass
+    return None
+
+
+def collect_service_health(names):
+    results = {}
+    for raw_name in names or []:
+        name = str(raw_name or "").strip()
+        if not SERVICE_RE.fullmatch(name):
+            results[name or "<invalid>"] = {
+                "healthy": False,
+                "status": "invalid_name",
+            }
+            continue
+
+        if os.name == "nt":
+            try:
+                service = psutil.win_service_get(name)
+                status = str(service.status() or "unknown").lower()
+                results[name] = {
+                    "healthy": status == "running",
+                    "status": status,
+                }
+            except Exception as exc:
+                results[name] = {
+                    "healthy": False,
+                    "status": "unavailable",
+                    "error": str(exc)[:200],
+                }
+            continue
+
+        systemctl = shutil.which("systemctl")
+        if not systemctl:
+            results[name] = {
+                "healthy": False,
+                "status": "unsupported",
+                "error": "systemctl unavailable",
+            }
+            continue
+
+        try:
+            rr = run([systemctl, "is-active", name], timeout=10)
+            status = str(rr.get("stdout") or "").strip().lower() or "unknown"
+            results[name] = {
+                "healthy": rr.get("returncode") == 0 and status == "active",
+                "status": status,
+            }
+        except Exception as exc:
+            results[name] = {
+                "healthy": False,
+                "status": "error",
+                "error": str(exc)[:200],
+            }
+    return results
+
+
+def collect_application_health(checks):
+    results = {}
+    for index, raw in enumerate(checks or []):
+        check = raw if isinstance(raw, dict) else {}
+        name = str(check.get("name") or f"check-{index + 1}")[:64]
+        url = str(check.get("url") or "")
+        parsed = _loopback_health_url(url)
+        if not parsed:
+            results[name] = {
+                "healthy": False,
+                "status_code": None,
+                "latency_ms": None,
+                "error": "health URL rejected: loopback HTTP(S) only",
+            }
+            continue
+
+        try:
+            expected_status = int(check.get("expected_status", 200))
+        except (TypeError, ValueError):
+            expected_status = 200
+        expected_status = min(599, max(100, expected_status))
+
+        try:
+            timeout = int(check.get("timeout_seconds", 5))
+        except (TypeError, ValueError):
+            timeout = 5
+        timeout = min(30, max(1, timeout))
+        body_contains = str(check.get("body_contains") or "")[:128]
+        verify_tls = bool(check.get("verify_tls", True))
+
+        started = time.perf_counter()
+        try:
+            response = requests.get(
+                url,
+                timeout=timeout,
+                allow_redirects=False,
+                verify=verify_tls,
+            )
+            latency_ms = round((time.perf_counter() - started) * 1000, 1)
+            body_ok = not body_contains or body_contains in response.text[:65536]
+            healthy = response.status_code == expected_status and body_ok
+            results[name] = {
+                "healthy": healthy,
+                "status_code": response.status_code,
+                "latency_ms": latency_ms,
+                "body_match": body_ok,
+            }
+        except Exception as exc:
+            results[name] = {
+                "healthy": False,
+                "status_code": None,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                "error": str(exc)[:200],
+            }
+    return results
+
+
+def collect_health(policy=None):
+    policy = policy if isinstance(policy, dict) else {}
+    errors = []
+
+    cpu_percent = None
+    try:
+        samples = [psutil.cpu_percent(interval=0.2) for _ in range(3)]
+        cpu_percent = round(sum(samples) / len(samples), 1)
+    except Exception as exc:
+        errors.append("cpu: " + str(exc)[:160])
+
+    memory_percent = None
+    try:
+        memory_percent = round(float(psutil.virtual_memory().percent), 1)
+    except Exception as exc:
+        errors.append("memory: " + str(exc)[:160])
+
+    root = os.environ.get("SystemDrive", "C:") + "\\" if os.name == "nt" else "/"
+    disk = {"path": root, "free_percent": None, "free_bytes": None}
+    try:
+        usage = psutil.disk_usage(root)
+        free_percent = (float(usage.free) / float(usage.total) * 100.0) if usage.total else 0.0
+        disk = {
+            "path": root,
+            "free_percent": round(free_percent, 1),
+            "free_bytes": int(usage.free),
+        }
+    except Exception as exc:
+        errors.append("disk: " + str(exc)[:160])
+
+    services = collect_service_health(policy.get("critical_services") or [])
+    applications = collect_application_health(policy.get("application_checks") or [])
+
+    return {
+        "schema": 1,
+        "collected_at": utcnow(),
+        "cpu_percent": cpu_percent,
+        "memory_percent": memory_percent,
+        "disk": disk,
+        "services": services,
+        "applications": applications,
+        "policy_enabled": bool(policy.get("enabled", False)),
+        "errors": errors,
+    }
+
+
+def active_health_policy(cfg):
+    policy = cfg.get("_active_health_policy")
+    if not isinstance(policy, dict):
+        return {}
+    try:
+        expires_at = float(cfg.get("_active_health_policy_expires_at") or 0)
+    except (TypeError, ValueError):
+        expires_at = 0
+    if expires_at and expires_at <= time.time():
+        return {}
+    return policy
+
+
+def persist_health_policy(cfg, cfg_path, policy):
+    policy = policy if isinstance(policy, dict) else {}
+    if policy.get("enabled"):
+        try:
+            ttl = int(policy.get("policy_ttl_seconds", 86400))
+        except (TypeError, ValueError):
+            ttl = 86400
+        ttl = min(604800, max(3600, ttl))
+        cfg["_active_health_policy"] = policy
+        cfg["_active_health_policy_expires_at"] = int(time.time()) + ttl
+    else:
+        cfg.pop("_active_health_policy", None)
+        cfg.pop("_active_health_policy_expires_at", None)
+
+    if cfg_path:
+        save_config(Path(cfg_path), cfg)
 
 
 def inventory():
@@ -443,7 +654,19 @@ def enroll(cfg, cfg_path):
 
 
 def heartbeat(cfg, patches):
-    return api(cfg, "POST", f"/api/agent/{cfg['agent_id']}/heartbeat", json_body={"inventory":inventory(),"patch_scan":patches,"reboot_required":reboot_required()}, headers={"X-Agent-Token":cfg["agent_token"]})
+    current_inventory = inventory()
+    current_inventory["health"] = collect_health(active_health_policy(cfg))
+    return api(
+        cfg,
+        "POST",
+        f"/api/agent/{cfg['agent_id']}/heartbeat",
+        json_body={
+            "inventory": current_inventory,
+            "patch_scan": patches,
+            "reboot_required": reboot_required(),
+        },
+        headers={"X-Agent-Token": cfg["agent_token"]},
+    )
 
 
 def send_job_result(cfg, job_id, status, claim_token, result=None, error="", started_at=None, finished_at=None):
@@ -481,7 +704,7 @@ def lease_keeper(cfg, job_id, claim_token, stop_event, interval):
             print(f"job lease renewal failed for {job_id}: {exc}", file=sys.stderr)
 
 
-def execute_job(cfg, job):
+def execute_job(cfg, job, cfg_path=None):
     jid=job["id"]
     claim_token=str(job.get("claim_token") or "")
     if not claim_token:
@@ -507,6 +730,10 @@ def execute_job(cfg, job):
             result={"updates":scan_updates(),"reboot_required":reboot_required()}
         elif action == "install_updates":
             payload=job.get("payload") or {}
+            health_policy = payload.get("health_policy") if isinstance(payload.get("health_policy"), dict) else {}
+            persist_health_policy(cfg, cfg_path, health_policy)
+            health_baseline = collect_health(health_policy) if health_policy.get("enabled") else {}
+
             checkpoint={"status":"disabled","method":"","automatic_restore":False,"reason":"rollback protection disabled"}
             if payload.get("prepare_rollback", True):
                 checkpoint=create_rollback_checkpoint(jid)
@@ -515,6 +742,9 @@ def execute_job(cfg, job):
             result=install_updates(payload)
             result["rollback_checkpoint"]=checkpoint
             result["post_scan"] = scan_updates()
+            if health_policy.get("enabled"):
+                result["health_baseline"] = health_baseline
+                result["health_post"] = collect_health(health_policy)
         elif action == "rollback_checkpoint":
             result=rollback_checkpoint(job.get("payload") or {})
         else:
@@ -538,7 +768,7 @@ def loop(cfg, cfg_path):
                 patches=scan_updates(); heartbeat(cfg,patches); last_scan=time.time()
             jobs=api(cfg,"GET",f"/api/agent/{cfg['agent_id']}/jobs",headers={"X-Agent-Token":cfg["agent_token"]})
             for job in jobs:
-                execute_job(cfg,job)
+                execute_job(cfg,job,cfg_path)
                 try: patches=scan_updates(); heartbeat(cfg,patches); last_scan=time.time()
                 except Exception as e: print(f"post-job heartbeat failed: {e}",file=sys.stderr)
         except KeyboardInterrupt:
@@ -556,7 +786,7 @@ def main():
     if args.once:
         patches=scan_updates(); heartbeat(cfg,patches)
         jobs=api(cfg,"GET",f"/api/agent/{cfg['agent_id']}/jobs",headers={"X-Agent-Token":cfg["agent_token"]})
-        for job in jobs[:1]: execute_job(cfg,job)
+        for job in jobs[:1]: execute_job(cfg,job,path)
         return
     loop(cfg,path)
 
