@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.18.0
+
+- control plane e dashboard passam para versão 0.18.0; agente permanece em 0.16.0;
+- adicionado SLA configurável de vulnerabilidades por severidade;
+- findings abertos passam a receber prazo, idade, horas restantes e estado `within_sla`, `due_soon` ou `breached`;
+- estados não abertos permanecem visíveis como `excluded` e não inflam breach counters;
+- novo endpoint `GET /api/admin/reports/vulnerability-sla` consolida política, totais, severidade e findings priorizados;
+- summary administrativo passa a expor vulnerabilidades em breach e próximas do vencimento;
+- configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
+- adicionados testes de breach, due soon, exclusão, agregação e summary.
+
 ## 0.17.0
 
 - control plane e dashboard passam para versão 0.17.0; agente permanece em 0.16.0;
