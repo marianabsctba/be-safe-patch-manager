@@ -32,6 +32,10 @@
 - admin pode sobrescrever criticidade, exposição e controles por ativo, com precedência `profile > tags > default`;
 - alterações de perfil exigem motivo, ficam auditadas e geram novo snapshot de risco;
 - console permite editar o perfil de risco diretamente no ranking de ativos;
+- adicionadas políticas de risk appetite por tag via `asset_risk_policies` e migration `0009_risk_policies`;
+- políticas possuem prioridade, enable/disable, auditoria e fallback para `ASSET_RISK_APPETITE`;
+- relatório de Asset Risk passa a indicar policy efetiva, appetite por ativo e estado acima/abaixo do limite;
+- console permite criar e editar políticas de appetite por tag;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
