@@ -160,3 +160,13 @@ groups:
         annotations:
           summary: Ativação do agente não foi confirmada
           description: Há endpoint aguardando confirmação de heartbeat após troca da release do agente.
+
+
+      - alert: PatchManagerAgentUpdateQuarantined
+        expr: patch_manager_agent_update_state{status="quarantined"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Release do agente em quarentena
+          description: Pelo menos um endpoint bloqueou uma release após rollback do watchdog.

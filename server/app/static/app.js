@@ -303,6 +303,7 @@ function renderSummary(summary) {
     { label: 'Release assinada', value: release.ready ? 'v' + release.version : '-', hint: release.enabled ? (release.ready ? 'assinatura e artefato válidos' : 'release indisponível') : 'distribuição desligada', cls: release.ready ? 'ok' : release.enabled ? 'danger' : 'neutral' },
     { label: 'Ativação pendente', value: summary.agent_activation_pending || 0, hint: 'aguardando restart/heartbeat', cls: summary.agent_activation_pending ? 'warn' : 'ok' },
     { label: 'Rollback do agente', value: summary.agent_activation_rollbacks || 0, hint: 'watchdog voltou à versão anterior', cls: summary.agent_activation_rollbacks ? 'danger' : 'ok' },
+    { label: 'Release em quarentena', value: summary.agent_update_quarantined || 0, hint: 'exige liberação administrativa', cls: summary.agent_update_quarantined ? 'danger' : 'ok' },
   ];
 
   $('#summary').innerHTML = entries.map((item) => `
@@ -794,12 +795,31 @@ function renderAgentDrawer(agent = selectedAgent()) {
       && agentUpdate.status === 'staged'
       && Boolean(agentUpdate.staged_version)
       && activationCapable
-      && !['pending','switching'].includes(activationState.status);
+      && !['pending','switching','rolled_back'].includes(activationState.status);
     activateButton.hidden = !eligibleActivation;
     activateButton.disabled = !eligibleActivation;
     activateButton.textContent = eligibleActivation
       ? 'Ativar v' + agentUpdate.staged_version
       : 'Ativar update staged';
+  }
+
+  const quarantineButton = $('#clearAgentUpdateQuarantine');
+  if (quarantineButton) {
+    const quarantineCapable = Boolean(
+      agent.runtime
+      && Array.isArray(agent.runtime.capabilities)
+      && agent.runtime.capabilities.includes('signed_update_quarantine_v1')
+    );
+    const eligibleClear = roleAtLeast('admin')
+      && String(agent.os_family || '').toLowerCase() === 'linux'
+      && agentUpdate.status === 'quarantined'
+      && activationState.status === 'rolled_back'
+      && quarantineCapable;
+    quarantineButton.hidden = !eligibleClear;
+    quarantineButton.disabled = !eligibleClear;
+    quarantineButton.textContent = eligibleClear
+      ? 'Liberar v' + (agentUpdate.quarantined_version || agentUpdate.staged_version || '')
+      : 'Liberar release em quarentena';
   }
 
   const identity = [
@@ -1395,6 +1415,49 @@ document.addEventListener('keydown', (event) => {
 $('#closeDrawer').addEventListener('click', closeAgent);
 $('#drawerBackdrop').addEventListener('click', closeAgent);
 $('#saveTags').addEventListener('click', saveAgentTags);
+
+$('#clearAgentUpdateQuarantine').addEventListener('click', async () => {
+  if (!requireRole('admin', 'Somente admin pode liberar release em quarentena.')) return;
+  const agent = selectedAgent();
+  if (!agent) return;
+
+  const update = agent.inventory && agent.inventory.update && typeof agent.inventory.update === 'object'
+    ? agent.inventory.update
+    : {};
+  const version = String(update.quarantined_version || update.staged_version || '');
+  if (!version) {
+    toast('A versão em quarentena não foi reportada pelo endpoint.', 'fail');
+    return;
+  }
+
+  const reason = prompt('Motivo para liberar novamente a v' + version + ':');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+
+  const approved = confirm(
+    'Liberar novamente a v' + version + ' em ' + agent.hostname + '?\n\n' +
+    'Essa release já sofreu rollback automático neste endpoint.'
+  );
+  if (!approved) return;
+
+  try {
+    await api('/api/admin/agents/' + agent.id + '/updates/quarantine/clear', {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_version: version,
+        reason: reason.trim(),
+        acknowledge_risk: true,
+      }),
+    });
+    toast('Liberação da quarentena colocada na fila.');
+    await load();
+    renderAgentDrawer();
+  } catch (error) {
+    toast('Quarentena do agente: ' + error.message, 'fail');
+  }
+});
 
 $('#activateAgentUpdate').addEventListener('click', async () => {
   if (!requireRole('admin', 'Somente admin pode ativar update do agente.')) return;
