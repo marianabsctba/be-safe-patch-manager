@@ -53,7 +53,7 @@ jobs:
           python scripts/agent-release.py build \
             --private-key "$TMP_RELEASE/signing-private.pem" \
             --output "$TMP_RELEASE/release" \
-            --version 0.14.0 \
+            --version 0.15.0 \
             --source-commit "$GITHUB_SHA"
           python scripts/agent-release.py verify \
             --public-key "$TMP_RELEASE/signing-public.pem" \
