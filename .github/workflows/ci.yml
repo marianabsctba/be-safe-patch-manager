@@ -19,11 +19,36 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install dependencies
+        run: |
+          pip install -r server/requirements.txt
+          pip install -r server/requirements-dev.txt
+
       - name: Python syntax
         run: python -m compileall -q server agent scripts
 
+      - name: Alembic migration smoke test
+        env:
+          DATABASE_URL: sqlite:///./ci-migration.db
+        run: |
+          cd server
+          alembic upgrade head
+          alembic current
+          rm -f ci-migration.db
+
+      - name: Unit tests
+        env:
+          ADMIN_TOKEN: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          ENROLLMENT_TOKEN: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+          GREENBONE_ENABLED: "false"
+        run: |
+          cd server
+          pytest -q tests
+
       - name: Shell syntax
-        run: bash -n deploy/install-linux.sh
+        run: |
+          bash -n deploy/install-linux.sh
+          sh -n server/entrypoint.sh
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
