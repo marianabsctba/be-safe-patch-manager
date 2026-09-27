@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.0
+
+- PostgreSQL passa a ser o banco padrão no Docker Compose;
+- adicionado Alembic com migrations versionadas;
+- container executa `alembic upgrade head` antes da API;
+- adicionados tokens efêmeros de claim por tentativa de job;
+- adicionados leases de `claimed` e `running`;
+- `claimed` expirado pode voltar à fila se a execução nunca iniciou;
+- `running` expirado vira `stalled` e não é reentregue automaticamente;
+- retry de `stalled` exige confirmação administrativa e invalida o claim anterior;
+- resultados terminais repetidos e idênticos são idempotentes;
+- resultados conflitantes ou claims obsoletos são recusados;
+- agente renova o lease durante operações demoradas;
+- dashboard mostra jobs `stalled`, tentativa atual e ação de revisão/retry;
+- adicionados testes automatizados para claim, idempotência, lease, stalled e retry;
+- CI passa a validar migrations em PostgreSQL real;
+- configuração dos leases exposta em `.env.example`.
+
+> Dados de SQLite de versões anteriores não são migrados automaticamente para PostgreSQL.
+
 ## 0.6.0
 
 - adicionada integração opcional Greenbone/OpenVAS via GMP;

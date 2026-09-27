@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.6. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.7. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -26,6 +26,12 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - checkpoint de rollback antes do patch, quando suportado;
 - aprovação manual de rollback;
 - evidências e trilha de auditoria;
+- PostgreSQL como banco padrão no Docker Compose;
+- schema versionado com Alembic;
+- lease por tentativa de execução e token efêmero de claim;
+- resultados terminais idempotentes;
+- jobs em execução com lease expirado viram `stalled` e nunca são reentregues automaticamente;
+- retry de job `stalled` exige revisão e confirmação administrativa;
 - autenticação separada para administrador, enrollment e agentes;
 - token individual por endpoint;
 - nenhuma ação de shell remoto arbitrário.
@@ -48,7 +54,7 @@ A tela de execuções consolida status do job, validação pós-patch e estado d
 
 ![Be Safe Patch Manager — Arquitetura geral](docs/images/architecture-overview.webp)
 
-A implementação atual é centralizada em FastAPI e usa SQLite no MVP. Os agentes Windows e Linux fazem polling de jobs, enviam heartbeat, inventário, patch scan e evidências de execução.
+A implementação atual é centralizada em FastAPI. O Docker Compose usa PostgreSQL por padrão e o schema é versionado com Alembic. SQLite continua disponível para desenvolvimento e testes. Os agentes Windows e Linux fazem polling de jobs, enviam heartbeat, inventário, patch scan e evidências de execução.
 
 A v0.6 possui ingestão normalizada, correlação com endpoints e sync opcional automático ou manual via GMP. A plataforma continua sem declarar remediação automaticamente: o status remediado deve representar evidência explícita do scanner/processo.
 
@@ -163,7 +169,7 @@ O job de rollback usa somente o restore point registrado e agenda o reboot neces
 
 ### Linux
 
-O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.4, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
+O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.7, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
 
 A campanha pode usar dois modos:
 
@@ -180,17 +186,22 @@ Pré-requisitos: Docker e Docker Compose.
 cp .env.example .env
 ```
 
-Gere dois tokens fortes, aleatórios e diferentes:
+Gere os segredos antes de subir o ambiente:
 
 ```bash
 python3 - <<'PY'
 import secrets
 print("ADMIN_TOKEN=" + secrets.token_urlsafe(48))
 print("ENROLLMENT_TOKEN=" + secrets.token_urlsafe(48))
+print("POSTGRES_PASSWORD=" + secrets.token_urlsafe(48))
 PY
 ```
 
-Copie os valores para `.env` e suba o serviço:
+Copie os valores para `.env`. O Compose sobe PostgreSQL, aguarda o healthcheck do banco e executa `alembic upgrade head` antes de iniciar a API.
+
+> A v0.7 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
+
+Suba o serviço:
 
 ```bash
 docker compose up -d --build
@@ -248,6 +259,21 @@ As ações aceitas são restritas a:
 
 Não existe endpoint de shell remoto arbitrário.
 
+## Semântica segura de execução
+
+Cada entrega de job recebe um token efêmero de claim e um lease.
+
+- um job `claimed` que nunca começou pode voltar à fila quando o lease expira;
+- quando o agente informa `running`, passa a renovar o lease enquanto a operação está em andamento;
+- um job `running` com lease expirado vira `stalled`;
+- `stalled` nunca é reexecutado automaticamente;
+- o operador precisa revisar e aprovar explicitamente um retry;
+- o retry invalida o token da tentativa anterior;
+- um resultado terminal repetido e idêntico é aceito de forma idempotente;
+- um resultado terminal conflitante é recusado.
+
+Os tempos padrão são configuráveis por `JOB_CLAIM_LEASE_SECONDS` e `JOB_RUNNING_LEASE_SECONDS`.
+
 ## Segurança já implementada
 
 - `ADMIN_TOKEN` e `ENROLLMENT_TOKEN` obrigatórios, fortes e distintos;
@@ -263,10 +289,16 @@ Não existe endpoint de shell remoto arbitrário.
 - validação pós-patch;
 - aprovação manual de rollback;
 - auditoria de operações;
+- leases de execução e proteção contra resultado de tentativa obsoleta;
+- retry manual para jobs `stalled`;
+- PostgreSQL no Compose;
+- migrations Alembic;
+- testes automatizados de semântica de jobs;
+- CI executando migrations contra PostgreSQL real;
 - `.gitignore` para secrets, chaves, certificados, bancos e logs;
 - SECURITY.md;
 - pre-publish security check;
-- CI com validação de Python, Shell e JavaScript.
+- CI com migrations PostgreSQL, testes Python, validação de Python, Shell e JavaScript.
 
 Para produção, ainda são recomendados:
 
@@ -274,7 +306,6 @@ Para produção, ainda são recomendados:
 - SSO/RBAC;
 - rotação e revogação de credenciais;
 - mTLS para agentes;
-- PostgreSQL;
 - backup e HA;
 - rate limiting;
 - code signing do agente;
@@ -304,7 +335,13 @@ be-safe-patch-manager/
 ├── scripts/pre-publish-check.py
 ├── server/
 │   ├── Dockerfile
+│   ├── entrypoint.sh
+│   ├── alembic.ini
+│   ├── alembic/
+│   │   └── versions/
 │   ├── requirements.txt
+│   ├── requirements-dev.txt
+│   ├── tests/
 │   └── app/
 │       ├── main.py
 │       ├── greenbone.py
@@ -336,9 +373,9 @@ Próximas evoluções planejadas:
 - patching de aplicações de terceiros;
 - integração ITSM/SOAR;
 - SLA, exceções e relatórios consolidados;
-- testes automatizados Windows/Linux;
+- testes de integração reais em endpoints Windows/Linux;
 - assinatura e distribuição endurecida do agente;
-- PostgreSQL e HA.
+- HA e estratégia de backup/restore testada.
 
 ## Licença
 
