@@ -870,13 +870,54 @@ def asset_risk_score(agent: Agent, findings: list[VulnerabilityFinding], referen
             "contribution": round(contribution, 1),
         }
 
-    raw_score = (
-        criticality["score"]
-        * exposure["multiplier"]
-        * weighted
-        * compensating["multiplier"]
-    )
+    base_weighted = weighted
+    criticality_effect = base_weighted * max(0.0, criticality["score"] - 1)
+    exposure_effect = base_weighted * criticality["score"] * max(0.0, exposure["multiplier"] - 1.0)
+    pre_compensation = base_weighted * criticality["score"] * exposure["multiplier"]
+    compensation_reduction = pre_compensation * max(0.0, 1.0 - compensating["multiplier"])
+
+    raw_score = pre_compensation * compensating["multiplier"]
     score = round(min(1000.0, raw_score), 1)
+
+    contributor_values = []
+    for severity, data in bucket_breakdown.items():
+        contributor_values.append({
+            "name": f"findings:{severity}",
+            "category": "vulnerabilities",
+            "raw": round(data["contribution"], 1),
+        })
+    if criticality_effect > 0:
+        contributor_values.append({
+            "name": "asset_criticality",
+            "category": "asset_context",
+            "raw": round(criticality_effect, 1),
+        })
+    if exposure_effect > 0:
+        contributor_values.append({
+            "name": "external_exposure",
+            "category": "asset_context",
+            "raw": round(exposure_effect, 1),
+        })
+    if compensation_reduction > 0:
+        contributor_values.append({
+            "name": "compensating_controls",
+            "category": "risk_reduction",
+            "raw": round(-compensation_reduction, 1),
+        })
+
+    positive_total = sum(max(0.0, item["raw"]) for item in contributor_values)
+    decomposition = []
+    for item in contributor_values:
+        contribution_percent = (
+            round(max(0.0, item["raw"]) / positive_total * 100, 1)
+            if positive_total and item["raw"] > 0
+            else 0.0
+        )
+        decomposition.append({
+            **item,
+            "percent": contribution_percent,
+        })
+    decomposition.sort(key=lambda item: abs(item["raw"]), reverse=True)
 
     if score >= 850:
         level = "critical"
@@ -900,6 +941,7 @@ def asset_risk_score(agent: Agent, findings: list[VulnerabilityFinding], referen
         "compensating": compensating,
         "open_findings": len(open_findings),
         "buckets": bucket_breakdown,
+        "decomposition": decomposition,
         "top_factors": sorted(set(top_factors)),
     }
 
@@ -1021,6 +1063,22 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
             }
         row["risk"]["trend"] = trend
 
+    contributor_totals = {}
+    for row in rows:
+        for item in row["risk"].get("decomposition", []):
+            if item["raw"] <= 0:
+                continue
+            contributor_totals[item["name"]] = contributor_totals.get(item["name"], 0.0) + item["raw"]
+
+    top_contributors = [
+        {"name": name, "raw": round(value, 1)}
+        for name, value in sorted(
+            contributor_totals.items(),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )[:10]
+    ]
+
     summary = {
         "assets": len(rows),
         "critical": sum(1 for row in rows if row["risk"]["level"] == "critical"),
@@ -1042,6 +1100,7 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
         "model": "be_safe_asset_risk_v1",
         "scale": {"min": 0, "max": 1000},
         "summary": summary,
+        "top_contributors": top_contributors,
         "assets": rows,
     }
 
