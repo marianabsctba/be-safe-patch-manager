@@ -3227,6 +3227,8 @@ def advance_campaign(
         raise HTTPException(status_code=409, detail="campaign must be deployed before advancing")
     if body.target_percent <= campaign.ring_percent:
         raise HTTPException(status_code=400, detail="target ring must be greater than current ring")
+    if campaign.action == "activate_agent_update" and principal.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required to advance agent update rollout")
 
     health = campaign_health(campaign)
     if campaign.action == "activate_agent_update" and body.override_health_gate:

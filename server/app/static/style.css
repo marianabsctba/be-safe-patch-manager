@@ -675,6 +675,15 @@ tbody tr:last-child td {
   align-items:start;
 }
 
+.campaign-list-panel {
+  grid-column:2;
+  grid-row:1 / span 2;
+}
+
+.agent-rollout-panel {
+  border-color:rgba(255,45,132,.24);
+}
+
 .grid-form {
   display:grid;
   grid-template-columns:repeat(2,minmax(0,1fr));
@@ -1119,6 +1128,11 @@ body.drawer-open { overflow:hidden; }
 
   .campaign-layout {
     grid-template-columns:1fr;
+  }
+
+  .campaign-list-panel {
+    grid-column:auto;
+    grid-row:auto;
   }
 }
 

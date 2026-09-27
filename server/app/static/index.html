@@ -221,6 +221,62 @@
 
         <section class="view" data-view-panel="campaigns">
           <div class="campaign-layout">
+            <section class="panel agent-rollout-panel" data-min-role="admin" hidden>
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">AGENT LIFECYCLE</p>
+                  <h2>Rollout do agente</h2>
+                </div>
+              </div>
+
+              <form id="agentRolloutForm" class="grid-form">
+                <label class="wide">
+                  <span>Nome</span>
+                  <input name="name" placeholder="Ex.: Agent 0.17 Piloto" required />
+                </label>
+
+                <label>
+                  <span>Versão staged</span>
+                  <input id="agentRolloutVersion" name="expected_version" placeholder="0.17.0" required />
+                </label>
+
+                <label>
+                  <span>Ring inicial</span>
+                  <select name="ring_percent">
+                    <option value="10">10%</option>
+                    <option value="30">30%</option>
+                    <option value="100">100%</option>
+                  </select>
+                </label>
+
+                <label class="wide">
+                  <span>Tag alvo</span>
+                  <input name="target_tag" placeholder="piloto, prod..." />
+                </label>
+
+                <label class="wide">
+                  <span>Descrição</span>
+                  <textarea name="description" placeholder="Objetivo e contexto do rollout"></textarea>
+                </label>
+
+                <label class="wide">
+                  <span>Motivo da aprovação</span>
+                  <textarea name="reason" placeholder="Ex.: release validada no ring de laboratório" required></textarea>
+                </label>
+
+                <label class="check wide">
+                  <input name="acknowledge_risk" type="checkbox" required />
+                  <span>Confirmo restart do agente e watchdog com rollback automático</span>
+                </label>
+
+                <p class="form-hint wide">
+                  Entram somente endpoints Linux que já reportam exatamente essa versão como staged. A população elegível é congelada no início. O gate do rollout do agente não pode ser ignorado.
+                </p>
+
+                <button type="submit" class="primary wide">Criar e iniciar rollout</button>
+              </form>
+            </section>
+
             <section class="panel" data-min-role="operator" hidden>
               <div class="panel-head">
                 <div>
@@ -395,7 +451,7 @@
               </form>
             </section>
 
-            <section class="panel">
+            <section class="panel campaign-list-panel">
               <div class="panel-head">
                 <div>
                   <p class="section-kicker">DEPLOYMENTS</p>

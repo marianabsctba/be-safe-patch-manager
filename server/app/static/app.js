@@ -124,6 +124,7 @@ function actionLabel(action) {
   if (action === 'install_updates') return 'Instalar updates';
   if (action === 'rollback_checkpoint') return 'Rollback aprovado';
   if (action === 'activate_agent_update') return 'Ativar update do agente';
+  if (action === 'clear_agent_update_quarantine') return 'Liberar quarentena do agente';
   return 'Scan de updates';
 }
 
@@ -281,6 +282,7 @@ function renderAll() {
   renderVulnerabilities();
   renderCampaigns();
   renderOverviewCampaigns();
+  renderAgentRolloutForm();
   renderJobs();
   renderAudit();
   renderUsers();
@@ -977,6 +979,11 @@ function healthReasonLabel(reason) {
     'waiting for post-patch validation': 'aguardando validação pós-patch',
     'post-patch health regression or unhealthy critical check': 'regressão de saúde pós-patch',
     'waiting for post-patch health telemetry': 'aguardando telemetria de saúde',
+    'agent release entered quarantine after watchdog rollback': 'release entrou em quarentena após rollback',
+    'agent update was rolled back by watchdog': 'watchdog voltou para a versão anterior',
+    'agent update activation failed': 'ativação do agente falhou',
+    'waiting for agent activation heartbeat confirmation': 'aguardando confirmação da nova versão',
+    'waiting for fresh heartbeat from activated agent': 'aguardando heartbeat novo da versão ativada',
     'healthy': 'saudável',
   };
   return labels[reason] || reason || '';
@@ -1002,6 +1009,7 @@ function campaignCard(campaign, compact = false) {
   const healthRate = Number(health.success_rate || 0);
   const payload = campaign.payload || {};
   const healthPolicy = payload.health_policy || {};
+  const isAgentRollout = payload.rollout_type === 'agent_update' || campaign.action === 'activate_agent_update';
   const healthIssues = (health.validation_details || [])
     .flatMap((item) => item && item.health_validation && Array.isArray(item.health_validation.issues)
       ? item.health_validation.issues
@@ -1014,9 +1022,10 @@ function campaignCard(campaign, compact = false) {
     : 'sem janela restritiva';
 
   let action = '';
-  if (roleAtLeast('operator') && campaign.status === 'draft') {
+  const canControlCampaign = isAgentRollout ? roleAtLeast('admin') : roleAtLeast('operator');
+  if (canControlCampaign && campaign.status === 'draft') {
     action = '<button onclick="deploy(\'' + campaign.id + '\')">Implantar ' + esc(campaign.ring_percent) + '%</button>';
-  } else if (roleAtLeast('operator') && campaign.status === 'deployed' && nextRing) {
+  } else if (canControlCampaign && campaign.status === 'deployed' && nextRing) {
     action = ringReady
       ? '<button onclick="advanceCampaign(\'' + campaign.id + '\',' + nextRing + ')">Avançar para ' + nextRing + '%</button>'
       : '<button disabled title="' + esc(healthReasonLabel(health.reason)) + '">Gate aguardando</button>';
@@ -1038,25 +1047,34 @@ function campaignCard(campaign, compact = false) {
           ${campaign.target_tag ? badge(campaign.target_tag, 'info') : ''}
           ${payload.target_agent_hostname ? badge('endpoint: ' + payload.target_agent_hostname, 'info') : ''}
           ${payload.source_cve ? badge(payload.source_cve, 'warn') : ''}
+          ${isAgentRollout ? badge('AGENT v' + (payload.expected_version || '?'), 'info') : ''}
           <span>Ring atual <strong>${esc(campaign.ring_percent)}%</strong></span>
           <span>${esc(actionLabel(campaign.action))}</span>
           ${campaign.not_before ? `<span>Após ${esc(shortWhen(campaign.not_before))}</span>` : ''}
         </div>
 
         <div class="campaign-policy">
-          <span>Janela: <strong>${esc(windowText)}</strong></span>
-          <span>Reboot: <strong>${esc(rebootPolicyLabel(payload.reboot_policy))}</strong></span>
-          <span>Pós-patch: <strong>${payload.post_patch_validation === false ? 'desativado' : 'obrigatório'}</strong></span>
-          <span>Saúde: <strong>${healthPolicy.enabled
-            ? 'CPU Δ' + esc(healthPolicy.cpu_max_delta) + ' · MEM Δ' + esc(healthPolicy.memory_max_delta) + ' · disco Δ' + esc(healthPolicy.disk_max_free_drop)
-            : 'desativada'}</strong></span>
-          ${healthPolicy.enabled && (healthPolicy.critical_services || []).length
-            ? '<span>Serviços: <strong>' + esc((healthPolicy.critical_services || []).length) + '</strong></span>'
-            : ''}
-          ${healthPolicy.enabled && (healthPolicy.application_checks || []).length
-            ? '<span>Apps: <strong>' + esc((healthPolicy.application_checks || []).length) + '</strong></span>'
-            : ''}
-          <span>Rollback: <strong>${payload.prepare_rollback === false ? 'desativado' : payload.rollback_required ? 'checkpoint obrigatório' : 'checkpoint best effort'}</strong></span>
+          ${isAgentRollout ? `
+            <span>Versão alvo: <strong>v${esc(payload.expected_version || '-')}</strong></span>
+            <span>Snapshot: <strong>${Array.isArray(payload.target_agent_ids) ? payload.target_agent_ids.length : 0} endpoint(s)</strong></span>
+            <span>Confirmação: <strong>heartbeat da nova versão</strong></span>
+            <span>Gate: <strong>obrigatório, sem override</strong></span>
+            <span>Falha: <strong>watchdog + quarentena</strong></span>
+          ` : `
+            <span>Janela: <strong>${esc(windowText)}</strong></span>
+            <span>Reboot: <strong>${esc(rebootPolicyLabel(payload.reboot_policy))}</strong></span>
+            <span>Pós-patch: <strong>${payload.post_patch_validation === false ? 'desativado' : 'obrigatório'}</strong></span>
+            <span>Saúde: <strong>${healthPolicy.enabled
+              ? 'CPU Δ' + esc(healthPolicy.cpu_max_delta) + ' · MEM Δ' + esc(healthPolicy.memory_max_delta) + ' · disco Δ' + esc(healthPolicy.disk_max_free_drop)
+              : 'desativada'}</strong></span>
+            ${healthPolicy.enabled && (healthPolicy.critical_services || []).length
+              ? '<span>Serviços: <strong>' + esc((healthPolicy.critical_services || []).length) + '</strong></span>'
+              : ''}
+            ${healthPolicy.enabled && (healthPolicy.application_checks || []).length
+              ? '<span>Apps: <strong>' + esc((healthPolicy.application_checks || []).length) + '</strong></span>'
+              : ''}
+            <span>Rollback: <strong>${payload.prepare_rollback === false ? 'desativado' : payload.rollback_required ? 'checkpoint obrigatório' : 'checkpoint best effort'}</strong></span>
+          `}
         </div>
 
         <div class="campaign-meta">
@@ -1086,6 +1104,14 @@ function campaignCard(campaign, compact = false) {
       ${action ? `<div class="campaign-actions">${action}</div>` : ''}
     </article>
   `;
+}
+
+function renderAgentRolloutForm() {
+  const versionInput = $('#agentRolloutVersion');
+  if (!versionInput) return;
+  if (!versionInput.value && state.agentRelease && state.agentRelease.ready && state.agentRelease.version) {
+    versionInput.value = state.agentRelease.version;
+  }
 }
 
 function renderCampaigns() {
@@ -1560,6 +1586,52 @@ function parseApplicationHealthChecks(value) {
       };
     });
 }
+
+$('#agentRolloutForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!requireRole('admin', 'Somente admin pode iniciar rollout do agente.')) return;
+
+  const form = new FormData(event.target);
+  const expectedVersion = String(form.get('expected_version') || '').trim();
+  const name = String(form.get('name') || '').trim();
+  const reason = String(form.get('reason') || '').trim();
+  const acknowledged = form.get('acknowledge_risk') === 'on';
+
+  if (!acknowledged) {
+    toast('Confirme o risco do restart e rollback do agente.', 'fail');
+    return;
+  }
+
+  if (!confirm('Iniciar rollout do agente v' + expectedVersion + ' no ring de ' + form.get('ring_percent') + '%?')) return;
+
+  try {
+    const result = await api('/api/admin/agent-update-rollouts', {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        description: String(form.get('description') || '').trim(),
+        target_tag: String(form.get('target_tag') || '').trim(),
+        ring_percent: Number(form.get('ring_percent') || 10),
+        expected_version: expectedVersion,
+        reason,
+        acknowledge_risk: true,
+      }),
+    });
+
+    const skipped = result.skipped || {};
+    const skippedTotal = Object.values(skipped).reduce((sum, value) => sum + Number(value || 0), 0);
+    toast(
+      'Rollout iniciado: ' + result.initial_agents + ' no primeiro ring, ' +
+      result.eligible_agents + ' elegíveis' +
+      (skippedTotal ? ', ' + skippedTotal + ' fora do snapshot' : '') + '.'
+    );
+    event.target.reset();
+    renderAgentRolloutForm();
+    await load();
+  } catch (error) {
+    toast('Rollout do agente: ' + error.message, 'fail');
+  }
+});
 
 $('#campaignForm').addEventListener('submit', async (event) => {
   event.preventDefault();
