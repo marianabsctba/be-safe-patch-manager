@@ -191,5 +191,12 @@ class AgentMtlsBindRequest(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+class AssetRiskProfileUpdate(BaseModel):
+    criticality: Optional[int] = Field(default=None, ge=1, le=5)
+    external: Optional[bool] = None
+    compensating_controls: Optional[List[str]] = None
+    reason: str = Field(min_length=5, max_length=1000)
+
+
 class TagUpdate(BaseModel):
     tags: List[str]
