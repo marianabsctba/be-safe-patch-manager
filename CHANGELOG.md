@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.11.0
+
+- backend passa para versão 0.11.0;
+- agente passa a reportar telemetria de saúde com `psutil`;
+- CPU é amostrada e agregada antes de compor o snapshot;
+- adicionados percentuais de memória e espaço livre em disco;
+- baseline de saúde é coletado imediatamente antes da instalação;
+- resultado do job registra `health_baseline` e snapshot imediato pós-patch;
+- política ativa de health gate é persistida no agente por até 24h para sobreviver a reboot;
+- heartbeat pós-patch passa a carregar a telemetria de saúde atual;
+- adicionados thresholds configuráveis de CPU, memória e disco;
+- adicionada validação de serviços críticos Linux/Windows;
+- adicionados health checks locais de aplicação;
+- health URLs são limitadas a localhost/loopback e rejeitam credenciais embutidas;
+- telemetria obrigatória ausente bloqueia o gate em modo fail-closed;
+- health gate não executa rollback automático;
+- console adiciona configuração avançada do health gate;
+- drawer do endpoint exibe CPU, memória, disco e resumo de checks críticos;
+- campanhas exibem política e motivo de regressão;
+- Prometheus ganha métricas agregadas de telemetria e checks falhando;
+- adicionados alertas para checks críticos e erros persistentes de coleta;
+- dashboard Grafana passa a exibir telemetria e health checks;
+- adicionados testes de regressão, baseline, persistência da política e proteção contra health check remoto.
+
 ## 0.10.0
 
 - backend passa para versão 0.10.0;

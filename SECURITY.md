@@ -67,3 +67,16 @@ Prometheus labels are kept low-cardinality and must not contain endpoint hostnam
 `/health` is a liveness probe and does not query the database. `/ready` checks database reachability and the presence of an active administrator.
 
 The backup exporter publishes only backup success state, timestamp, age and size. Backup filenames and SHA-256 values remain in the local runtime status file and are not exported as metrics.
+
+
+## Endpoint health checks
+
+The v0.11 health gate does not introduce arbitrary command execution.
+
+Critical service names are validated against a restricted character set before they are sent to agents. Linux service checks use `systemctl is-active`; Windows service checks use the operating-system service API exposed through psutil.
+
+Application health checks are restricted to HTTP(S) URLs whose host is `localhost` or a loopback IP address. URLs with embedded credentials and remote targets are rejected by the server and validated again by the agent.
+
+Health telemetry stored in heartbeat inventory can contain operational state. Prometheus exports only aggregated counts and never uses service names, application-check names, hostnames or addresses as labels.
+
+A health regression blocks ring advancement. It does not authorize or trigger rollback. Rollback retains its separate administrative approval gate.

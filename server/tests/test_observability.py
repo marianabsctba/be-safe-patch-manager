@@ -100,6 +100,17 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
             pending_updates=4,
             critical_updates=2,
             reboot_required=True,
+            inventory_json=json.dumps({
+                "health": {
+                    "collected_at": now().isoformat(),
+                    "cpu_percent": 25.0,
+                    "memory_percent": 50.0,
+                    "disk": {"free_percent": 40.0},
+                    "services": {"nginx": {"healthy": False, "status": "failed"}},
+                    "applications": {"api": {"healthy": True, "status_code": 200}},
+                    "errors": [],
+                }
+            }),
         )
         campaign = Campaign(
             id="obs-campaign",
@@ -161,6 +172,10 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
     assert "patch_manager_backup_status 1.0" in body
     assert "patch_manager_backup_size_bytes 123456.0" in body
     assert "patch_manager_greenbone_sync_ok 1.0" in body
+    assert "patch_manager_health_telemetry_agents 1.0" in body
+    assert "patch_manager_health_services_unhealthy 1.0" in body
+    assert "patch_manager_health_applications_unhealthy 0.0" in body
+    assert "patch_manager_health_collection_errors 0.0" in body
 
     assert "sensitive-hostname-should-not-leak" not in body
     assert "10.123.45.67" not in body

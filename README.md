@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.10. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.11. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -23,6 +23,13 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - janela de manutenção opcional por horário, dias e timezone;
 - política de reboot;
 - validação pós-patch com heartbeat novo;
+- baseline de saúde imediatamente antes do patch;
+- comparação pós-patch de CPU, memória e espaço livre em disco;
+- validação opcional de serviços críticos;
+- health checks locais de aplicação por HTTP(S) loopback;
+- thresholds de regressão configuráveis por campanha;
+- política de health gate persistida no agente para sobreviver a reboot;
+- modo fail-closed quando telemetria de saúde é obrigatória;
 - checkpoint de rollback antes do patch, quando suportado;
 - aprovação manual de rollback;
 - evidências e trilha de auditoria;
@@ -81,6 +88,8 @@ A v0.6 possui ingestão normalizada, correlação com endpoints e sync opcional 
 
 A v0.8 adiciona autenticação humana e RBAC no próprio Patch Manager. Leituras administrativas exigem pelo menos `viewer`; operação de campanhas, tags, vulnerabilidades e sync exige `operator`; gestão de usuários, retry de jobs `stalled` e rollback exigem `admin`.
 
+A v0.11 adiciona baseline de saúde coletado pelo agente imediatamente antes da instalação e comparação pós-patch antes da promoção do ring. A política pode considerar CPU, memória, espaço livre em disco, serviços críticos e health endpoints locais da aplicação.
+
 ## Fluxo seguro de implantação
 
 ![Be Safe Patch Manager — Fluxo seguro de implantação](docs/images/secure-rollout-flow.webp)
@@ -103,7 +112,39 @@ O health gate exige, no ring atual:
 - validação pós-patch sem falha ou espera;
 - heartbeat novo após a instalação;
 - ausência de reboot ainda pendente;
-- ausência de regressão no número de updates pendentes/críticos em relação ao baseline.
+- ausência de regressão no número de updates pendentes/críticos em relação ao baseline;
+- quando habilitado, health gate de sistema/aplicação sem regressão ou check crítico falhando.
+
+### Critério de regressão de saúde
+
+Quando o health gate avançado está habilitado, o agente coleta um baseline **imediatamente antes** da instalação. A política ativa é mantida localmente por até 24 horas para que o endpoint continue reportando os mesmos checks depois de um reboot.
+
+No heartbeat pós-patch o servidor compara:
+
+- **CPU:** valor absoluto máximo e aumento máximo em pontos percentuais;
+- **memória:** valor absoluto máximo e aumento máximo em pontos percentuais;
+- **disco:** espaço livre mínimo e queda máxima de espaço livre;
+- **serviços críticos:** cada serviço configurado precisa estar saudável;
+- **aplicação:** cada health check configurado precisa responder conforme a política.
+
+Os padrões apresentados pela console são:
+
+- CPU máxima: 95%;
+- aumento máximo de CPU: 40 p.p.;
+- memória máxima: 95%;
+- aumento máximo de memória: 20 p.p.;
+- disco livre mínimo: 5%;
+- queda máxima de disco livre: 10 p.p.
+
+Esses valores são ponto de partida, não uma definição universal de saúde. A campanha pode alterá-los conforme o workload.
+
+A console habilita o health gate avançado por padrão em novas campanhas. Na API, `health_gate_enabled` permanece `false` por padrão para compatibilidade com clientes antigos.
+
+Se `health_gate_require_telemetry=true`, ausência de CPU, memória, disco ou baseline válido bloqueia o gate. Isso evita interpretar falta de evidência como ambiente saudável.
+
+Health checks de aplicação executados pelo agente aceitam somente HTTP(S) para `localhost` ou endereços loopback. URLs remotas e credenciais embutidas são rejeitadas. O objetivo é observar a aplicação local sem criar uma capacidade genérica de acesso HTTP interno.
+
+Uma regressão de saúde **não executa rollback automaticamente**. Ela bloqueia a promoção do próximo ring e apresenta o motivo. Rollback continua exigindo aprovação administrativa explícita.
 
 ## Vulnerabilidades e OpenVAS
 
@@ -192,7 +233,7 @@ O job de rollback usa somente o restore point registrado e agenda o reboot neces
 
 ### Linux
 
-O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.10, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
+O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.11, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
 
 A campanha pode usar dois modos:
 
@@ -228,7 +269,7 @@ Depois do primeiro login confirmado, os valores `BOOTSTRAP_ADMIN_USERNAME` e `BO
 
 O Compose sobe PostgreSQL, aguarda o healthcheck do banco e executa `alembic upgrade head` antes de iniciar a API.
 
-> A v0.10 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
+> A v0.11 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
 
 Para laboratório local:
 
@@ -281,7 +322,7 @@ Cada agente:
 1. faz enrollment inicial;
 2. remove o enrollment token compartilhado;
 3. executa scan periódico;
-4. envia heartbeat com inventário, patches e capacidade de rollback;
+4. envia heartbeat com inventário, patches, telemetria de saúde e capacidade de rollback;
 5. faz polling de jobs;
 6. executa somente ações permitidas;
 7. envia resultado e evidências;
@@ -433,7 +474,7 @@ Regras de alerta:
 deploy/prometheus/patch-manager.rules.yml
 ```
 
-Incluem banco indisponível, aplicação sem scrape, jobs `stalled`, backup ausente/antigo, Greenbone sem sync saudável, proporção elevada de endpoints offline e erros HTTP 5xx persistentes.
+Incluem banco indisponível, aplicação sem scrape, jobs `stalled`, backup ausente/antigo, Greenbone sem sync saudável, proporção elevada de endpoints offline, erros HTTP 5xx persistentes, checks críticos falhando e erros persistentes de coleta de saúde.
 
 Dashboard Grafana:
 
@@ -441,7 +482,7 @@ Dashboard Grafana:
 deploy/grafana/patch-manager-overview.json
 ```
 
-O dashboard mostra estado do banco, endpoints online/offline, jobs stalled, updates críticas, reboots pendentes, backup age, Greenbone, taxa HTTP e p95 de latência.
+O dashboard mostra estado do banco, endpoints online/offline, jobs stalled, updates críticas, reboots pendentes, backup age, Greenbone, taxa HTTP, p95 de latência, endpoints com telemetria e health checks críticos falhando.
 
 As métricas são deliberadamente agregadas. Hostname, IP, usuário, CVE, título de vulnerabilidade, token e fingerprint de certificado não são usados como labels.
 
@@ -467,7 +508,7 @@ Se o Prometheus estiver em container separado, `127.0.0.1` aponta para o própri
 - ACL restritiva no Windows;
 - rollout em rings e health gate;
 - janela de manutenção;
-- validação pós-patch;
+- validação pós-patch com baseline de CPU/memória/disco, serviços e aplicação;
 - aprovação manual de rollback;
 - auditoria de operações;
 - leases de execução e proteção contra resultado de tentativa obsoleta;
