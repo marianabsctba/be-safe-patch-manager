@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.14. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.15. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -380,6 +380,7 @@ As ações aceitas são restritas a:
 - `scan_updates`;
 - `install_updates`;
 - `rollback_checkpoint` — criado pelo servidor somente após aprovação administrativa válida.
+- `activate_agent_update` — disponível no Linux após aprovação administrativa explícita.
 
 Não existe endpoint de shell remoto arbitrário.
 
@@ -400,12 +401,12 @@ Os tempos padrão são configuráveis por `JOB_CLAIM_LEASE_SECONDS` e `JOB_RUNNI
 
 ## Compatibilidade da frota
 
-O agente v0.14 reporta:
+O agente v0.15 reporta:
 
 ```json
 {
   "agent": {
-    "version": "0.14.0",
+    "version": "0.15.0",
     "protocol": 2,
     "capabilities": [
       "scan_updates",
@@ -415,7 +416,8 @@ O agente v0.14 reporta:
       "rollback_checkpoint_v1",
       "rollback_restore_v1",
       "mtls_client_v1",
-      "signed_update_staging_v1"
+      "signed_update_staging_v1",
+      "signed_update_activation_v1"
     ]
   }
 }
@@ -443,7 +445,7 @@ Com enforcement ativo, o servidor calcula as capabilities necessárias pelo job.
 
 `blocked` não significa execução iniciada nem falha do patch. O job permanece associado à campanha e bloqueia a promoção do ring. Quando um heartbeat posterior reporta um agente compatível, o servidor reavalia os jobs bloqueados por compatibilidade e os devolve automaticamente para `pending`.
 
-A v0.14 implementa **distribuição e staging assinados**, mas ainda não ativa automaticamente o código staged. A troca do agente live continua manual até termos promoção atômica e rollback do próprio agente validados em Windows e Linux.
+A v0.15 mantém distribuição e staging assinados e adiciona ativação controlada somente no Linux. Windows continua em staging manual nesta versão.
 
 ## Releases assinadas do agente
 
@@ -490,7 +492,7 @@ Para construir a release da versão declarada em `AGENT_VERSION`:
 python scripts/agent-release.py build \
   --private-key /caminho-seguro/agent-update-private.pem \
   --output releases \
-  --version 0.14.0 \
+  --version 0.15.0 \
   --source-commit "$(git rev-parse HEAD)"
 ```
 
@@ -500,7 +502,7 @@ O build gera:
 releases/
 ├── agent-release.json
 ├── agent-release.sig
-└── be-safe-patch-agent-0.14.0.zip
+└── be-safe-patch-agent-0.15.0.zip
 ```
 
 Valide antes de publicar:
@@ -541,6 +543,21 @@ O agente tb verifica periodicamente conforme `update_check_seconds` quando uma c
 **Ed25519 aqui assina o pacote e o manifest da cadeia de atualização. Isso não substitui Authenticode/EV Code Signing de um executável Windows.** Se no futuro o agente for empacotado como EXE/MSI, a assinatura de plataforma será uma camada adicional.
 
 Rotação da chave de update ainda é deliberadamente manual: reprovisione a nova chave pública por canal administrativo confiável antes de assinar releases apenas com a nova chave.
+
+
+## Ativação segura do agente no Linux
+
+A v0.15 adiciona promoção da release staged no Linux com um launcher estável fora da release ativa.
+
+O primeiro uso precisa executar novamente o instalador Linux da v0.15. O layout passa a usar `releases/<versão>` e um symlink `current`. O systemd inicia `agent_launcher.py`, que então executa a release apontada por `current`.
+
+Quando um admin aprova a ativação pela console, o agente revalida a release assinada, exige versão mais nova, recusa mudança em `requirements.txt`, executa compile check e preflight, grava a nova release e troca o symlink `current` de forma atômica.
+
+A ativação só é confirmada depois que a nova versão sobe e consegue enviar heartbeat ao servidor. Enquanto isso, o launcher conta tentativas de inicialização. Após três tentativas sem confirmação, ele restaura automaticamente a versão anterior.
+
+A v0.15 não atualiza dependências durante self update. Se `requirements.txt` mudar, a ativação automática é recusada e o endpoint precisa de redeploy controlado pelo instalador.
+
+Windows continua somente com staging assinado nesta versão.
 
 ## Autenticação e RBAC
 
@@ -801,7 +818,7 @@ Próximas evoluções planejadas:
 - integração ITSM/SOAR;
 - SLA, exceções e relatórios consolidados;
 - testes de integração reais em endpoints Windows/Linux;
-- ativação atômica/rollback automático do próprio agente após testes Windows/Linux;
+- ativação segura equivalente do agente no Windows;
 - HA, retenção off-host e testes periódicos de recuperação completa.
 
 ## Licença
