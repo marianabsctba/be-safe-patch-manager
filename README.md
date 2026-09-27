@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.15. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.17; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -67,6 +67,18 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - bloqueio de downgrade e de artefato com path traversal/arquivo inesperado;
 - staging protegido sem ativação automática;
 - estado de update reportado no inventário, console, Prometheus e Grafana;
+- releases que sofrem rollback do watchdog entram em quarentena;
+- liberação de quarentena exige aprovação administrativa explícita;
+- provenance de release com source commit e identidade da chave de assinatura;
+- rollout do próprio agente em rings 10%, 30% e 100% com snapshot congelado;
+- rollout do agente exige 100% de sucesso no ring e não permite override do gate;
+- timeout de confirmação da nova versão do agente;
+- limpeza segura de releases antigas e staging somente após ativação confirmada;
+- aprovações de ativação do agente possuem TTL curto;
+- endpoint precisa ter heartbeat recente para entrar em nova aprovação;
+- aprovação fica vinculada à versão, SHA-256, source commit e signing key id da release;
+- autorização é revalidada imediatamente antes do claim;
+- preview administrativo mostra população elegível e primeiro ring antes da aprovação;
 - HTTPS de produção com NGINX e TLS 1.2/1.3;
 - mTLS obrigatório nas rotas de agentes no overlay de produção;
 - certificado cliente vinculado ao `agent_id` por fingerprint;
@@ -116,6 +128,12 @@ A v0.12 fecha o ciclo de remediação para findings Greenbone vinculados a campa
 A v0.13 adiciona governança da frota de agentes. Cada heartbeat passa a informar versão do agente, versão do protocolo e capabilities suportadas. O servidor calcula compatibilidade sem depender de labels por endpoint e pode impedir o claim de jobs incompatíveis em produção.
 
 A v0.14 adiciona cadeia de confiança para distribuição do agente. Releases são empacotadas com manifest assinado por Ed25519. O servidor valida assinatura, SHA-256 e tamanho antes de publicar; o agente repete a validação usando uma chave pública provisionada fora do canal de update e apenas prepara a nova versão em staging.
+
+A v0.15 adiciona ativação segura do agente Linux com launcher estável, releases versionadas, troca atômica do symlink `current`, confirmação por heartbeat e retorno automático à versão anterior quando a nova release não confirma inicialização.
+
+A v0.16 endurece o lifecycle do agente. Releases que sofrem rollback entram em quarentena, a liberação exige admin, rollouts do agente usam snapshot congelado e rings 10%, 30% e 100% com gate obrigatório, 100% de sucesso e sem override. O manifest assinado passa a carregar `source_commit` e `signing_key_id`, e o agente faz limpeza segura de releases antigas somente após ativação confirmada.
+
+A v0.17 endurece o control plane sem alterar o agente. Aprovações de ativação têm TTL, exigem heartbeat recente e ficam vinculadas à identidade completa da release assinada. Antes de qualquer claim, o servidor revalida expiração, SHA-256, source commit, signing key e release publicada. A console também permite pré-visualizar o snapshot elegível antes de aprovar o rollout.
 
 ## Fluxo seguro de implantação
 
@@ -401,12 +419,12 @@ Os tempos padrão são configuráveis por `JOB_CLAIM_LEASE_SECONDS` e `JOB_RUNNI
 
 ## Compatibilidade da frota
 
-O agente v0.15 reporta:
+O agente v0.16 reporta:
 
 ```json
 {
   "agent": {
-    "version": "0.15.0",
+    "version": "0.16.0",
     "protocol": 2,
     "capabilities": [
       "scan_updates",
@@ -417,7 +435,8 @@ O agente v0.15 reporta:
       "rollback_restore_v1",
       "mtls_client_v1",
       "signed_update_staging_v1",
-      "signed_update_activation_v1"
+      "signed_update_activation_v1",
+      "signed_update_quarantine_v1"
     ]
   }
 }
@@ -445,7 +464,7 @@ Com enforcement ativo, o servidor calcula as capabilities necessárias pelo job.
 
 `blocked` não significa execução iniciada nem falha do patch. O job permanece associado à campanha e bloqueia a promoção do ring. Quando um heartbeat posterior reporta um agente compatível, o servidor reavalia os jobs bloqueados por compatibilidade e os devolve automaticamente para `pending`.
 
-A v0.15 mantém distribuição e staging assinados e adiciona ativação controlada somente no Linux. Windows continua em staging manual nesta versão.
+O agente v0.16 mantém distribuição e staging assinados e adiciona quarentena, rollout hard gated e limpeza segura do lifecycle no Linux. Windows continua em staging manual.
 
 ## Releases assinadas do agente
 
@@ -492,7 +511,7 @@ Para construir a release da versão declarada em `AGENT_VERSION`:
 python scripts/agent-release.py build \
   --private-key /caminho-seguro/agent-update-private.pem \
   --output releases \
-  --version 0.15.0 \
+  --version 0.16.0 \
   --source-commit "$(git rev-parse HEAD)"
 ```
 
@@ -502,7 +521,7 @@ O build gera:
 releases/
 ├── agent-release.json
 ├── agent-release.sig
-└── be-safe-patch-agent-0.15.0.zip
+└── be-safe-patch-agent-0.16.0.zip
 ```
 
 Valide antes de publicar:
@@ -558,6 +577,34 @@ A ativação só é confirmada depois que a nova versão sobe e consegue enviar 
 A v0.15 não atualiza dependências durante self update. Se `requirements.txt` mudar, a ativação automática é recusada e o endpoint precisa de redeploy controlado pelo instalador.
 
 Windows continua somente com staging assinado nesta versão.
+
+## Rollout controlado do próprio agente
+
+A partir da v0.16, a console pode orquestrar a ativação Linux em rings de 10%, 30% e 100%.
+
+A população elegível é congelada quando o rollout é criado. Endpoints adicionados depois não entram silenciosamente no mesmo rollout. O gate do agente exige 100% de sucesso no ring atual, confirmação da nova versão por heartbeat e não permite override administrativo.
+
+Se o watchdog voltar para a versão anterior, a release entra em quarentena naquele endpoint e bloqueia nova ativação até uma liberação administrativa explícita.
+
+A v0.17 adiciona autorização curta ao control plane. Por padrão:
+
+```dotenv
+AGENT_UPDATE_APPROVAL_TTL_SECONDS=1800
+AGENT_UPDATE_MAX_HEARTBEAT_AGE_SECONDS=900
+```
+
+Uma nova aprovação exige heartbeat recente. O job armazena a identidade da release autorizada, composta por versão, SHA-256 do artefato, `source_commit` e `signing_key_id`.
+
+No momento do claim, o servidor confere novamente:
+
+1. se a aprovação ainda está dentro do TTL;
+2. se o endpoint ainda reporta a mesma release staged;
+3. se SHA-256, source commit e signing key continuam iguais;
+4. se a release publicada no servidor continua sendo exatamente a release aprovada.
+
+Se qualquer uma dessas verificações falhar, o job vira `skipped` antes de receber claim token.
+
+A tela de rollout possui preview que calcula a população elegível, os motivos de exclusão e os endpoints que entrariam no primeiro ring. O preview ajuda a decisão operacional, mas não substitui as verificações do servidor: criação, avanço de ring e claim revalidam as condições novamente.
 
 ## Autenticação e RBAC
 
