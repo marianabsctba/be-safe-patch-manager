@@ -685,7 +685,9 @@ def evaluate_health_regression(policy: dict, baseline: dict, current: dict):
 
     baseline_cpu = _number(baseline.get("cpu_percent"))
     current_cpu = _number(current.get("cpu_percent"))
-    if baseline_cpu is not None and current_cpu is not None:
+    if required and (baseline_cpu is None or current_cpu is None):
+        issues.append("CPU telemetry unavailable")
+    elif baseline_cpu is not None and current_cpu is not None:
         delta = round(current_cpu - baseline_cpu, 2)
         comparisons["cpu"] = {"baseline": baseline_cpu, "current": current_cpu, "delta": delta}
         if current_cpu > float(policy.get("cpu_max_percent", 95.0)):
@@ -695,7 +697,9 @@ def evaluate_health_regression(policy: dict, baseline: dict, current: dict):
 
     baseline_memory = _number(baseline.get("memory_percent"))
     current_memory = _number(current.get("memory_percent"))
-    if baseline_memory is not None and current_memory is not None:
+    if required and (baseline_memory is None or current_memory is None):
+        issues.append("memory telemetry unavailable")
+    elif baseline_memory is not None and current_memory is not None:
         delta = round(current_memory - baseline_memory, 2)
         comparisons["memory"] = {"baseline": baseline_memory, "current": current_memory, "delta": delta}
         if current_memory > float(policy.get("memory_max_percent", 95.0)):
@@ -705,7 +709,9 @@ def evaluate_health_regression(policy: dict, baseline: dict, current: dict):
 
     baseline_disk = _number((baseline.get("disk") or {}).get("free_percent"))
     current_disk = _number((current.get("disk") or {}).get("free_percent"))
-    if baseline_disk is not None and current_disk is not None:
+    if required and (baseline_disk is None or current_disk is None):
+        issues.append("disk telemetry unavailable")
+    elif baseline_disk is not None and current_disk is not None:
         drop = round(baseline_disk - current_disk, 2)
         comparisons["disk_free"] = {"baseline": baseline_disk, "current": current_disk, "drop": drop}
         if current_disk < float(policy.get("disk_min_free_percent", 5.0)):
