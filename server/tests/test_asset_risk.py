@@ -256,3 +256,44 @@ def test_snapshot_respects_minimum_interval(db):
     assert first["created"] == 1
     assert second["created"] == 0
     assert second["skipped"] == 1
+
+
+
+def test_asset_risk_decomposition_is_explainable():
+    agent = make_agent("decomp-asset", ["tier0", "internet-facing", "segmented"])
+    finding = make_finding(
+        "decomp-f",
+        agent,
+        "critical",
+        9.8,
+        {"threat_intel": {"epss": 0.9, "kev": True}},
+    )
+
+    risk = main.asset_risk_score(agent, [finding], REFERENCE)
+    names = {item["name"] for item in risk["decomposition"]}
+
+    assert "findings:critical" in names
+    assert "asset_criticality" in names
+    assert "external_exposure" in names
+    assert "compensating_controls" in names
+    assert any(item["raw"] < 0 for item in risk["decomposition"] if item["name"] == "compensating_controls")
+
+
+def test_asset_risk_report_aggregates_top_contributors(db):
+    agent = make_agent("contrib-asset", ["tier0", "internet-facing"])
+    db.add_all([
+        agent,
+        make_finding(
+            "contrib-f",
+            agent,
+            "critical",
+            9.8,
+            {"threat_intel": {"epss": 0.95, "kev": True}},
+        ),
+    ])
+    db.commit()
+
+    report = main.asset_risk_report(db, REFERENCE)
+
+    assert report["top_contributors"]
+    assert report["top_contributors"][0]["raw"] > 0
