@@ -10,6 +10,7 @@ const state = {
   vulnerabilities: [],
   greenbone: null,
   threatIntel: null,
+  remediationQueue: null,
   agentRelease: null,
   campaigns: [],
   jobs: [],
@@ -232,12 +233,13 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
       api('/api/admin/integrations/greenbone'),
       api('/api/admin/integrations/threat-intel'),
+      api('/api/admin/reports/remediation-queue'),
       api('/api/admin/agent-release'),
       api('/api/admin/campaigns'),
       api('/api/admin/jobs'),
@@ -250,6 +252,7 @@ async function load() {
     state.vulnerabilities = vulnerabilities;
     state.greenbone = greenbone;
     state.threatIntel = threatIntel;
+    state.remediationQueue = remediationQueue;
     state.agentRelease = agentRelease;
     state.campaigns = campaigns;
     state.jobs = jobs;
@@ -283,6 +286,7 @@ function renderAll() {
   renderRiskEndpoints();
   renderGreenboneIntegration();
   renderThreatIntelIntegration();
+  renderRemediationQueue();
   renderVulnerabilities();
   renderCampaigns();
   renderOverviewCampaigns();
@@ -306,6 +310,7 @@ function renderSummary(summary) {
     { label: 'SLA próximo', value: summary.sla_due_soon_vulnerabilities || 0, hint: 'vence em até 24h', cls: summary.sla_due_soon_vulnerabilities ? 'warn' : 'ok' },
     { label: 'Exceções SLA', value: summary.sla_exception_vulnerabilities || 0, hint: 'aprovadas e ainda válidas', cls: summary.sla_exception_vulnerabilities ? 'accent' : 'ok' },
     { label: 'Risco urgente', value: summary.urgent_risk_vulnerabilities || 0, hint: 'priorização contextual', cls: summary.urgent_risk_vulnerabilities ? 'danger' : 'ok' },
+    { label: 'Prontas p/ remediação', value: summary.remediation_ready_vulnerabilities || 0, hint: 'campanha possível', cls: summary.remediation_ready_vulnerabilities ? 'accent' : 'ok' },
     { label: 'Agentes incompatíveis', value: Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0), hint: summary.compatibility_enforced ? 'enforcement ativo' : 'somente observação', cls: (Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0)) ? 'danger' : 'ok' },
     { label: 'Jobs bloqueados', value: summary.blocked_jobs || 0, hint: 'aguardando upgrade do agente', cls: summary.blocked_jobs ? 'danger' : 'ok' },
     { label: 'Update staged', value: summary.agent_update_staged || 0, hint: 'assinado e aguardando ativação', cls: summary.agent_update_staged ? 'accent' : 'ok' },
@@ -608,6 +613,62 @@ function renderThreatIntelIntegration() {
 }
 
 
+function remediationActionBadge(action) {
+  const labels = {
+    patch_now: ['PATCH AGORA', 'fail'],
+    schedule_patch: ['AGENDAR', 'warn'],
+    plan_patch: ['PLANEJAR', 'info'],
+    scan_or_manual_triage: ['TRIAGEM', 'warn'],
+    correlate_asset: ['CORRELACIONAR', 'fail'],
+    exception_active: ['EXCEÇÃO ATIVA', 'info'],
+    none: ['SEM AÇÃO', 'muted-badge'],
+  };
+  const item = labels[action] || [action || '-', 'info'];
+  return badge(item[0], item[1]);
+}
+
+function renderRemediationQueue() {
+  const report = state.remediationQueue || {};
+  const summary = report.summary || {};
+  const items = Array.isArray(report.items) ? report.items.slice(0, 10) : [];
+
+  $('#remediationQueueStats').innerHTML = [
+    ['Patch agora', summary.patch_now || 0],
+    ['Agendar', summary.schedule_patch || 0],
+    ['Triagem', summary.scan_or_manual_triage || 0],
+    ['Correlacionar', summary.correlate_asset || 0],
+    ['Prontas p/ campanha', summary.eligible_for_campaign || 0],
+  ].map(([label, value]) =>
+    '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+  ).join('');
+
+  if (!items.length) {
+    $('#remediationQueue').innerHTML =
+      '<tr><td colspan="7"><div class="empty-state good">Nenhuma vulnerabilidade aberta na fila.</div></td></tr>';
+    return;
+  }
+
+  $('#remediationQueue').innerHTML = items.map((item) => {
+    const rec = item.recommendation || {};
+    const risk = rec.risk || {};
+    const reasons = Array.isArray(rec.reasons) ? rec.reasons : [];
+    return '<tr>' +
+      '<td><strong>' + esc(item.cve || 'sem CVE') + '</strong><br><small class="muted">' + esc(item.hostname || 'sem endpoint') + '</small></td>' +
+      '<td>' + remediationActionBadge(rec.action) + '</td>' +
+      '<td><strong>' + esc(rec.priority_score == null ? '-' : rec.priority_score) + '</strong></td>' +
+      '<td>' + vulnerabilityRiskBadge(risk) + '</td>' +
+      '<td>' + vulnerabilitySlaBadge(rec.sla) + '</td>' +
+      '<td><small>' + esc(reasons.join(' · ') || '-') + '</small></td>' +
+      '<td>' + (
+        rec.eligible_for_campaign && item.agent_id && roleAtLeast('operator')
+          ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + item.id + '\')">Preparar campanha</button>'
+          : ''
+      ) + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+
 function remediationStatusLabel(status) {
   const labels = {
     waiting_validation: 'aguardando validação',
@@ -821,10 +882,16 @@ window.prepareCampaignFromFinding = (findingId) => {
   form.elements.ring_percent.value = 100;
   form.elements.action.value = (finding.patch_refs || []).length ? 'install_updates' : 'scan_updates';
   form.elements.packages.value = (finding.patch_refs || []).join(', ');
+  const recommendation = state.remediationQueue && Array.isArray(state.remediationQueue.items)
+    ? state.remediationQueue.items.find((item) => item.id === finding.id)
+    : null;
+  const rec = recommendation ? recommendation.recommendation || {} : {};
   form.elements.description.value =
     'Remediação de ' + (finding.cve || finding.external_id) +
     ' detectada por ' + finding.source +
     ' · CVSS ' + Number(finding.cvss || 0).toFixed(1) +
+    (finding.risk ? ' · risco ' + finding.risk.score + '/100' : '') +
+    (rec.action ? ' · recomendação ' + rec.action : '') +
     (finding.title ? ' · ' + finding.title : '');
 
   const context = $('#campaignSourceContext');
