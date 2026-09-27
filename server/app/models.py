@@ -104,6 +104,36 @@ class VulnerabilityFinding(Base):
     agent = relationship("Agent", back_populates="vulnerabilities")
 
 
+class RemediationEvidence(Base):
+    __tablename__ = "remediation_evidence"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_remediation_evidence_job"),
+    )
+
+    id = Column(String(36), primary_key=True)
+    finding_id = Column(String(36), ForeignKey("vulnerability_findings.id"), nullable=False, index=True)
+    campaign_id = Column(String(36), ForeignKey("campaigns.id"), nullable=False, index=True)
+    job_id = Column(String(36), ForeignKey("patch_jobs.id"), nullable=False, index=True)
+    agent_id = Column(String(36), ForeignKey("agents.id"), nullable=False, index=True)
+    source = Column(String(64), nullable=False, default="openvas")
+    cve = Column(String(64), nullable=False, default="", index=True)
+    greenbone_task_id = Column(String(64), nullable=False, default="", index=True)
+    baseline_report_id = Column(String(255), nullable=False, default="")
+    rescan_report_id = Column(String(255), nullable=False, default="", index=True)
+    status = Column(String(32), nullable=False, default="waiting_validation", index=True)
+    error = Column(Text, nullable=False, default="")
+    evidence_json = Column(Text, nullable=False, default="{}")
+    requested_at = Column(DateTime(timezone=True), nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    finding = relationship("VulnerabilityFinding")
+    campaign = relationship("Campaign")
+    job = relationship("PatchJob")
+    agent = relationship("Agent")
+
+
 class IntegrationState(Base):
     __tablename__ = "integration_states"
 

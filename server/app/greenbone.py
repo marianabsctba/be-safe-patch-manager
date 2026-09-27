@@ -117,7 +117,12 @@ def _text(element, path: str) -> str:
 
 def _report_ids(gmp, config: GreenboneConfig):
     if config.report_id:
-        return [{"task_id": "", "task_name": "", "report_id": config.report_id}]
+        return [{
+            "task_id": "",
+            "task_name": "",
+            "task_status": "",
+            "report_id": config.report_id,
+        }]
 
     tasks = gmp.get_tasks(filter_string=config.task_filter or None)
     reports = []
@@ -137,7 +142,12 @@ def _report_ids(gmp, config: GreenboneConfig):
                 report_id = str(candidate.get("id"))
                 break
         if report_id and report_id not in seen:
-            reports.append({"task_id": task_id, "task_name": task_name, "report_id": report_id})
+            reports.append({
+                "task_id": task_id,
+                "task_name": task_name,
+                "task_status": _text(task, "status"),
+                "report_id": report_id,
+            })
             seen.add(report_id)
     return reports
 
@@ -260,3 +270,43 @@ def fetch_findings(config: GreenboneConfig | None = None) -> dict:
         raise RuntimeError(f"Greenbone GMP error: {exc}") from exc
 
     return output
+
+
+
+def start_task_rescan(task_id: str, config: GreenboneConfig | None = None) -> dict:
+    config = config or get_config()
+    if not public_config(config)["configured"]:
+        raise RuntimeError("Greenbone integration is not fully configured")
+
+    task_id = str(task_id or "").strip()
+    if not task_id:
+        raise RuntimeError("Greenbone task id is required for remediation rescan")
+
+    transform = EtreeCheckCommandTransform()
+    connection = _connection(config)
+
+    try:
+        with GMP(connection=connection, transform=transform) as gmp:
+            gmp.authenticate(config.username, config.password)
+            task = gmp.get_task(task_id)
+            task_name = _text(task, "task/name") or _text(task, "name")
+            before_status = _text(task, "task/status") or _text(task, "status")
+
+            response = gmp.start_task(task_id)
+            report_id = _text(response, "report_id")
+            if not report_id:
+                nodes = response.xpath(".//report_id")
+                if nodes and nodes[0].text:
+                    report_id = str(nodes[0].text).strip()
+
+            if not report_id:
+                raise RuntimeError("Greenbone did not return a report id for the started task")
+
+            return {
+                "task_id": task_id,
+                "task_name": task_name,
+                "previous_status": before_status,
+                "report_id": report_id,
+            }
+    except GvmError as exc:
+        raise RuntimeError(f"Greenbone GMP error while starting rescan: {exc}") from exc
