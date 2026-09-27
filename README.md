@@ -22,6 +22,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - fila de remediação explicável que combina risco e SLA para recomendar patch imediato, agendamento, planejamento, triagem ou correlação de ativo, sem deploy automático;
 - risco agregado por ativo em escala 0–1000, com criticidade 1–5, exposição externa, fatores compensatórios e risk appetite configurável;
 - histórico persistente de Asset Risk com snapshots automáticos após syncs relevantes, delta de tendência e histórico consultável por endpoint;
+- perfil de risco explícito por ativo, com override governado de criticidade, exposição e controles compensatórios; tags permanecem como fallback automático;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
 - rescan Greenbone automático após patch validado;
