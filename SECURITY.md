@@ -95,3 +95,16 @@ Automatic remediation is based on the absence of the same stable finding identit
 Accepted-risk and false-positive workflow states are not overwritten by automated evidence. Manual rescan requests are restricted to operators, allowed only after an error or a still-detected result, require a reason and are audited.
 
 Prometheus exposes only aggregate remediation lifecycle counts. Task IDs, report IDs, CVEs and endpoint identifiers are not used as metric labels.
+
+
+## Agent fleet compatibility
+
+Agent version and feature compatibility are treated as an execution-safety control.
+
+Agents report a semantic software version, a protocol version and a bounded list of capabilities. In production, compatibility enforcement is enabled and an agent that does not meet the configured minimum version/protocol or a job's required capabilities cannot claim that job.
+
+Compatibility blocking happens before a claim token is issued and before execution begins. A compatibility-blocked job is not treated as a failed patch attempt. When the endpoint later reports a compatible runtime, only jobs blocked specifically by the compatibility control are returned to the pending queue.
+
+The base Compose configuration keeps enforcement disabled to allow staged fleet migration. Operators should not disable enforcement in production merely to bypass an outdated agent. Upgrade or replace the incompatible agent instead.
+
+This version does not implement automatic agent self-update. Future distribution should require authenticated transport plus cryptographic artifact verification/signing before execution.

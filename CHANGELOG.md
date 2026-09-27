@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.13.0
+
+- backend e agente passam para versão 0.13.0;
+- agente passa a reportar versão, protocolo e capabilities no inventário;
+- User-Agent do agente passa a usar a constante de versão real;
+- servidor classifica agentes como supported, outdated, protocol_unsupported ou unknown;
+- adicionados `AGENT_MIN_VERSION`, `AGENT_MIN_PROTOCOL` e `AGENT_ENFORCE_COMPATIBILITY`;
+- Compose base opera em modo observação para migração gradual;
+- overlay de produção força enforcement de compatibilidade;
+- requirements de capabilities são derivados por ação/política do job;
+- jobs incompatíveis viram `blocked` antes de qualquer claim;
+- jobs blocked por compatibilidade são reavaliados no heartbeat;
+- upgrade do agente devolve automaticamente jobs compatíveis para pending;
+- health gate reconhece e explica jobs bloqueados por compatibilidade;
+- dashboard mostra versão/protocolo/capabilities e agentes incompatíveis;
+- adicionados filtros e contadores de frota incompatível e jobs blocked;
+- Prometheus/Grafana passam a monitorar compatibilidade da frota;
+- adicionados alertas de agentes incompatíveis e jobs blocked quando enforcement está ativo;
+- corrigidos seletores do drawer que usavam seletor singular com `forEach`;
+- adicionados testes de comparação de versão, capabilities, blocking, observation mode e auto-unblock.
+
+
 ## 0.12.0
 
 - backend passa para versão 0.12.0;

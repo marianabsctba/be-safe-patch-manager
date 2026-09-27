@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.12. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.13. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -53,6 +53,13 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - bootstrap do primeiro administrador e break-glass opcional;
 - autenticação separada para usuários, enrollment e agentes;
 - token individual por endpoint;
+- versão, protocolo e capabilities reportados pelo agente;
+- compatibilidade mínima configurável por versão e protocolo;
+- requirements de capability derivados por tipo de job;
+- jobs incompatíveis podem entrar em `blocked` antes do claim;
+- upgrade do agente reavalia e desbloqueia jobs automaticamente;
+- modo observação no Compose base;
+- enforcement fail-closed no overlay de produção;
 - HTTPS de produção com NGINX e TLS 1.2/1.3;
 - mTLS obrigatório nas rotas de agentes no overlay de produção;
 - certificado cliente vinculado ao `agent_id` por fingerprint;
@@ -98,6 +105,8 @@ A v0.8 adiciona autenticação humana e RBAC no próprio Patch Manager. Leituras
 A v0.11 adiciona baseline de saúde coletado pelo agente imediatamente antes da instalação e comparação pós-patch antes da promoção do ring. A política pode considerar CPU, memória, espaço livre em disco, serviços críticos e health endpoints locais da aplicação.
 
 A v0.12 fecha o ciclo de remediação para findings Greenbone vinculados a campanhas de patch. Depois que o job termina e a validação pós-patch passa, o worker solicita um novo scan da task original via GMP, acompanha o report retornado por esse `start_task()` e registra evidência de presença ou ausência da mesma combinação `external_id + CVE`.
+
+A v0.13 adiciona governança da frota de agentes. Cada heartbeat passa a informar versão do agente, versão do protocolo e capabilities suportadas. O servidor calcula compatibilidade sem depender de labels por endpoint e pode impedir o claim de jobs incompatíveis em produção.
 
 ## Fluxo seguro de implantação
 
@@ -262,7 +271,7 @@ O job de rollback usa somente o restore point registrado e agenda o reboot neces
 
 ### Linux
 
-O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.12, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
+O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.13, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
 
 A campanha pode usar dois modos:
 
@@ -298,7 +307,7 @@ Depois do primeiro login confirmado, os valores `BOOTSTRAP_ADMIN_USERNAME` e `BO
 
 O Compose sobe PostgreSQL, aguarda o healthcheck do banco e executa `alembic upgrade head` antes de iniciar a API.
 
-> A v0.12 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
+> A v0.13 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
 
 Para laboratório local:
 
@@ -351,7 +360,7 @@ Cada agente:
 1. faz enrollment inicial;
 2. remove o enrollment token compartilhado;
 3. executa scan periódico;
-4. envia heartbeat com inventário, patches, telemetria de saúde e capacidade de rollback;
+4. envia heartbeat com inventário, patches, telemetria de saúde, versão/protocolo/capabilities e capacidade de rollback;
 5. faz polling de jobs;
 6. executa somente ações permitidas;
 7. envia resultado e evidências;
@@ -379,6 +388,52 @@ Cada entrega de job recebe um token efêmero de claim e um lease.
 - um resultado terminal conflitante é recusado.
 
 Os tempos padrão são configuráveis por `JOB_CLAIM_LEASE_SECONDS` e `JOB_RUNNING_LEASE_SECONDS`.
+
+## Compatibilidade da frota
+
+O agente v0.13 reporta:
+
+```json
+{
+  "agent": {
+    "version": "0.13.0",
+    "protocol": 2,
+    "capabilities": [
+      "scan_updates",
+      "install_updates",
+      "job_leases_v1",
+      "health_telemetry_v1",
+      "rollback_checkpoint_v1",
+      "rollback_restore_v1",
+      "mtls_client_v1"
+    ]
+  }
+}
+```
+
+O servidor classifica cada endpoint como `supported`, `outdated`, `protocol_unsupported` ou `unknown`.
+
+Configurações:
+
+```dotenv
+AGENT_MIN_VERSION=0.13.0
+AGENT_MIN_PROTOCOL=2
+AGENT_ENFORCE_COMPATIBILITY=false
+```
+
+No Compose base, `AGENT_ENFORCE_COMPATIBILITY=false` permite migração gradual da frota. A console e as métricas mostram incompatibilidades, mas jobs ainda podem ser entregues.
+
+No overlay de produção, o projeto força:
+
+```yaml
+AGENT_ENFORCE_COMPATIBILITY: "true"
+```
+
+Com enforcement ativo, o servidor calcula as capabilities necessárias pelo job. Um `install_updates` com health gate, por exemplo, exige capability de instalação, lease e telemetria. Se o agente não atender à versão, protocolo ou capabilities, o job vira `blocked` antes de receber token de claim.
+
+`blocked` não significa execução iniciada nem falha do patch. O job permanece associado à campanha e bloqueia a promoção do ring. Quando um heartbeat posterior reporta um agente compatível, o servidor reavalia os jobs bloqueados por compatibilidade e os devolve automaticamente para `pending`.
+
+Essa versão **não implementa self update do agente**. Distribuição automática de código sem assinatura/verificação forte continua fora do escopo por segurança.
 
 ## Autenticação e RBAC
 
