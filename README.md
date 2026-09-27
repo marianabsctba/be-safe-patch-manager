@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.13. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.14. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -60,6 +60,13 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - upgrade do agente reavalia e desbloqueia jobs automaticamente;
 - modo observação no Compose base;
 - enforcement fail-closed no overlay de produção;
+- release do agente assinada com Ed25519;
+- manifest canônico com versão, protocolo, capabilities, tamanho e SHA-256;
+- servidor só anuncia release cuja assinatura e artefato foram verificados;
+- agente verifica novamente assinatura e SHA-256 com chave pública pinada;
+- bloqueio de downgrade e de artefato com path traversal/arquivo inesperado;
+- staging protegido sem ativação automática;
+- estado de update reportado no inventário, console, Prometheus e Grafana;
 - HTTPS de produção com NGINX e TLS 1.2/1.3;
 - mTLS obrigatório nas rotas de agentes no overlay de produção;
 - certificado cliente vinculado ao `agent_id` por fingerprint;
@@ -107,6 +114,8 @@ A v0.11 adiciona baseline de saúde coletado pelo agente imediatamente antes da 
 A v0.12 fecha o ciclo de remediação para findings Greenbone vinculados a campanhas de patch. Depois que o job termina e a validação pós-patch passa, o worker solicita um novo scan da task original via GMP, acompanha o report retornado por esse `start_task()` e registra evidência de presença ou ausência da mesma combinação `external_id + CVE`.
 
 A v0.13 adiciona governança da frota de agentes. Cada heartbeat passa a informar versão do agente, versão do protocolo e capabilities suportadas. O servidor calcula compatibilidade sem depender de labels por endpoint e pode impedir o claim de jobs incompatíveis em produção.
+
+A v0.14 adiciona cadeia de confiança para distribuição do agente. Releases são empacotadas com manifest assinado por Ed25519. O servidor valida assinatura, SHA-256 e tamanho antes de publicar; o agente repete a validação usando uma chave pública provisionada fora do canal de update e apenas prepara a nova versão em staging.
 
 ## Fluxo seguro de implantação
 
@@ -391,12 +400,12 @@ Os tempos padrão são configuráveis por `JOB_CLAIM_LEASE_SECONDS` e `JOB_RUNNI
 
 ## Compatibilidade da frota
 
-O agente v0.13 reporta:
+O agente v0.14 reporta:
 
 ```json
 {
   "agent": {
-    "version": "0.13.0",
+    "version": "0.14.0",
     "protocol": 2,
     "capabilities": [
       "scan_updates",
@@ -405,7 +414,8 @@ O agente v0.13 reporta:
       "health_telemetry_v1",
       "rollback_checkpoint_v1",
       "rollback_restore_v1",
-      "mtls_client_v1"
+      "mtls_client_v1",
+      "signed_update_staging_v1"
     ]
   }
 }
@@ -433,7 +443,104 @@ Com enforcement ativo, o servidor calcula as capabilities necessárias pelo job.
 
 `blocked` não significa execução iniciada nem falha do patch. O job permanece associado à campanha e bloqueia a promoção do ring. Quando um heartbeat posterior reporta um agente compatível, o servidor reavalia os jobs bloqueados por compatibilidade e os devolve automaticamente para `pending`.
 
-Essa versão **não implementa self update do agente**. Distribuição automática de código sem assinatura/verificação forte continua fora do escopo por segurança.
+A v0.14 implementa **distribuição e staging assinados**, mas ainda não ativa automaticamente o código staged. A troca do agente live continua manual até termos promoção atômica e rollback do próprio agente validados em Windows e Linux.
+
+## Releases assinadas do agente
+
+A v0.14 separa **distribuição** de **ativação**. O Patch Manager pode publicar e o agente pode preparar uma nova release, mas o processo em execução não é substituído automaticamente.
+
+A confiança usa Ed25519. A **chave privada de assinatura deve ficar offline ou em cofre de CI/HSM e nunca deve ser copiada para o servidor Patch Manager**. O servidor e os endpoints recebem apenas a chave pública.
+
+Gere um par de chaves uma única vez, em ambiente controlado:
+
+```bash
+python scripts/agent-release.py generate-key \
+  --private-key /caminho-seguro/agent-update-private.pem \
+  --public-key /caminho-seguro/agent-update-public.pem
+```
+
+Provisione a chave pública no servidor em:
+
+```text
+deploy/update-trust/agent-update-public.pem
+```
+
+O arquivo é ignorado pelo Git por padrão.
+
+No Linux, passe a mesma chave pública no enrollment:
+
+```bash
+sudo env \
+  PATCH_UPDATE_PUBLIC_KEY=/caminho/agent-update-public.pem \
+  ./deploy/install-linux.sh https://patch.seudominio.local piloto
+```
+
+No Windows:
+
+```powershell
+.\deploy\windows\install-agent.ps1 `
+  -ServerUrl "https://patch.seudominio.local" `
+  -UpdatePublicKeyPath "C:\Temp\agent-update-public.pem" `
+  -Tags @("piloto")
+```
+
+Para construir a release da versão declarada em `AGENT_VERSION`:
+
+```bash
+python scripts/agent-release.py build \
+  --private-key /caminho-seguro/agent-update-private.pem \
+  --output releases \
+  --version 0.14.0 \
+  --source-commit "$(git rev-parse HEAD)"
+```
+
+O build gera:
+
+```text
+releases/
+├── agent-release.json
+├── agent-release.sig
+└── be-safe-patch-agent-0.14.0.zip
+```
+
+Valide antes de publicar:
+
+```bash
+python scripts/agent-release.py verify \
+  --public-key deploy/update-trust/agent-update-public.pem \
+  --release-dir releases
+```
+
+Depois habilite explicitamente:
+
+```dotenv
+AGENT_UPDATE_ENABLED=true
+```
+
+O fluxo é:
+
+1. servidor valida o manifest Ed25519;
+2. servidor confere tamanho e SHA-256 do ZIP;
+3. agente autenticado via token e, em produção, mTLS consulta a release;
+4. agente verifica novamente a assinatura com a chave pública pinada localmente;
+5. release precisa ser mais nova que `AGENT_VERSION`;
+6. download não aceita redirect e possui limite de tamanho;
+7. SHA-256 baixado precisa bater com o manifest;
+8. ZIP só pode conter `patch_agent.py` e `requirements.txt`;
+9. conteúdo é extraído em diretório de staging protegido;
+10. estado passa para `staged` com `activation=manual`.
+
+Para forçar apenas a verificação/staging:
+
+```bash
+python patch_agent.py --config /etc/patch-manager/agent.json --check-update
+```
+
+O agente tb verifica periodicamente conforme `update_check_seconds` quando uma chave pública foi provisionada.
+
+**Ed25519 aqui assina o pacote e o manifest da cadeia de atualização. Isso não substitui Authenticode/EV Code Signing de um executável Windows.** Se no futuro o agente for empacotado como EXE/MSI, a assinatura de plataforma será uma camada adicional.
+
+Rotação da chave de update ainda é deliberadamente manual: reprovisione a nova chave pública por canal administrativo confiável antes de assinar releases apenas com a nova chave.
 
 ## Autenticação e RBAC
 
@@ -480,6 +587,7 @@ sudo env \
   PATCH_CLIENT_CERT=/caminho/agent.crt \
   PATCH_CLIENT_KEY=/caminho/agent.key \
   PATCH_CA_CERT=/caminho/server-ca.crt \
+  PATCH_UPDATE_PUBLIC_KEY=/caminho/agent-update-public.pem \
   ./deploy/install-linux.sh https://patch.seudominio.local piloto
 ```
 
@@ -493,6 +601,7 @@ No Windows:
   -ClientCertificatePath "C:\Temp\agent.crt" `
   -ClientKeyPath "C:\Temp\agent.key" `
   -CaCertificatePath "C:\Temp\server-ca.crt" `
+  -UpdatePublicKeyPath "C:\Temp\agent-update-public.pem" `
   -Tags @("piloto")
 ```
 
@@ -558,7 +667,7 @@ Regras de alerta:
 deploy/prometheus/patch-manager.rules.yml
 ```
 
-Incluem banco indisponível, aplicação sem scrape, jobs `stalled`, backup ausente/antigo, Greenbone sem sync saudável, proporção elevada de endpoints offline, erros HTTP 5xx persistentes, checks críticos falhando e erros persistentes de coleta de saúde.
+Incluem banco indisponível, aplicação sem scrape, jobs `stalled`, backup ausente/antigo, Greenbone sem sync saudável, proporção elevada de endpoints offline, erros HTTP 5xx persistentes, checks críticos falhando, erros de coleta de saúde, incompatibilidade de agentes, jobs bloqueados e falhas de staging de update.
 
 Dashboard Grafana:
 
@@ -566,7 +675,7 @@ Dashboard Grafana:
 deploy/grafana/patch-manager-overview.json
 ```
 
-O dashboard mostra estado do banco, endpoints online/offline, jobs stalled, updates críticas, reboots pendentes, backup age, Greenbone, taxa HTTP, p95 de latência, endpoints com telemetria e health checks críticos falhando.
+O dashboard mostra estado do banco, endpoints online/offline, jobs stalled, updates críticas, reboots pendentes, backup age, Greenbone, taxa HTTP, p95 de latência, telemetria, compatibilidade da frota, evidências de remediação e estado do staging de updates do agente.
 
 As métricas são deliberadamente agregadas. Hostname, IP, usuário, CVE, título de vulnerabilidade, token e fingerprint de certificado não são usados como labels.
 
@@ -597,6 +706,9 @@ Se o Prometheus estiver em container separado, `127.0.0.1` aponta para o própri
 - auditoria de operações;
 - leases de execução e proteção contra resultado de tentativa obsoleta;
 - retry manual para jobs `stalled`;
+- staging de update do agente com assinatura Ed25519;
+- SHA-256, tamanho, anti-downgrade e allowlist de conteúdo do pacote;
+- chave privada de release nunca necessária no servidor ou endpoint;
 - PostgreSQL no Compose;
 - migrations Alembic;
 - testes automatizados de semântica de jobs;
@@ -612,7 +724,7 @@ Para produção, ainda são recomendados:
 - política de rotação de senhas e credenciais de agentes;
 - HA e replicação/estratégia de continuidade;
 - rate limiting;
-- code signing do agente;
+- Authenticode/EV Code Signing caso o agente vire EXE/MSI;
 - assinatura de políticas/campanhas;
 - hardening do host e do reverse proxy;
 - testes de integração Windows/Linux.
@@ -640,6 +752,8 @@ be-safe-patch-manager/
 ├── scripts/pre-publish-check.py
 ├── scripts/backup-postgres.sh
 ├── scripts/restore-postgres.sh
+├── scripts/agent-release.py
+├── releases/
 ├── server/
 │   ├── Dockerfile
 │   ├── entrypoint.sh
@@ -652,6 +766,7 @@ be-safe-patch-manager/
 │   └── app/
 │       ├── main.py
 │       ├── observability.py
+│       ├── agent_updates.py
 │       ├── greenbone.py
 │       ├── database.py
 │       ├── models.py
@@ -670,6 +785,7 @@ be-safe-patch-manager/
     ├── systemd/patch-manager-agent.service
     ├── windows/install-agent.ps1
     ├── nginx/default.conf
+    ├── update-trust/
     ├── prometheus/
     │   ├── scrape.example.yml
     │   └── patch-manager.rules.yml
@@ -685,7 +801,7 @@ Próximas evoluções planejadas:
 - integração ITSM/SOAR;
 - SLA, exceções e relatórios consolidados;
 - testes de integração reais em endpoints Windows/Linux;
-- assinatura e distribuição endurecida do agente;
+- ativação atômica/rollback automático do próprio agente após testes Windows/Linux;
 - HA, retenção off-host e testes periódicos de recuperação completa.
 
 ## Licença

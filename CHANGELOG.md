@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.14.0
+
+- backend e agente passam para versão 0.14.0;
+- adicionada assinatura Ed25519 para releases do agente;
+- criado `scripts/agent-release.py` para geração de chave, build, assinatura e verificação;
+- chave privada de release não é necessária no servidor Patch Manager;
+- servidor valida assinatura, SHA-256 e tamanho antes de anunciar uma release;
+- endpoint do agente só serve o artefato exato referenciado pelo manifest assinado;
+- agente recebe chave pública pinada durante provisioning;
+- agente verifica novamente assinatura, versão, tamanho e SHA-256 antes do staging;
+- downgrade e mesma versão são recusados;
+- redirects no download de update são recusados;
+- pacote possui limite de 50 MiB;
+- ZIP aceita somente `patch_agent.py` e `requirements.txt`;
+- archive entries inesperadas, duplicadas ou inseguras são recusadas;
+- release é extraída apenas em diretório de staging protegido;
+- v0.14 não ativa automaticamente o agente staged;
+- adicionado `--check-update` para verificação/staging manual;
+- Linux e Windows passam a aceitar chave pública de update no instalador;
+- console mostra release assinada, updates staged e erros de staging;
+- Prometheus/Grafana monitoram estado de staging;
+- CI executa build/verify real com chave Ed25519 efêmera;
+- testes cobrem tamper de manifest, tamper de artefato, downgrade, archive malicioso e endpoints de distribuição.
+
+
 ## 0.13.0
 
 - backend e agente passam para versão 0.13.0;
