@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.9. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.10. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -47,6 +47,14 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - backup PostgreSQL em formato custom com SHA-256;
 - restore protegido por confirmação explícita;
 - restore drill real no CI;
+- liveness em `/health` e readiness em `/ready`;
+- métricas Prometheus agregadas em `/metrics`;
+- métricas HTTP por rota normalizada, status e latência;
+- métricas de endpoints online/offline, mTLS, jobs, campanhas, vulnerabilidades e Greenbone;
+- freshness do último backup exposta sem filename/checksum;
+- regras de alerta Prometheus versionadas;
+- dashboard Grafana importável;
+- CI validando rules Prometheus e JSON do Grafana;
 - nenhuma ação de shell remoto arbitrário.
 
 ## Dashboard
@@ -184,7 +192,7 @@ O job de rollback usa somente o restore point registrado e agenda o reboot neces
 
 ### Linux
 
-O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.8, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
+O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.10, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
 
 A campanha pode usar dois modos:
 
@@ -220,7 +228,7 @@ Depois do primeiro login confirmado, os valores `BOOTSTRAP_ADMIN_USERNAME` e `BO
 
 O Compose sobe PostgreSQL, aguarda o healthcheck do banco e executa `alembic upgrade head` antes de iniciar a API.
 
-> A v0.8 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
+> A v0.10 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
 
 Para laboratório local:
 
@@ -389,6 +397,58 @@ Os dumps contêm dados operacionais e devem ser tratados como informação sens�
 
 O CI executa um restore drill real em PostgreSQL: cria dado marcador, gera dump, restaura em outro database e confirma o conteúdo restaurado.
 
+Após um backup concluído, o script também atualiza atomicamente `runtime/backup-status.json`. O exporter lê somente timestamp e tamanho para calcular freshness. Nome de arquivo e checksum não são publicados como métricas.
+
+## Observabilidade
+
+A v0.10 separa os probes:
+
+```text
+GET /health   liveness da aplicação
+GET /ready    PostgreSQL acessível + pelo menos um admin ativo
+GET /metrics  métricas Prometheus internas
+```
+
+O healthcheck do Docker usa `/ready`. O NGINX de produção responde `404` para `/metrics`; o scrape deve ocorrer diretamente no backend local ou por uma rede privada de observabilidade.
+
+Exemplo para Prometheus executando no próprio host:
+
+```yaml
+scrape_configs:
+  - job_name: be-safe-patch-manager
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8080"]
+```
+
+O exemplo completo está em:
+
+```text
+deploy/prometheus/scrape.example.yml
+```
+
+Regras de alerta:
+
+```text
+deploy/prometheus/patch-manager.rules.yml
+```
+
+Incluem banco indisponível, aplicação sem scrape, jobs `stalled`, backup ausente/antigo, Greenbone sem sync saudável, proporção elevada de endpoints offline e erros HTTP 5xx persistentes.
+
+Dashboard Grafana:
+
+```text
+deploy/grafana/patch-manager-overview.json
+```
+
+O dashboard mostra estado do banco, endpoints online/offline, jobs stalled, updates críticas, reboots pendentes, backup age, Greenbone, taxa HTTP e p95 de latência.
+
+As métricas são deliberadamente agregadas. Hostname, IP, usuário, CVE, título de vulnerabilidade, token e fingerprint de certificado não são usados como labels.
+
+Se o Prometheus estiver em container separado, `127.0.0.1` aponta para o próprio container. Nesse caso, conecte-o por rede Docker privada ou configure acesso ao host sem publicar a porta 8080 externamente.
+
+`AGENT_ONLINE_SECONDS` define a janela usada para considerar um endpoint online. O padrão é 300 segundos.
+
 ## Segurança já implementada
 
 - autenticação humana por usuário/senha com Argon2;
@@ -419,7 +479,7 @@ O CI executa um restore drill real em PostgreSQL: cria dado marcador, gera dump,
 - `.gitignore` para secrets, chaves, certificados, bancos e logs;
 - SECURITY.md;
 - pre-publish security check;
-- CI com migrations PostgreSQL, testes Python, validação de Python, Shell e JavaScript.
+- CI com migrations PostgreSQL, restore drill, testes Python, validação de Python/Shell/JavaScript, NGINX, Prometheus e Grafana.
 
 Para produção, ainda são recomendados:
 
@@ -466,6 +526,7 @@ be-safe-patch-manager/
 │   ├── tests/
 │   └── app/
 │       ├── main.py
+│       ├── observability.py
 │       ├── greenbone.py
 │       ├── database.py
 │       ├── models.py
@@ -483,7 +544,11 @@ be-safe-patch-manager/
     ├── install-linux.sh
     ├── systemd/patch-manager-agent.service
     ├── windows/install-agent.ps1
-    └── nginx/default.conf
+    ├── nginx/default.conf
+    ├── prometheus/
+    │   ├── scrape.example.yml
+    │   └── patch-manager.rules.yml
+    └── grafana/patch-manager-overview.json
 ```
 
 ## Roadmap

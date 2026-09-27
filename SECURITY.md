@@ -56,3 +56,14 @@ Database backups may contain endpoint inventory, vulnerability information, audi
 The included backup script creates a PostgreSQL custom-format dump and SHA-256 checksum but does not encrypt the dump. Production copies should be stored off-host in encrypted storage with access control and retention.
 
 Restore requires explicit `CONFIRM_RESTORE=YES`. If restore fails, the application is intentionally left stopped for investigation.
+
+
+## Observability exposure
+
+`/metrics` is intentionally blocked by the production NGINX configuration and should be scraped only through loopback or a private monitoring network.
+
+Prometheus labels are kept low-cardinality and must not contain endpoint hostnames, IP addresses, usernames, CVEs, vulnerability titles, agent tokens, session tokens or client-certificate fingerprints.
+
+`/health` is a liveness probe and does not query the database. `/ready` checks database reachability and the presence of an active administrator.
+
+The backup exporter publishes only backup success state, timestamp, age and size. Backup filenames and SHA-256 values remain in the local runtime status file and are not exported as metrics.

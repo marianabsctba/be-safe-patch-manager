@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.10.0
+
+- backend passa para versão 0.10.0;
+- adicionados probes separados `/health` e `/ready`;
+- Docker healthcheck passa a usar readiness;
+- adicionado endpoint interno `/metrics` com `prometheus-client`;
+- NGINX de produção bloqueia acesso público a `/metrics`;
+- adicionadas métricas agregadas de endpoints online/offline e vínculo mTLS;
+- adicionadas métricas de updates pendentes/críticos e reboot requerido;
+- adicionadas métricas de jobs e campanhas por status;
+- adicionadas métricas de vulnerabilidades por status/severidade;
+- adicionadas métricas de estado e último sync Greenbone;
+- adicionadas métricas HTTP por rota normalizada, status e latência;
+- hostname, IP, CVE e fingerprint não são usados como labels;
+- backup passa a publicar estado de sucesso atomicamente em `runtime/backup-status.json`;
+- adicionadas métricas de backup status, timestamp, age e tamanho;
+- adicionadas regras de alerta Prometheus;
+- adicionado dashboard Grafana importável;
+- adicionados testes de readiness, privacidade das métricas e backup freshness;
+- CI passa a validar rules/config Prometheus e JSON do dashboard Grafana.
+
 ## 0.9.0
 
 - backend passa para versão 0.9.0;
