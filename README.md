@@ -16,6 +16,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - CVE, severidade, CVSS, solução e referências de patch por finding;
 - SLA de vulnerabilidades configurável por severidade, com estados `within_sla`, `due_soon` e `breached`;
 - relatório consolidado de SLA em `GET /api/admin/reports/vulnerability-sla`;
+- exceções temporárias de SLA com aprovação administrativa, motivo, expiração e revogação auditada;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
 - rescan Greenbone automático após patch validado;
@@ -137,7 +138,7 @@ A v0.16 endurece o lifecycle do agente. Releases que sofrem rollback entram em q
 
 A v0.17 endurece o control plane sem alterar o agente. Aprovações de ativação têm TTL, exigem heartbeat recente e ficam vinculadas à identidade completa da release assinada. Antes de qualquer claim, o servidor revalida expiração, SHA-256, source commit, signing key e release publicada. A console também permite pré-visualizar o snapshot elegível antes de aprovar o rollout.
 
-A v0.18 adiciona governança de SLA sem alterar o agente nem o schema. Findings com status `open` recebem prazo calculado por severidade, idade, horas restantes e classificação operacional. O endpoint consolidado prioriza breaches e itens próximos do vencimento; estados como `accepted_risk`, `false_positive`, `not_detected` e `remediated` continuam visíveis, mas ficam fora dos contadores de breach.
+A v0.18 adiciona governança de SLA sem alterar o agente. Findings com status `open` recebem prazo calculado por severidade, idade, horas restantes e classificação operacional. O endpoint consolidado prioriza breaches e itens próximos do vencimento; estados como `accepted_risk`, `false_positive`, `not_detected` e `remediated` continuam visíveis, mas ficam fora dos contadores de breach. A mesma versão adiciona exceções formais persistentes: somente admin pode aprovar ou revogar, motivo e validade são obrigatórios, tudo fica auditado e a expiração devolve automaticamente o finding ao cálculo normal de SLA.
 
 ## Fluxo seguro de implantação
 
@@ -867,7 +868,6 @@ Próximas evoluções planejadas:
 - ingestão de CVEs do Wazuh;
 - patching de aplicações de terceiros;
 - integração ITSM/SOAR;
-- exceções formais com justificativa, aprovador e expiração;
 - relatórios consolidados exportáveis;
 - testes de integração reais em endpoints Windows/Linux;
 - ativação segura equivalente do agente no Windows;
