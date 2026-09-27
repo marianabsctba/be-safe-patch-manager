@@ -12,6 +12,9 @@
 - adicionadas exceções formais de SLA com motivo, aprovador, validade e revogação auditada;
 - exceção ativa pausa o contador de breach sem alterar o status real do finding;
 - expiração devolve automaticamente o finding ao cálculo normal de SLA;
+- adicionada priorização contextual com score 0–100 e razões explicáveis;
+- score combina CVSS, EPSS/KEV quando presentes, idade do finding e tags de criticidade/exposição do endpoint;
+- dashboard mostra risco contextual e total de findings urgentes;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
 
