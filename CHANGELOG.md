@@ -21,6 +21,8 @@
 - worker opcional executa sync periódico e o operador pode solicitar sync manual;
 - adicionada fila de remediação orientada a risco e SLA, com recomendação de próxima ação e justificativas;
 - findings elegíveis podem abrir a campanha pré-preenchida, mas continuam exigindo revisão humana antes do deploy;
+- adicionada camada de risco por ativo 0–1000, criticidade 1–5, exposição externa e fatores compensatórios;
+- adicionado risk appetite configurável e contagem de ativos acima do limite;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
