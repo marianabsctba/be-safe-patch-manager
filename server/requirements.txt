@@ -6,3 +6,4 @@ python-multipart==0.0.20
 python-gvm==27.9.0
 alembic==1.16.5
 psycopg[binary]==3.2.10
+argon2-cffi==25.1.0

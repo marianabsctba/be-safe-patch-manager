@@ -116,6 +116,34 @@ class IntegrationState(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class AdminUser(Base):
+    __tablename__ = "admin_users"
+
+    id = Column(String(36), primary_key=True)
+    username = Column(String(128), nullable=False, unique=True, index=True)
+    password_hash = Column(Text, nullable=False)
+    role = Column(String(32), nullable=False, default="viewer", index=True)
+    active = Column(Boolean, nullable=False, default=True)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    sessions = relationship("AdminSession", back_populates="user", cascade="all, delete-orphan")
+
+
+class AdminSession(Base):
+    __tablename__ = "admin_sessions"
+
+    id = Column(String(36), primary_key=True)
+    user_id = Column(String(36), ForeignKey("admin_users.id"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    user = relationship("AdminUser", back_populates="sessions")
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
     id = Column(Integer, primary_key=True, autoincrement=True)

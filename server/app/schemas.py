@@ -3,6 +3,27 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=512)
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=128)
+    password: str = Field(min_length=14, max_length=512)
+    role: str = "viewer"
+
+
+class UserUpdateRequest(BaseModel):
+    role: Optional[str] = None
+    active: Optional[bool] = None
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=512)
+    new_password: str = Field(min_length=14, max_length=512)
+
+
 class RegisterRequest(BaseModel):
     hostname: str
     os_family: str
