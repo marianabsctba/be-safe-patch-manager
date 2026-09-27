@@ -97,6 +97,15 @@ def reconcile_activation(base, state_path, max_attempts):
             return state
         else:
             raise RuntimeError("activation state does not match current release")
+    elif current_name != target_version:
+        if current_name == previous_version:
+            state["status"] = "rolled_back"
+            state["rolled_back_at"] = utcnow()
+            state["rollback_reason"] = "current_release_changed_before_confirmation"
+            state["active_version"] = previous_version
+            write_state(state_path, state)
+            return state
+        raise RuntimeError("pending activation does not match current release")
 
     attempts = int(state.get("attempts") or 0) + 1
     state["attempts"] = attempts

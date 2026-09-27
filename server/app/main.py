@@ -2035,6 +2035,48 @@ def heartbeat(
     db: Session = Depends(get_db),
 ):
     agent = get_agent(db, agent_id, x_agent_token, x_client_cert_fingerprint)
+    previous_inventory = load(agent.inventory_json, {})
+    previous_activation = (
+        previous_inventory.get("activation")
+        if isinstance(previous_inventory.get("activation"), dict)
+        else {}
+    )
+    current_activation = (
+        body.inventory.get("activation")
+        if isinstance(body.inventory.get("activation"), dict)
+        else {}
+    )
+    previous_activation_status = str(previous_activation.get("status") or "")
+    current_activation_status = str(current_activation.get("status") or "")
+
+    if (
+        current_activation_status
+        and current_activation_status != previous_activation_status
+        and current_activation_status in {
+            "committed",
+            "rolled_back",
+            "aborted_before_switch",
+            "error",
+        }
+    ):
+        _audit_pending(
+            db,
+            f"agent:{agent.id}",
+            "agent.update.activation." + current_activation_status,
+            "agent",
+            agent.id,
+            {
+                "previous_status": previous_activation_status,
+                "status": current_activation_status,
+                "previous_version": current_activation.get("previous_version", ""),
+                "target_version": current_activation.get("target_version", ""),
+                "confirmed_version": current_activation.get("confirmed_version", ""),
+                "attempts": current_activation.get("attempts", 0),
+                "rollback_reason": current_activation.get("rollback_reason", ""),
+                "last_error": str(current_activation.get("last_error") or "")[:500],
+            },
+        )
+
     agent.last_seen = now()
     agent.inventory_json = dump(body.inventory)
     agent.patch_scan_json = dump(body.patch_scan)
@@ -2307,6 +2349,14 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             if (load(a.inventory_json, {}).get("update") or {}).get("status") == "error"
         ),
         "agent_update_distribution_enabled": AGENT_UPDATE_ENABLED,
+        "agent_activation_pending": sum(
+            1 for a in agents
+            if (load(a.inventory_json, {}).get("activation") or {}).get("status") in {"switching", "pending"}
+        ),
+        "agent_activation_rollbacks": sum(
+            1 for a in agents
+            if (load(a.inventory_json, {}).get("activation") or {}).get("status") == "rolled_back"
+        ),
     }
 
 
