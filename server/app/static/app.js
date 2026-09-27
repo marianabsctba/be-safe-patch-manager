@@ -12,6 +12,7 @@ const state = {
   threatIntel: null,
   remediationQueue: null,
   assetRisk: null,
+  riskPolicies: [],
   agentRelease: null,
   campaigns: [],
   jobs: [],
@@ -234,7 +235,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, assetRisk, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -242,6 +243,7 @@ async function load() {
       api('/api/admin/integrations/threat-intel'),
       api('/api/admin/reports/remediation-queue'),
       api('/api/admin/reports/asset-risk'),
+      api('/api/admin/risk-policies'),
       api('/api/admin/agent-release'),
       api('/api/admin/campaigns'),
       api('/api/admin/jobs'),
@@ -256,6 +258,7 @@ async function load() {
     state.threatIntel = threatIntel;
     state.remediationQueue = remediationQueue;
     state.assetRisk = assetRisk;
+    state.riskPolicies = riskPolicies;
     state.agentRelease = agentRelease;
     state.campaigns = campaigns;
     state.jobs = jobs;
@@ -702,7 +705,8 @@ function renderAssetRisk() {
     ['Críticos', summary.critical || 0],
     ['Altos', summary.high || 0],
     ['Média', summary.average_score == null ? '-' : summary.average_score],
-    ['Apetite', summary.risk_appetite == null ? 700 : summary.risk_appetite],
+    ['Apetite global', summary.risk_appetite == null ? 700 : summary.risk_appetite],
+    ['Políticas', summary.risk_policies || 0],
     ['Acima', summary.above_risk_appetite || 0],
   ].map(([label, value]) =>
     '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
@@ -718,6 +722,8 @@ function renderAssetRisk() {
       ).join('')
     : '<div class="empty-state">Sem contributors calculados.</div>';
 
+  renderRiskPolicies();
+
   if (!assets.length) {
     $('#assetRiskTable').innerHTML =
       '<tr><td colspan="10"><div class="empty-state">Nenhum ativo calculado.</div></td></tr>';
@@ -729,10 +735,16 @@ function renderAssetRisk() {
     const crit = risk.asset_criticality || {};
     const exposure = risk.exposure || {};
     const compensating = risk.compensating || {};
+    const policy = item.risk_policy || {};
+    const policyData = policy.policy || {};
     const factors = Array.isArray(risk.top_factors) ? risk.top_factors : [];
     return '<tr>' +
       '<td><strong>' + esc(item.hostname || item.agent_id) + '</strong><br><small class="muted">' + esc(item.ip_address || '') + '</small></td>' +
-      '<td>' + assetRiskBadge(risk) + '</td>' +
+      '<td>' + assetRiskBadge(risk) +
+        '<br><small class="muted">apetite ' + esc(risk.risk_appetite == null ? '-' : risk.risk_appetite) +
+        ' · ' + esc(policy.source === 'policy' ? (policyData.name || 'policy') : 'global') + '</small>' +
+        (risk.above_risk_appetite ? '<br>' + badge('acima do apetite', 'fail') : '') +
+      '</td>' +
       '<td>' + assetRiskTrend(risk) + '</td>' +
       '<td><strong>' + esc(crit.score == null ? '-' : crit.score) + '/5</strong></td>' +
       '<td>' + (exposure.external ? badge('externo', 'fail') : badge('interno', 'ok')) + '</td>' +
@@ -759,6 +771,112 @@ function renderAssetRisk() {
     '</tr>';
   }).join('');
 }
+
+
+function renderRiskPolicies() {
+  const policies = Array.isArray(state.riskPolicies) ? state.riskPolicies : [];
+  const target = $('#riskPolicyList');
+  if (!target) return;
+
+  target.innerHTML = policies.length
+    ? policies.map((policy) =>
+        '<div class="risk-contributor">' +
+          '<span><strong>' + esc(policy.name) + '</strong> · tag ' + esc(policy.target_tag) +
+          ' · prioridade ' + esc(policy.priority) +
+          (policy.enabled ? '' : ' · desativada') + '</span>' +
+          '<span><strong>apetite ' + esc(policy.risk_appetite) + '</strong>' +
+          (roleAtLeast('admin')
+            ? ' <button class="row-action" onclick="editRiskPolicy(\'' + policy.id + '\')">Editar</button>'
+            : '') +
+          '</span>' +
+        '</div>'
+      ).join('')
+    : '<div class="empty-state">Nenhuma política por tag. Vale o appetite global.</div>';
+}
+
+window.createRiskPolicy = async () => {
+  if (!requireRole('admin', 'Somente admin pode criar política de risco.')) return;
+  const name = prompt('Nome da política:');
+  if (!name || name.trim().length < 3) return;
+  const targetTag = prompt('Tag alvo (ex.: tier0, prod, lab):');
+  if (!targetTag || !targetTag.trim()) return;
+  const appetite = Number(prompt('Risk appetite 1–1000:', '700'));
+  if (!Number.isInteger(appetite) || appetite < 1 || appetite > 1000) {
+    toast('Risk appetite deve estar entre 1 e 1000.', 'fail');
+    return;
+  }
+  const priority = Number(prompt('Prioridade da política (maior vence):', '100'));
+  if (!Number.isInteger(priority) || priority < 1 || priority > 10000) {
+    toast('Prioridade inválida.', 'fail');
+    return;
+  }
+  const reason = prompt('Motivo da política:');
+  if (!reason || reason.trim().length < 5) return;
+
+  try {
+    await api('/api/admin/risk-policies', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: name.trim(),
+        target_tag: targetTag.trim().toLowerCase(),
+        risk_appetite: appetite,
+        priority,
+        enabled: true,
+        reason: reason.trim(),
+      }),
+    });
+    toast('Política de risco criada.');
+    await load();
+  } catch (error) {
+    toast('Política de risco: ' + error.message, 'fail');
+  }
+};
+
+window.editRiskPolicy = async (policyId) => {
+  if (!requireRole('admin', 'Somente admin pode editar política de risco.')) return;
+  const policy = (state.riskPolicies || []).find((item) => item.id === policyId);
+  if (!policy) return;
+
+  const name = prompt('Nome:', policy.name);
+  if (name === null || name.trim().length < 3) return;
+  const tag = prompt('Tag alvo:', policy.target_tag);
+  if (tag === null || !tag.trim()) return;
+  const appetite = Number(prompt('Risk appetite 1–1000:', String(policy.risk_appetite)));
+  if (!Number.isInteger(appetite) || appetite < 1 || appetite > 1000) {
+    toast('Risk appetite inválido.', 'fail');
+    return;
+  }
+  const priority = Number(prompt('Prioridade (maior vence):', String(policy.priority)));
+  if (!Number.isInteger(priority) || priority < 1 || priority > 10000) {
+    toast('Prioridade inválida.', 'fail');
+    return;
+  }
+  const enabledRaw = prompt('Status: on ou off', policy.enabled ? 'on' : 'off');
+  if (enabledRaw === null || !['on', 'off'].includes(enabledRaw.trim().toLowerCase())) {
+    toast('Use on ou off.', 'fail');
+    return;
+  }
+  const reason = prompt('Motivo da alteração:');
+  if (!reason || reason.trim().length < 5) return;
+
+  try {
+    await api('/api/admin/risk-policies/' + policyId, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: name.trim(),
+        target_tag: tag.trim().toLowerCase(),
+        risk_appetite: appetite,
+        priority,
+        enabled: enabledRaw.trim().toLowerCase() === 'on',
+        reason: reason.trim(),
+      }),
+    });
+    toast('Política de risco atualizada.');
+    await load();
+  } catch (error) {
+    toast('Política de risco: ' + error.message, 'fail');
+  }
+};
 
 
 window.editAssetRiskProfile = async (agentId) => {
