@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.17.0
+
+- control plane e dashboard passam para versão 0.17.0; agente permanece em 0.16.0;
+- aprovações de ativação do agente ganham TTL configurável;
+- endpoints precisam apresentar heartbeat recente para nova aprovação;
+- aprovação fica vinculada à versão, SHA-256, source commit e signing key id da release assinada;
+- claim revalida expiração, identidade staged e release atualmente publicada;
+- autorização inválida é encerrada como `skipped` antes da emissão de claim token;
+- avanço de ring renova a janela curta de aprovação somente para o novo lote;
+- mudança da release publicada bloqueia continuidade de rollout já aprovado;
+- adicionado preview administrativo de rollout do agente;
+- preview usa o mesmo snapshot determinístico e explica motivos de inelegibilidade;
+- console recalcula o preview imediatamente antes da confirmação;
+- Prometheus passa a expor aprovações pendentes, próximas de expirar, expiradas e invalidadas;
+- adicionados alertas para aprovação expirada ou próxima do vencimento;
+- adicionados testes de autorização expirada, drift de release, heartbeat antigo, preview e renovação por ring.
+
+## 0.16.0
+
+- agente e control plane passam para versão 0.16.0;
+- releases que sofrem rollback do watchdog entram em quarentena no endpoint;
+- nova ativação da mesma release fica bloqueada até liberação explícita;
+- liberação da quarentena exige admin, motivo e confirmação de risco;
+- adicionada capability `signed_update_quarantine_v1`;
+- rollout do próprio agente passa a usar rings 10%, 30% e 100%;
+- população elegível do rollout é congelada no momento da criação;
+- rollout do agente exige 100% de sucesso no ring;
+- gate de rollout do agente não permite override;
+- somente admin pode promover rings de atualização do agente;
+- confirmação da nova versão possui timeout limitado;
+- watchdog rollback impede avanço do ring;
+- manifest assinado passa ao schema 2 com `source_commit` e `signing_key_id`;
+- servidor e agente validam a identidade da chave pública de assinatura;
+- console exibe provenance sanitizada da release;
+- releases antigas são removidas somente após ativação confirmada;
+- staging confirmado é limpo de forma segura;
+- GC preserva current/previous e recusa seguir symlinks inseguros;
+- adicionados testes de quarentena, rollout congelado, perfect gate, provenance, retenção e staging cleanup.
+
+
 ## 0.15.0
 
 - backend e agente passam para versão 0.15.0;
