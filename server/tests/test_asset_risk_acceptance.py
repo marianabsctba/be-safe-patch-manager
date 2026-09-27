@@ -170,6 +170,21 @@ def test_duplicate_active_acceptance_is_blocked(db, monkeypatch):
 
 def test_asset_report_marks_above_appetite_as_accepted(db, monkeypatch):
     monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 100)
+    monkeypatch.setattr(
+        main,
+        "asset_risk_score",
+        lambda agent, findings, reference=None: {
+            "score": 900.0,
+            "level": "critical",
+            "asset_criticality": {"score": 5, "source": "tags", "contributors": [], "tags": ["tier0"]},
+            "exposure": {"external": True, "multiplier": 1.2, "contributors": ["internet-facing"], "source": "tags"},
+            "compensating": {"multiplier": 1.0, "controls": [], "source": "tags"},
+            "open_findings": 1,
+            "buckets": {},
+            "decomposition": [],
+            "top_factors": ["ativo crítico"],
+        },
+    )
     agent = make_agent(tags=["tier0", "internet-facing"])
     acceptance = AssetRiskAcceptance(
         id="accepted",
