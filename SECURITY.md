@@ -108,3 +108,20 @@ Compatibility blocking happens before a claim token is issued and before executi
 The base Compose configuration keeps enforcement disabled to allow staged fleet migration. Operators should not disable enforcement in production merely to bypass an outdated agent. Upgrade or replace the incompatible agent instead.
 
 This version does not implement automatic agent self-update. Future distribution should require authenticated transport plus cryptographic artifact verification/signing before execution.
+
+
+## Signed agent release supply chain
+
+The v0.14 update channel separates distribution from activation.
+
+Agent releases are described by a canonical JSON manifest and signed with Ed25519. The manifest binds the release version, protocol, capabilities, artifact filename, artifact size and SHA-256 digest.
+
+The **private Ed25519 signing key must never be stored on the Patch Manager server, in this repository, or on managed endpoints**. Keep it offline, in a CI secret store, HSM, or another controlled signing environment. The server and endpoints need only the corresponding public key.
+
+The server verifies the manifest signature and artifact integrity before advertising a release. The endpoint independently verifies the same signature with its locally provisioned public key, rejects non-upgrades, refuses redirects, enforces a maximum artifact size, checks SHA-256 and accepts only the expected archive contents.
+
+The update archive is staged in a protected local directory. v0.14 does not replace the live agent, restart the service, or execute staged code automatically. Activation remains manual until atomic promotion and rollback are validated on both Windows and Linux.
+
+The public key is an anchor of trust even though it is not secret. Do not replace it through the update channel itself. Key rotation should be performed through a separate trusted administrative provisioning path.
+
+Ed25519 release signing is not a substitute for platform code signing. If the Windows agent is later distributed as an EXE or MSI, Authenticode/EV Code Signing should be applied in addition to the signed release-manifest chain.

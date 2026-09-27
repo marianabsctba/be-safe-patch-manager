@@ -12,13 +12,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FORBIDDEN_NAMES = {".env", "agent.json"}
+FORBIDDEN_NAMES = {".env", "agent.json", "agent-release.json", "agent-release.sig"}
 FORBIDDEN_SUFFIXES = {
-    ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
-    ".db", ".sqlite", ".sqlite3",
+    ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".der",
+    ".db", ".sqlite", ".sqlite3", ".zip",
 }
 PATTERNS = {
-    "private key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    "private key": re.compile(r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"),
     "GitHub token": re.compile(r"gh[pousr]_[A-Za-z0-9_]{30,}"),
     "AWS access key": re.compile(r"AKIA[0-9A-Z]{16}"),
     "Slack token": re.compile(r"xox[baprs]-[A-Za-z0-9-]{20,}"),
