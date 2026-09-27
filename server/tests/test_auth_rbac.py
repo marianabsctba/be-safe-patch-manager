@@ -134,3 +134,37 @@ def test_logout_revokes_session(db):
 
     assert client.post("/api/auth/logout", headers=headers).status_code == 200
     assert client.get("/api/auth/me", headers=headers).status_code == 401
+
+
+def test_admin_cannot_demote_self_or_remove_last_active_admin(db):
+    admin, password = add_user(db, "admin.sole", "admin")
+    client = TestClient(app)
+    token = login(client, admin.username, password)
+    headers = {"X-Session-Token": token}
+
+    self_demote = client.patch(
+        f"/api/admin/users/{admin.id}",
+        headers=headers,
+        json={"role": "viewer"},
+    )
+    assert self_demote.status_code == 409
+
+    # Create a second admin, then it may be demoted because one admin remains.
+    second = client.post(
+        "/api/admin/users",
+        headers=headers,
+        json={
+            "username": "admin.second",
+            "password": "Second-Strong-Admin-Password-2026!",
+            "role": "admin",
+        },
+    )
+    assert second.status_code == 200
+
+    second_id = second.json()["id"]
+    demote_second = client.patch(
+        f"/api/admin/users/{second_id}",
+        headers=headers,
+        json={"role": "operator"},
+    )
+    assert demote_second.status_code == 200

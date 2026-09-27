@@ -1017,20 +1017,40 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
 
+    requested_role = user.role
     if body.role is not None:
         try:
-            user.role = validate_role(body.role)
+            requested_role = validate_role(body.role)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if body.active is not None:
-        if user.id == principal.get("user_id") and body.active is False:
+    requested_active = user.active if body.active is None else body.active
+
+    if user.id == principal.get("user_id"):
+        if requested_role != user.role:
+            raise HTTPException(status_code=409, detail="cannot change the current user's own role")
+        if requested_active is False:
             raise HTTPException(status_code=409, detail="cannot deactivate the current user")
-        user.active = body.active
-        if not user.active:
-            sessions = db.query(AdminSession).filter(AdminSession.user_id == user.id).all()
-            for session in sessions:
-                db.delete(session)
+
+    removing_active_admin = (
+        user.role == "admin"
+        and user.active
+        and (requested_role != "admin" or requested_active is False)
+    )
+    if removing_active_admin:
+        active_admins = db.query(AdminUser).filter(
+            AdminUser.role == "admin",
+            AdminUser.active.is_(True),
+        ).count()
+        if active_admins <= 1:
+            raise HTTPException(status_code=409, detail="cannot remove or deactivate the last active admin")
+
+    user.role = requested_role
+    user.active = requested_active
+    if not user.active:
+        sessions = db.query(AdminSession).filter(AdminSession.user_id == user.id).all()
+        for session in sessions:
+            db.delete(session)
 
     db.commit()
     audit(
