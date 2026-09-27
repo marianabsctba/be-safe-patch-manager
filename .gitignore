@@ -47,3 +47,6 @@ build/
 dist/
 *.zip
 *.tar.gz
+
+# Local database backups
+/backups/
