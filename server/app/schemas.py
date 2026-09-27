@@ -63,6 +63,15 @@ class JobRetryRequest(BaseModel):
     acknowledge_risk: bool = False
 
 
+class ApplicationHealthCheck(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    url: str = Field(min_length=1, max_length=2048)
+    expected_status: int = Field(default=200, ge=100, le=599)
+    body_contains: str = Field(default="", max_length=128)
+    timeout_seconds: int = Field(default=5, ge=1, le=30)
+    verify_tls: bool = True
+
+
 class CampaignCreate(BaseModel):
     name: str
     description: str = ""
@@ -79,6 +88,16 @@ class CampaignCreate(BaseModel):
     maintenance_timezone: str = "America/Sao_Paulo"
     maintenance_days: List[int] = Field(default_factory=lambda: list(range(7)))
     post_patch_validation: bool = True
+    health_gate_enabled: bool = False
+    health_gate_require_telemetry: bool = True
+    health_cpu_max_percent: float = Field(default=95.0, ge=1.0, le=100.0)
+    health_cpu_max_delta: float = Field(default=40.0, ge=0.0, le=100.0)
+    health_memory_max_percent: float = Field(default=95.0, ge=1.0, le=100.0)
+    health_memory_max_delta: float = Field(default=20.0, ge=0.0, le=100.0)
+    health_disk_min_free_percent: float = Field(default=5.0, ge=0.0, le=100.0)
+    health_disk_max_free_drop: float = Field(default=10.0, ge=0.0, le=100.0)
+    critical_services: List[str] = Field(default_factory=list, max_length=20)
+    application_health_checks: List[ApplicationHealthCheck] = Field(default_factory=list, max_length=10)
     prepare_rollback: bool = True
     rollback_required: bool = False
     target_agent_id: str = ""

@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import hmac
 import math
 import json
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -25,7 +27,7 @@ from .greenbone import get_config as get_greenbone_config
 from .greenbone import public_config as public_greenbone_config
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.10.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.11.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -600,6 +602,168 @@ def validate_campaign_policy(body):
         if any(day < 0 or day > 6 for day in body.maintenance_days):
             raise HTTPException(status_code=400, detail="maintenance days must be between 0 and 6")
 
+    service_re = re.compile(r"^[A-Za-z0-9_.@:-]{1,128}$")
+    normalized_services = []
+    for service in body.critical_services:
+        service = str(service or "").strip()
+        if not service_re.fullmatch(service):
+            raise HTTPException(status_code=400, detail=f"invalid critical service name: {service}")
+        normalized_services.append(service)
+    if len(set(normalized_services)) != len(normalized_services):
+        raise HTTPException(status_code=400, detail="critical services must be unique")
+
+    check_names = set()
+    for check in body.application_health_checks:
+        name = check.name.strip()
+        if name in check_names:
+            raise HTTPException(status_code=400, detail=f"duplicate application health check name: {name}")
+        check_names.add(name)
+
+        parsed = urlparse(check.url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise HTTPException(status_code=400, detail=f"invalid application health URL for {name}")
+        if parsed.username or parsed.password:
+            raise HTTPException(status_code=400, detail=f"credentials are not allowed in application health URL for {name}")
+
+        hostname = parsed.hostname.lower()
+        loopback = hostname == "localhost"
+        if not loopback:
+            try:
+                loopback = ipaddress.ip_address(hostname).is_loopback
+            except ValueError:
+                loopback = False
+        if not loopback:
+            raise HTTPException(
+                status_code=400,
+                detail=f"application health URL for {name} must target localhost or a loopback address",
+            )
+
+
+def health_policy_from_campaign(body) -> dict:
+    return {
+        "enabled": bool(body.health_gate_enabled),
+        "required": bool(body.health_gate_require_telemetry),
+        "cpu_max_percent": float(body.health_cpu_max_percent),
+        "cpu_max_delta": float(body.health_cpu_max_delta),
+        "memory_max_percent": float(body.health_memory_max_percent),
+        "memory_max_delta": float(body.health_memory_max_delta),
+        "disk_min_free_percent": float(body.health_disk_min_free_percent),
+        "disk_max_free_drop": float(body.health_disk_max_free_drop),
+        "critical_services": [str(item).strip() for item in body.critical_services],
+        "application_checks": [item.model_dump() for item in body.application_health_checks],
+        "policy_ttl_seconds": 86400,
+    }
+
+
+def _number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def evaluate_health_regression(policy: dict, baseline: dict, current: dict):
+    if not policy.get("enabled"):
+        return {"status": "disabled", "issues": [], "reason": "health telemetry gate disabled"}
+
+    required = bool(policy.get("required", True))
+    if not baseline:
+        return {
+            "status": "failed" if required else "skipped",
+            "issues": ["pre-patch health baseline unavailable"] if required else [],
+            "reason": "pre-patch health baseline unavailable",
+        }
+    if not current:
+        return {
+            "status": "waiting" if required else "skipped",
+            "issues": [],
+            "reason": "waiting for post-patch health telemetry",
+        }
+
+    issues = []
+    comparisons = {}
+
+    baseline_cpu = _number(baseline.get("cpu_percent"))
+    current_cpu = _number(current.get("cpu_percent"))
+    if baseline_cpu is not None and current_cpu is not None:
+        delta = round(current_cpu - baseline_cpu, 2)
+        comparisons["cpu"] = {"baseline": baseline_cpu, "current": current_cpu, "delta": delta}
+        if current_cpu > float(policy.get("cpu_max_percent", 95.0)):
+            issues.append(f"CPU {current_cpu:.1f}% exceeds {float(policy.get('cpu_max_percent', 95.0)):.1f}%")
+        if delta > float(policy.get("cpu_max_delta", 40.0)):
+            issues.append(f"CPU increased {delta:.1f} percentage points")
+
+    baseline_memory = _number(baseline.get("memory_percent"))
+    current_memory = _number(current.get("memory_percent"))
+    if baseline_memory is not None and current_memory is not None:
+        delta = round(current_memory - baseline_memory, 2)
+        comparisons["memory"] = {"baseline": baseline_memory, "current": current_memory, "delta": delta}
+        if current_memory > float(policy.get("memory_max_percent", 95.0)):
+            issues.append(f"memory {current_memory:.1f}% exceeds {float(policy.get('memory_max_percent', 95.0)):.1f}%")
+        if delta > float(policy.get("memory_max_delta", 20.0)):
+            issues.append(f"memory increased {delta:.1f} percentage points")
+
+    baseline_disk = _number((baseline.get("disk") or {}).get("free_percent"))
+    current_disk = _number((current.get("disk") or {}).get("free_percent"))
+    if baseline_disk is not None and current_disk is not None:
+        drop = round(baseline_disk - current_disk, 2)
+        comparisons["disk_free"] = {"baseline": baseline_disk, "current": current_disk, "drop": drop}
+        if current_disk < float(policy.get("disk_min_free_percent", 5.0)):
+            issues.append(f"disk free {current_disk:.1f}% is below minimum")
+        if drop > float(policy.get("disk_max_free_drop", 10.0)):
+            issues.append(f"disk free dropped {drop:.1f} percentage points")
+
+    baseline_services = baseline.get("services") if isinstance(baseline.get("services"), dict) else {}
+    current_services = current.get("services") if isinstance(current.get("services"), dict) else {}
+    service_results = {}
+    for name in policy.get("critical_services") or []:
+        before = baseline_services.get(name) if isinstance(baseline_services.get(name), dict) else {}
+        after = current_services.get(name) if isinstance(current_services.get(name), dict) else {}
+        healthy = bool(after.get("healthy", False))
+        service_results[name] = {
+            "baseline_healthy": bool(before.get("healthy", False)),
+            "current_healthy": healthy,
+            "status": str(after.get("status") or "unknown"),
+        }
+        if not healthy:
+            issues.append(f"critical service {name} is not healthy")
+    if service_results:
+        comparisons["services"] = service_results
+
+    baseline_apps = baseline.get("applications") if isinstance(baseline.get("applications"), dict) else {}
+    current_apps = current.get("applications") if isinstance(current.get("applications"), dict) else {}
+    app_results = {}
+    for check in policy.get("application_checks") or []:
+        name = str(check.get("name") or "")
+        before = baseline_apps.get(name) if isinstance(baseline_apps.get(name), dict) else {}
+        after = current_apps.get(name) if isinstance(current_apps.get(name), dict) else {}
+        healthy = bool(after.get("healthy", False))
+        app_results[name] = {
+            "baseline_healthy": bool(before.get("healthy", False)),
+            "current_healthy": healthy,
+            "status_code": after.get("status_code"),
+            "latency_ms": after.get("latency_ms"),
+        }
+        if not healthy:
+            issues.append(f"application health check {name} failed")
+    if app_results:
+        comparisons["applications"] = app_results
+
+    if issues:
+        return {
+            "status": "failed",
+            "reason": "post-patch health regression or unhealthy critical check",
+            "issues": issues,
+            "comparisons": comparisons,
+        }
+
+    return {
+        "status": "passed",
+        "reason": "post-patch health telemetry is within policy",
+        "issues": [],
+        "comparisons": comparisons,
+    }
+
 
 
 def rollback_state(job: PatchJob):
@@ -706,13 +870,52 @@ def job_post_patch_validation(job: PatchJob):
             "current_pending": agent.pending_updates,
         }
 
+    health_policy = payload.get("health_policy") if isinstance(payload.get("health_policy"), dict) else {}
+    health_result = {"status": "disabled", "reason": "health telemetry gate disabled", "issues": []}
+    if health_policy.get("enabled"):
+        job_result = load(job.result_json, {})
+        baseline_health = job_result.get("health_baseline") if isinstance(job_result.get("health_baseline"), dict) else {}
+        inventory = load(agent.inventory_json, {})
+        current_health = inventory.get("health") if isinstance(inventory.get("health"), dict) else {}
+
+        if current_health:
+            collected_text = str(current_health.get("collected_at") or "")
+            try:
+                collected_at = datetime.fromisoformat(collected_text.replace("Z", "+00:00"))
+                if collected_at.tzinfo is None:
+                    collected_at = collected_at.replace(tzinfo=timezone.utc)
+                if collected_at <= finished:
+                    current_health = {}
+            except ValueError:
+                if health_policy.get("required", True):
+                    current_health = {}
+
+        health_result = evaluate_health_regression(health_policy, baseline_health, current_health)
+        if health_result["status"] == "failed":
+            return {
+                "status": "failed",
+                "reason": health_result["reason"],
+                "health_validation": health_result,
+                "baseline_pending": baseline_pending,
+                "current_pending": agent.pending_updates,
+                "baseline_critical": baseline_critical,
+                "current_critical": agent.critical_updates,
+            }
+        if health_result["status"] == "waiting":
+            return {
+                "status": "waiting",
+                "reason": health_result["reason"],
+                "health_validation": health_result,
+            }
+
     return {
         "status": "passed",
-        "reason": "fresh heartbeat received with no patch regression",
+        "reason": "fresh heartbeat received with no patch or health regression",
         "baseline_pending": baseline_pending,
         "current_pending": agent.pending_updates,
         "baseline_critical": baseline_critical,
         "current_critical": agent.critical_updates,
+        "health_validation": health_result,
     }
 
 
@@ -1611,6 +1814,7 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
         "maintenance_timezone": body.maintenance_timezone,
         "maintenance_days": body.maintenance_days,
         "post_patch_validation": body.post_patch_validation,
+        "health_policy": health_policy_from_campaign(body),
         "prepare_rollback": body.prepare_rollback,
         "rollback_required": body.rollback_required,
         "target_agent_id": target_agent.id if target_agent else "",
@@ -1645,6 +1849,10 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             "reboot_policy": reboot_policy,
             "maintenance_window": maintenance_window_state(policy_payload),
             "post_patch_validation": body.post_patch_validation,
+            "health_gate_enabled": body.health_gate_enabled,
+            "health_gate_required": body.health_gate_require_telemetry,
+            "critical_services": len(body.critical_services),
+            "application_health_checks": len(body.application_health_checks),
             "prepare_rollback": body.prepare_rollback,
             "rollback_required": body.rollback_required,
             "target_agent_id": target_agent.id if target_agent else "",
