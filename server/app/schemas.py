@@ -125,6 +125,10 @@ class VulnerabilityImportRequest(BaseModel):
     findings: List[VulnerabilityFindingInput] = Field(default_factory=list)
 
 
+class RemediationRescanRequest(BaseModel):
+    reason: str = Field(min_length=5, max_length=500)
+
+
 class VulnerabilityStatusUpdate(BaseModel):
     status: str
 

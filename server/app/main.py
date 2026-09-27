@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
 from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
-from .schemas import AgentMtlsBindRequest, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
+from .schemas import AgentMtlsBindRequest, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -2088,6 +2088,81 @@ def update_vulnerability_status(
     )
     return serialize_vulnerability(finding)
 
+
+
+@app.get("/api/admin/remediation-evidence")
+def list_remediation_evidence(
+    status: str | None = None,
+    finding_id: str | None = None,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    q = db.query(RemediationEvidence).order_by(RemediationEvidence.created_at.desc())
+    if status:
+        q = q.filter(RemediationEvidence.status == status.strip().lower())
+    if finding_id:
+        q = q.filter(RemediationEvidence.finding_id == finding_id)
+    return [serialize_remediation_evidence(item) for item in q.limit(1000).all()]
+
+
+@app.post("/api/admin/remediation-evidence/{evidence_id}/rescan")
+def retry_remediation_rescan(
+    evidence_id: str,
+    body: RemediationRescanRequest,
+    principal=Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    item = db.get(RemediationEvidence, evidence_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="remediation evidence not found")
+    if item.status not in {"error", "still_detected"}:
+        raise HTTPException(
+            status_code=409,
+            detail="manual rescan is allowed only after an error or a still-detected result",
+        )
+
+    validation = job_post_patch_validation(item.job)
+    if validation.get("status") != "passed":
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "post-patch validation is not healthy", "validation": validation},
+        )
+
+    previous_status = item.status
+    evidence = load(item.evidence_json, {})
+    retries = evidence.get("manual_rescans")
+    if not isinstance(retries, list):
+        retries = []
+    retries.append({
+        "requested_by": principal["actor"],
+        "reason": body.reason,
+        "time": now().isoformat(),
+        "previous_status": previous_status,
+    })
+    evidence["manual_rescans"] = retries[-20:]
+    item.evidence_json = dump(evidence)
+    db.commit()
+
+    if not start_remediation_rescan(db, item, principal["actor"]):
+        db.refresh(item)
+        raise HTTPException(
+            status_code=409,
+            detail=item.error or "rescan could not be started now",
+        )
+
+    audit(
+        db,
+        principal["actor"],
+        "remediation.rescan.manual",
+        "remediation_evidence",
+        item.id,
+        {
+            "reason": body.reason,
+            "previous_status": previous_status,
+            "report_id": item.rescan_report_id,
+        },
+    )
+    return serialize_remediation_evidence(item)
 
 
 @app.get("/api/admin/campaigns")
