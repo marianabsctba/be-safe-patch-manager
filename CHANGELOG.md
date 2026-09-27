@@ -9,6 +9,9 @@
 - novo endpoint `GET /api/admin/reports/vulnerability-sla` consolida política, totais, severidade e findings priorizados;
 - summary administrativo passa a expor vulnerabilidades em breach e próximas do vencimento;
 - dashboard mostra cards de SLA e estado por finding na tabela de vulnerabilidades;
+- adicionadas exceções formais de SLA com motivo, aprovador, validade e revogação auditada;
+- exceção ativa pausa o contador de breach sem alterar o status real do finding;
+- expiração devolve automaticamente o finding ao cálculo normal de SLA;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
 
