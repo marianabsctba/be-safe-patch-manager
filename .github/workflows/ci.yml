@@ -39,6 +39,7 @@ jobs:
         run: |
           pip install -r server/requirements.txt
           pip install -r server/requirements-dev.txt
+          pip install -r agent/requirements.txt
 
       - name: Python syntax
         run: python -m compileall -q server agent scripts
@@ -53,7 +54,6 @@ jobs:
 
       - name: Unit tests
         env:
-          ADMIN_TOKEN: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
           ENROLLMENT_TOKEN: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
           GREENBONE_ENABLED: "false"
         run: |
@@ -62,15 +62,26 @@ jobs:
 
       - name: Docker Compose validation
         env:
-          ADMIN_TOKEN: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
           ENROLLMENT_TOKEN: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
           POSTGRES_PASSWORD: CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
-        run: docker compose config >/dev/null
+        run: |
+          docker compose config >/dev/null
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config >/dev/null
 
       - name: Shell syntax
         run: |
           bash -n deploy/install-linux.sh
+          bash -n scripts/backup-postgres.sh
+          bash -n scripts/restore-postgres.sh
           sh -n server/entrypoint.sh
+
+      - name: NGINX production config
+        run: |
+          mkdir -p deploy/nginx/tls
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1             -subj "/CN=ci.local"             -keyout deploy/nginx/tls/server.key             -out deploy/nginx/tls/server.crt >/dev/null 2>&1
+          cp deploy/nginx/tls/server.crt deploy/nginx/tls/agent-ca.crt
+          docker run --rm             -v "$PWD/deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"             -v "$PWD/deploy/nginx/tls:/etc/nginx/tls:ro"             nginx:stable-alpine nginx -t
+          rm -f deploy/nginx/tls/server.key deploy/nginx/tls/server.crt deploy/nginx/tls/agent-ca.crt
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
