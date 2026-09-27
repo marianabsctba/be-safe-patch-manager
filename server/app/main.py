@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
+from .models import AdminSession, AdminUser, Agent, AssetRiskSnapshot, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
 from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
@@ -904,6 +904,81 @@ def asset_risk_score(agent: Agent, findings: list[VulnerabilityFinding], referen
     }
 
 
+def capture_asset_risk_snapshots(
+    db: Session,
+    source: str = "manual",
+    reference: datetime | None = None,
+    minimum_interval_seconds: int = 3600,
+) -> dict:
+    reference = reference or now()
+    report = asset_risk_report(db, reference)
+    created = 0
+    skipped = 0
+
+    for item in report["assets"]:
+        latest = db.query(AssetRiskSnapshot).filter(
+            AssetRiskSnapshot.agent_id == item["agent_id"]
+        ).order_by(AssetRiskSnapshot.captured_at.desc()).first()
+
+        if latest:
+            captured = latest.captured_at
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=timezone.utc)
+            if (reference - captured).total_seconds() < minimum_interval_seconds:
+                skipped += 1
+                continue
+
+        risk = item["risk"]
+        db.add(AssetRiskSnapshot(
+            agent_id=item["agent_id"],
+            score=risk["score"],
+            level=risk["level"],
+            criticality=risk["asset_criticality"]["score"],
+            external=risk["exposure"]["external"],
+            open_findings=risk["open_findings"],
+            factors_json=dump(risk["top_factors"]),
+            source=source,
+            captured_at=reference,
+        ))
+        created += 1
+
+    db.commit()
+    return {
+        "created": created,
+        "skipped": skipped,
+        "source": source,
+        "captured_at": reference.isoformat(),
+    }
+
+
+def asset_risk_history(db: Session, agent_id: str | None = None, limit: int = 500) -> dict:
+    q = db.query(AssetRiskSnapshot)
+    if agent_id:
+        q = q.filter(AssetRiskSnapshot.agent_id == agent_id)
+    rows = q.order_by(AssetRiskSnapshot.captured_at.desc()).limit(max(1, min(limit, 5000))).all()
+
+    items = []
+    for row in rows:
+        items.append({
+            "id": row.id,
+            "agent_id": row.agent_id,
+            "hostname": row.agent.hostname if row.agent else "",
+            "score": row.score,
+            "level": row.level,
+            "criticality": row.criticality,
+            "external": row.external,
+            "open_findings": row.open_findings,
+            "top_factors": load(row.factors_json, []),
+            "source": row.source,
+            "captured_at": row.captured_at.isoformat() if row.captured_at else None,
+        })
+
+    return {
+        "agent_id": agent_id,
+        "items": items,
+    }
+
+
 def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
     reference = reference or now()
     agents = db.query(Agent).order_by(Agent.hostname.asc()).all()
@@ -921,6 +996,31 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
         })
 
     rows.sort(key=lambda row: (-row["risk"]["score"], row["hostname"].lower()))
+
+    for row in rows:
+        snapshots = db.query(AssetRiskSnapshot).filter(
+            AssetRiskSnapshot.agent_id == row["agent_id"]
+        ).order_by(AssetRiskSnapshot.captured_at.desc()).limit(2).all()
+        current = row["risk"]["score"]
+        if not snapshots:
+            trend = {"delta": 0.0, "direction": "new", "previous_score": None}
+        else:
+            previous = float(snapshots[0].score)
+            delta = round(current - previous, 1)
+            if delta > 0:
+                direction = "up"
+            elif delta < 0:
+                direction = "down"
+            else:
+                direction = "flat"
+            trend = {
+                "delta": delta,
+                "direction": direction,
+                "previous_score": previous,
+                "last_snapshot_at": snapshots[0].captured_at.isoformat() if snapshots[0].captured_at else None,
+            }
+        row["risk"]["trend"] = trend
+
     summary = {
         "assets": len(rows),
         "critical": sum(1 for row in rows if row["risk"]["level"] == "critical"),
@@ -1538,6 +1638,7 @@ def run_greenbone_sync():
         state.last_error = ""
         state.details_json = dump(details)
         db.commit()
+        capture_asset_risk_snapshots(db, source="greenbone_sync")
         audit(db, "integration:greenbone", "greenbone.sync.success", "integration", "greenbone", details)
         return details
     except Exception as exc:
@@ -1658,6 +1759,7 @@ def run_threat_intel_sync():
         )
         state.details_json = dump(details)
         db.commit()
+        capture_asset_risk_snapshots(db, source="threat_intel_sync")
         audit(
             db,
             "integration:threat_intel",
@@ -3422,6 +3524,33 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             )
         ),
     }
+
+
+@app.post("/api/admin/reports/asset-risk/snapshot")
+def snapshot_asset_risk(
+    principal=Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    result = capture_asset_risk_snapshots(db, source=f"manual:{principal['actor']}", minimum_interval_seconds=0)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.snapshot.created",
+        "asset_risk",
+        "",
+        result,
+    )
+    return {"ok": True, "result": result}
+
+
+@app.get("/api/admin/reports/asset-risk/history")
+def admin_asset_risk_history(
+    agent_id: str | None = None,
+    limit: int = 500,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return asset_risk_history(db, agent_id=agent_id, limit=limit)
 
 
 @app.get("/api/admin/reports/asset-risk")
