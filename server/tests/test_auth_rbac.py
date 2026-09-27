@@ -40,7 +40,7 @@ def db():
         session.close()
 
 
-def add_user(db, username, role, password="Very-Strong-Test-Password-2026!"):
+def add_user(db, username, role, password="V3ry-Str0ng-T3st-Key-2026!X"):
     user = AdminUser(
         id=f"user-{username}",
         username=username,
@@ -114,7 +114,7 @@ def test_admin_can_manage_users(db):
         headers=headers,
         json={
             "username": "new.operator",
-            "password": "Another-Strong-Password-2026!",
+            "password": "An0ther-Str0ng-Key-2026!Z",
             "role": "operator",
         },
     )
@@ -155,7 +155,7 @@ def test_admin_cannot_demote_self_or_remove_last_active_admin(db):
         headers=headers,
         json={
             "username": "admin.second",
-            "password": "Second-Strong-Admin-Password-2026!",
+            "password": "Sec0nd-Adm1n-Key-2026!Q",
             "role": "admin",
         },
     )
