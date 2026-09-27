@@ -30,7 +30,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.2</small>
+          <small>dashboard v0.2.1</small>
         </div>
       </div>
     </aside>
@@ -140,6 +140,7 @@
                     <th>Pendentes</th>
                     <th>Críticas</th>
                     <th>Reboot</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody id="agents"></tbody>
@@ -271,6 +272,68 @@
       </main>
     </div>
   </div>
+
+
+  <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+  <aside id="agentDrawer" class="agent-drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <p class="section-kicker">ENDPOINT</p>
+        <h2 id="drawerHostname">-</h2>
+        <span id="drawerSubtitle" class="drawer-subtitle">-</span>
+      </div>
+      <button id="closeDrawer" class="icon-button" title="Fechar">×</button>
+    </div>
+
+    <div id="drawerBadges" class="drawer-badges"></div>
+
+    <div class="drawer-tabs">
+      <button class="drawer-tab active" data-drawer-tab="summary">Resumo</button>
+      <button class="drawer-tab" data-drawer-tab="patches">Patches</button>
+      <button class="drawer-tab" data-drawer-tab="inventory">Inventário</button>
+      <button class="drawer-tab" data-drawer-tab="history">Histórico</button>
+    </div>
+
+    <div class="drawer-body">
+      <section class="drawer-panel active" data-drawer-panel="summary">
+        <div id="drawerMetrics" class="drawer-metrics"></div>
+
+        <div class="drawer-section">
+          <div class="drawer-section-head">
+            <h3>Tags</h3>
+            <span>segmentação de campanhas</span>
+          </div>
+          <div class="tag-editor">
+            <input id="drawerTags" placeholder="piloto, prod, financeiro..." />
+            <button id="saveTags">Salvar</button>
+          </div>
+        </div>
+
+        <div class="drawer-section">
+          <div class="drawer-section-head"><h3>Identificação</h3></div>
+          <div id="drawerIdentity" class="kv-grid"></div>
+        </div>
+      </section>
+
+      <section class="drawer-panel" data-drawer-panel="patches">
+        <div class="drawer-section-head">
+          <h3>Patches detectados</h3>
+          <span id="drawerPatchCount">0 itens</span>
+        </div>
+        <div id="drawerPatches" class="patch-list"></div>
+      </section>
+
+      <section class="drawer-panel" data-drawer-panel="inventory">
+        <div class="drawer-section-head"><h3>Inventário reportado pelo agente</h3></div>
+        <div id="drawerInventory" class="inventory-list"></div>
+      </section>
+
+      <section class="drawer-panel" data-drawer-panel="history">
+        <div class="drawer-section-head"><h3>Jobs deste endpoint</h3></div>
+        <div id="drawerHistory" class="history-list"></div>
+      </section>
+    </div>
+  </aside>
 
   <div id="toast" class="toast" aria-live="polite"></div>
   <script src="/static/app.js"></script>

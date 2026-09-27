@@ -9,6 +9,8 @@ const state = {
   jobs: [],
   audit: [],
   view: 'overview',
+  selectedAgentId: null,
+  drawerTab: 'summary',
 };
 
 const titles = {
@@ -112,6 +114,25 @@ function statusLabel(status) {
   return labels[status] || status;
 }
 
+function scalar(value) {
+  if (value === null || value === undefined || value === '') return '-';
+  if (typeof value === 'boolean') return value ? 'sim' : 'não';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function endpointRisk(agent) {
+  const critical = Number(agent.critical_updates || 0);
+  const pending = Number(agent.pending_updates || 0);
+  if (critical > 0) return { label: 'Crítico', cls: 'fail' };
+  if (pending > 0 || agent.reboot_required) return { label: 'Atenção', cls: 'warn' };
+  return { label: 'Compliant', cls: 'ok' };
+}
+
+function selectedAgent() {
+  return state.agents.find((agent) => agent.id === state.selectedAgentId) || null;
+}
+
 function toast(message, type = 'ok') {
   const el = $('#toast');
   el.textContent = message;
@@ -185,6 +206,7 @@ function renderAll() {
   renderOverviewCampaigns();
   renderJobs();
   renderAudit();
+  if (state.selectedAgentId) renderAgentDrawer();
 }
 
 function renderSummary(summary) {
@@ -256,7 +278,7 @@ function renderAgents() {
   if (!items.length) {
     $('#agents').innerHTML = `
       <tr>
-        <td colspan="8"><div class="empty-state">Nenhum endpoint encontrado.</div></td>
+        <td colspan="9"><div class="empty-state">Nenhum endpoint encontrado.</div></td>
       </tr>`;
     return;
   }
@@ -279,6 +301,7 @@ function renderAgents() {
       <td><strong class="${Number(agent.pending_updates || 0) ? 'text-warn' : ''}">${Number(agent.pending_updates || 0)}</strong></td>
       <td><strong class="${Number(agent.critical_updates || 0) ? 'text-danger' : ''}">${Number(agent.critical_updates || 0)}</strong></td>
       <td>${agent.reboot_required ? badge('SIM', 'warn') : badge('não', 'ok')}</td>
+      <td><button class="row-action" data-agent-open="${esc(agent.id)}">Detalhes</button></td>
     </tr>
   `).join('');
 }
@@ -302,7 +325,7 @@ function renderRiskEndpoints() {
   }
 
   $('#riskEndpoints').innerHTML = risky.map((agent) => `
-    <article class="risk-item">
+    <article class="risk-item clickable" data-agent-open="${esc(agent.id)}" tabindex="0" role="button">
       <div>
         <strong>${esc(agent.hostname)}</strong>
         <span>${esc(agent.os_name || agent.os_family || '')}</span>
@@ -314,6 +337,141 @@ function renderRiskEndpoints() {
       </div>
     </article>
   `).join('');
+}
+
+
+function setDrawerTab(tab) {
+  state.drawerTab = tab;
+  $('.drawer-tab').forEach((button) => {
+    button.classList.toggle('active', button.dataset.drawerTab === tab);
+  });
+  $('.drawer-panel').forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.drawerPanel === tab);
+  });
+}
+
+function closeAgent() {
+  $('#agentDrawer').classList.remove('open');
+  $('#agentDrawer').setAttribute('aria-hidden', 'true');
+  $('#drawerBackdrop').hidden = true;
+  document.body.classList.remove('drawer-open');
+}
+
+function openAgent(id) {
+  state.selectedAgentId = id;
+  const agent = selectedAgent();
+  if (!agent) return;
+  renderAgentDrawer(agent);
+  $('#drawerBackdrop').hidden = false;
+  $('#agentDrawer').classList.add('open');
+  $('#agentDrawer').setAttribute('aria-hidden', 'false');
+  document.body.classList.add('drawer-open');
+  setDrawerTab('summary');
+}
+
+function renderAgentDrawer(agent = selectedAgent()) {
+  if (!agent) return;
+
+  const risk = endpointRisk(agent);
+  const patches = Array.isArray(agent.patch_scan) ? agent.patch_scan : [];
+  const jobs = state.jobs.filter((job) => job.agent_id === agent.id).slice(0, 50);
+
+  $('#drawerHostname').textContent = agent.hostname || '-';
+  $('#drawerSubtitle').textContent = ((agent.os_name || agent.os_family || '-') + ' ' + (agent.os_version || '')).trim();
+
+  $('#drawerBadges').innerHTML = [
+    isOnline(agent) ? badge('online', 'ok') : badge('offline', 'muted-badge'),
+    badge(risk.label, risk.cls),
+    agent.reboot_required ? badge('reboot pendente', 'warn') : '',
+    ...(agent.tags || []).map((tag) => badge(tag, 'info')),
+  ].join('');
+
+  const metrics = [
+    ['Updates pendentes', Number(agent.pending_updates || 0), Number(agent.pending_updates || 0) ? 'warn' : 'ok'],
+    ['Críticas', Number(agent.critical_updates || 0), Number(agent.critical_updates || 0) ? 'danger' : 'ok'],
+    ['Reboot', agent.reboot_required ? 'SIM' : 'não', agent.reboot_required ? 'warn' : 'ok'],
+    ['Último contato', shortWhen(agent.last_seen), isOnline(agent) ? 'ok' : 'neutral'],
+  ];
+
+  $('#drawerMetrics').innerHTML = metrics.map((item) =>
+    '<article class="drawer-metric ' + item[2] + '">' +
+      '<span>' + esc(item[0]) + '</span>' +
+      '<strong>' + esc(item[1]) + '</strong>' +
+    '</article>'
+  ).join('');
+
+  $('#drawerTags').value = (agent.tags || []).join(', ');
+
+  const identity = [
+    ['Agent ID', agent.id],
+    ['IP', agent.ip_address || '-'],
+    ['Família', agent.os_family || '-'],
+    ['Arquitetura', agent.arch || '-'],
+    ['Criado em', when(agent.created_at)],
+    ['Último contato', when(agent.last_seen)],
+  ];
+
+  $('#drawerIdentity').innerHTML = identity.map((item) =>
+    '<div><span>' + esc(item[0]) + '</span><strong>' + esc(item[1]) + '</strong></div>'
+  ).join('');
+
+  $('#drawerPatchCount').textContent = patches.length + ' item' + (patches.length === 1 ? '' : 's');
+
+  $('#drawerPatches').innerHTML = patches.length ? patches.map((patch, index) => {
+    const severity = String(patch.severity || patch.classification || '').toLowerCase();
+    const severityClass = ['critical', 'important', 'security', 'high'].includes(severity) ? 'fail' : (severity ? 'warn' : 'info');
+    const title = patch.title || patch.name || patch.package || patch.kb || patch.id || ('Patch ' + (index + 1));
+    const details = Object.entries(patch)
+      .filter(([key]) => !['title', 'name', 'severity'].includes(key))
+      .slice(0, 7);
+
+    return '<article class="patch-item">' +
+      '<div class="patch-title"><strong>' + esc(title) + '</strong>' +
+      (severity ? badge(severity, severityClass) : '') + '</div>' +
+      '<div class="patch-details">' +
+      details.map(([key, value]) => '<span><b>' + esc(key) + '</b> ' + esc(scalar(value)) + '</span>').join('') +
+      '</div></article>';
+  }).join('') : '<div class="empty-state good">Nenhum patch pendente reportado.</div>';
+
+  const inventory = agent.inventory && typeof agent.inventory === 'object' ? agent.inventory : {};
+  const inventoryEntries = Object.entries(inventory);
+
+  $('#drawerInventory').innerHTML = inventoryEntries.length ? inventoryEntries.map(([key, value]) =>
+    '<article class="inventory-item"><span>' + esc(key) + '</span><code>' + esc(scalar(value)) + '</code></article>'
+  ).join('') : '<div class="empty-state">O agente ainda não reportou inventário.</div>';
+
+  $('#drawerHistory').innerHTML = jobs.length ? jobs.map((job) =>
+    '<article class="history-item"><div><strong>' + esc(job.campaign_name || actionLabel(job.action)) + '</strong>' +
+    '<span>' + esc(actionLabel(job.action)) + ' · ' + esc(shortWhen(job.started_at || job.claimed_at || job.not_before)) +
+    '</span></div>' + badge(statusLabel(job.status), jobClass(job.status)) + '</article>'
+  ).join('') : '<div class="empty-state">Nenhum job registrado para este endpoint.</div>';
+}
+
+async function saveAgentTags() {
+  const agent = selectedAgent();
+  if (!agent) return;
+
+  const tags = $('#drawerTags').value
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
+  try {
+    const updated = await api('/api/admin/agents/' + agent.id + '/tags', {
+      method: 'PUT',
+      body: JSON.stringify({ tags }),
+    });
+
+    const index = state.agents.findIndex((item) => item.id === agent.id);
+    if (index >= 0) state.agents[index] = updated;
+
+    renderAgents();
+    renderRiskEndpoints();
+    renderAgentDrawer(updated);
+    toast('Tags atualizadas.');
+  } catch (error) {
+    toast('Falha ao salvar tags: ' + error.message, 'fail');
+  }
 }
 
 function campaignCard(campaign, compact = false) {
@@ -471,6 +629,30 @@ $$('.jump-view').forEach((button) => {
 
 $('#endpointSearch').addEventListener('input', renderAgents);
 $('#endpointFilter').addEventListener('change', renderAgents);
+
+
+document.addEventListener('click', (event) => {
+  const target = event.target.closest('[data-agent-open]');
+  if (target) openAgent(target.dataset.agentOpen);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && $('#agentDrawer').classList.contains('open')) closeAgent();
+
+  const target = event.target.closest && event.target.closest('[data-agent-open]');
+  if (target && (event.key === 'Enter' || event.key === ' ')) {
+    event.preventDefault();
+    openAgent(target.dataset.agentOpen);
+  }
+});
+
+$('#closeDrawer').addEventListener('click', closeAgent);
+$('#drawerBackdrop').addEventListener('click', closeAgent);
+$('#saveTags').addEventListener('click', saveAgentTags);
+
+$('.drawer-tab').forEach((button) => {
+  button.addEventListener('click', () => setDrawerTab(button.dataset.drawerTab));
+});
 
 $('#campaignForm').addEventListener('submit', async (event) => {
   event.preventDefault();
