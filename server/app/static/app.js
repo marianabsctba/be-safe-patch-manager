@@ -684,6 +684,14 @@ function assetRiskBadge(risk) {
   return badge('BAIXO ' + risk.score, 'muted-badge');
 }
 
+function assetRiskTrend(risk) {
+  const trend = risk && risk.trend ? risk.trend : {};
+  if (trend.direction === 'up') return badge('↑ +' + Number(trend.delta || 0).toFixed(1), 'fail');
+  if (trend.direction === 'down') return badge('↓ ' + Number(trend.delta || 0).toFixed(1), 'ok');
+  if (trend.direction === 'flat') return badge('→ 0', 'info');
+  return badge('novo', 'muted-badge');
+}
+
 function renderAssetRisk() {
   const report = state.assetRisk || {};
   const summary = report.summary || {};
@@ -702,7 +710,7 @@ function renderAssetRisk() {
 
   if (!assets.length) {
     $('#assetRiskTable').innerHTML =
-      '<tr><td colspan="7"><div class="empty-state">Nenhum ativo calculado.</div></td></tr>';
+      '<tr><td colspan="8"><div class="empty-state">Nenhum ativo calculado.</div></td></tr>';
     return;
   }
 
@@ -715,6 +723,7 @@ function renderAssetRisk() {
     return '<tr>' +
       '<td><strong>' + esc(item.hostname || item.agent_id) + '</strong><br><small class="muted">' + esc(item.ip_address || '') + '</small></td>' +
       '<td>' + assetRiskBadge(risk) + '</td>' +
+      '<td>' + assetRiskTrend(risk) + '</td>' +
       '<td><strong>' + esc(crit.score == null ? '-' : crit.score) + '/5</strong></td>' +
       '<td>' + (exposure.external ? badge('externo', 'fail') : badge('interno', 'ok')) + '</td>' +
       '<td><strong>' + esc(risk.open_findings == null ? 0 : risk.open_findings) + '</strong></td>' +
@@ -1717,6 +1726,27 @@ $('#threatIntelSync').addEventListener('click', async () => {
     await load();
   } finally {
     $('#threatIntelSync').textContent = 'Sincronizar agora';
+  }
+});
+
+
+
+$('#assetRiskSnapshot').addEventListener('click', async () => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+
+  $('#assetRiskSnapshot').disabled = true;
+  $('#assetRiskSnapshot').textContent = 'Salvando...';
+
+  try {
+    const result = await api('/api/admin/reports/asset-risk/snapshot', { method: 'POST' });
+    const stats = result.result || {};
+    toast('Asset Risk: ' + Number(stats.created || 0) + ' snapshot(s) salvo(s).');
+    await load();
+  } catch (error) {
+    toast('Asset Risk: ' + error.message, 'fail');
+  } finally {
+    $('#assetRiskSnapshot').textContent = 'Salvar snapshot';
+    $('#assetRiskSnapshot').disabled = false;
   }
 });
 
