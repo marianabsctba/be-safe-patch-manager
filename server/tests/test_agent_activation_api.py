@@ -20,7 +20,7 @@ os.environ["GREENBONE_ENABLED"] = "false"
 from app.database import Base, SessionLocal, engine
 from app import main
 from app.models import Agent, Campaign, PatchJob
-from app.schemas import AgentUpdateActivationRequest
+from app.schemas import AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest
 
 
 @pytest.fixture(autouse=True)
@@ -40,10 +40,10 @@ def db():
         session.close()
 
 
-def seed_agent(db, *, os_family="linux", staged_version="0.16.0", capability=True):
+def seed_agent(db, *, os_family="linux", staged_version="0.17.0", capability=True):
     caps = ["scan_updates", "job_leases_v1"]
     if capability:
-        caps.append("signed_update_activation_v1")
+        caps.extend(["signed_update_activation_v1", "signed_update_quarantine_v1"])
     agent = Agent(
         id="activation-agent",
         hostname="activation-host",
@@ -53,7 +53,7 @@ def seed_agent(db, *, os_family="linux", staged_version="0.16.0", capability=Tru
         last_seen=main.now(),
         inventory_json=json.dumps({
             "agent": {
-                "version": "0.15.0",
+                "version": "0.16.0",
                 "protocol": 2,
                 "capabilities": caps,
             },
@@ -72,7 +72,7 @@ def seed_agent(db, *, os_family="linux", staged_version="0.16.0", capability=Tru
     return agent
 
 
-def request(version="0.16.0"):
+def request(version="0.17.0"):
     return AgentUpdateActivationRequest(
         expected_version=version,
         reason="janela de teste controlado",
@@ -95,7 +95,7 @@ def test_admin_can_queue_linux_activation(db):
     assert result["ok"] is True
     assert job.action == "activate_agent_update"
     assert job.status == "pending"
-    assert json.loads(job.payload_json)["expected_version"] == "0.16.0"
+    assert json.loads(job.payload_json)["expected_version"] == "0.17.0"
     assert campaign.action == "activate_agent_update"
     assert main.required_capabilities_for_job(job) == [
         "job_leases_v1",
@@ -138,7 +138,7 @@ def test_staged_version_must_match_approval(db):
     with pytest.raises(HTTPException) as exc:
         main.approve_agent_update_activation(
             agent.id,
-            request("0.16.0"),
+            request("0.17.0"),
             principal={"actor": "user:admin", "role": "admin"},
             db=db,
         )
@@ -188,3 +188,94 @@ def test_active_execution_blocks_agent_activation(db):
         )
     assert exc.value.status_code == 409
     assert "active execution" in str(exc.value.detail)
+
+
+
+def quarantine_request(version="0.17.0"):
+    return AgentUpdateQuarantineClearRequest(
+        expected_version=version,
+        reason="reteste aprovado após correção",
+        acknowledge_risk=True,
+    )
+
+
+def test_watchdog_rollback_blocks_normal_activation(db):
+    agent = seed_agent(db)
+    inventory = json.loads(agent.inventory_json)
+    inventory["activation"] = {
+        "status": "rolled_back",
+        "previous_version": "0.16.0",
+        "target_version": "0.17.0",
+        "rollback_reason": "startup_attempt_limit",
+    }
+    agent.inventory_json = json.dumps(inventory)
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        main.approve_agent_update_activation(
+            agent.id,
+            request(),
+            principal={"actor": "user:admin", "role": "admin"},
+            db=db,
+        )
+    assert exc.value.status_code == 409
+    assert "quarantined" in str(exc.value.detail)
+
+
+def test_admin_can_queue_quarantine_clear(db):
+    agent = seed_agent(db)
+    inventory = json.loads(agent.inventory_json)
+    inventory["update"] = {
+        "status": "quarantined",
+        "staged_version": "0.17.0",
+        "quarantined_version": "0.17.0",
+    }
+    inventory["activation"] = {
+        "status": "rolled_back",
+        "previous_version": "0.16.0",
+        "target_version": "0.17.0",
+        "rollback_reason": "startup_attempt_limit",
+    }
+    agent.inventory_json = json.dumps(inventory)
+    db.commit()
+
+    result = main.clear_agent_update_quarantine(
+        agent.id,
+        quarantine_request(),
+        principal={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+
+    job = db.query(PatchJob).one()
+    assert result["ok"] is True
+    assert job.action == "clear_agent_update_quarantine"
+    assert main.required_capabilities_for_job(job) == [
+        "job_leases_v1",
+        "signed_update_quarantine_v1",
+    ]
+
+
+def test_quarantine_clear_requires_matching_rolled_back_version(db):
+    agent = seed_agent(db)
+    inventory = json.loads(agent.inventory_json)
+    inventory["update"] = {
+        "status": "quarantined",
+        "staged_version": "0.17.0",
+        "quarantined_version": "0.17.0",
+    }
+    inventory["activation"] = {
+        "status": "rolled_back",
+        "previous_version": "0.16.0",
+        "target_version": "0.17.1",
+    }
+    agent.inventory_json = json.dumps(inventory)
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        main.clear_agent_update_quarantine(
+            agent.id,
+            quarantine_request(),
+            principal={"actor": "user:admin", "role": "admin"},
+            db=db,
+        )
+    assert exc.value.status_code == 409
