@@ -10,6 +10,22 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: patchmgr
+          POSTGRES_USER: patchmgr
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U patchmgr -d patchmgr"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,14 +43,13 @@ jobs:
       - name: Python syntax
         run: python -m compileall -q server agent scripts
 
-      - name: Alembic migration smoke test
+      - name: Alembic migration on PostgreSQL
         env:
-          DATABASE_URL: sqlite:///./ci-migration.db
+          DATABASE_URL: postgresql+psycopg://patchmgr:ci-postgres-password@127.0.0.1:5432/patchmgr
         run: |
           cd server
           alembic upgrade head
           alembic current
-          rm -f ci-migration.db
 
       - name: Unit tests
         env:
@@ -44,6 +59,13 @@ jobs:
         run: |
           cd server
           pytest -q tests
+
+      - name: Docker Compose validation
+        env:
+          ADMIN_TOKEN: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          ENROLLMENT_TOKEN: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+          POSTGRES_PASSWORD: CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+        run: docker compose config >/dev/null
 
       - name: Shell syntax
         run: |
