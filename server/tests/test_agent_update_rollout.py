@@ -308,3 +308,88 @@ def test_quarantined_agent_is_not_eligible_for_new_rollout(db):
 
     assert exc.value.status_code == 409
     assert exc.value.detail["skipped"]["not_staged"] == 1
+
+
+
+def test_agent_rollout_requires_one_hundred_percent_success(db):
+    seed_fleet(db, 10)
+    created = main.create_agent_update_rollout(
+        rollout_request(100),
+        principal={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+    campaign = db.get(main.Campaign, created["campaign"]["id"])
+    assert len(campaign.jobs) == 10
+
+    for job in campaign.jobs[:9]:
+        commit_activation(db, job)
+
+    failed = campaign.jobs[9]
+    failed.status = "failed"
+    failed.started_at = main.now() - timedelta(seconds=5)
+    failed.finished_at = main.now()
+    failed.error = "simulated activation failure"
+    db.commit()
+    db.refresh(campaign)
+
+    health = main.campaign_health(campaign)
+
+    assert health["success_rate"] == 90.0
+    assert health["required_success_rate"] == 100.0
+    assert health["ready"] is False
+    assert health["reason"] == "success rate below required threshold"
+
+
+def test_agent_activation_confirmation_timeout_fails_ring(db, monkeypatch):
+    seed_fleet(db, 10)
+    created = main.create_agent_update_rollout(
+        rollout_request(),
+        principal={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+    campaign = db.get(main.Campaign, created["campaign"]["id"])
+    job = campaign.jobs[0]
+
+    monkeypatch.setattr(main, "AGENT_ACTIVATION_CONFIRM_TIMEOUT_SECONDS", 60)
+    job.status = "success"
+    job.started_at = main.now() - timedelta(seconds=70)
+    job.finished_at = main.now() - timedelta(seconds=65)
+    inventory = json.loads(job.agent.inventory_json)
+    inventory["activation"] = {
+        "status": "pending",
+        "previous_version": "0.16.0",
+        "target_version": "0.17.0",
+    }
+    job.agent.inventory_json = json.dumps(inventory)
+    job.agent.last_seen = main.now() - timedelta(seconds=64)
+    db.commit()
+    db.refresh(campaign)
+
+    health = main.campaign_health(campaign)
+
+    assert health["ready"] is False
+    assert health["validation"]["failed"] == 1
+    assert health["validation_details"][0]["reason"] == "agent activation confirmation timed out"
+
+
+def test_operator_cannot_advance_agent_update_rollout(db):
+    seed_fleet(db, 10)
+    created = main.create_agent_update_rollout(
+        rollout_request(),
+        principal={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+    campaign = db.get(main.Campaign, created["campaign"]["id"])
+    commit_activation(db, campaign.jobs[0])
+    db.refresh(campaign)
+
+    with pytest.raises(HTTPException) as exc:
+        main.advance_campaign(
+            campaign.id,
+            RingAdvance(target_percent=30, override_health_gate=False),
+            principal={"actor": "user:operator", "role": "operator"},
+            db=db,
+        )
+
+    assert exc.value.status_code == 403
+    assert "admin role required" in str(exc.value.detail)
