@@ -75,6 +75,7 @@ AGENT_MIN_VERSION = os.getenv("AGENT_MIN_VERSION", "0.13.0").strip() or "0.13.0"
 AGENT_MIN_PROTOCOL = _seconds_setting("AGENT_MIN_PROTOCOL", 2, 1)
 AGENT_ENFORCE_COMPATIBILITY = _bool_setting("AGENT_ENFORCE_COMPATIBILITY", False)
 AGENT_UPDATE_ENABLED = _bool_setting("AGENT_UPDATE_ENABLED", False)
+ASSET_RISK_APPETITE = _seconds_setting("ASSET_RISK_APPETITE", 700, 1)
 AGENT_RELEASE_DIR = Path(os.getenv("AGENT_RELEASE_DIR", "/agent-releases"))
 AGENT_UPDATE_PUBLIC_KEY_FILE = Path(
     os.getenv("AGENT_UPDATE_PUBLIC_KEY_FILE", "/update-trust/agent-update-public.pem")
@@ -926,6 +927,12 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
         "high": sum(1 for row in rows if row["risk"]["level"] == "high"),
         "medium": sum(1 for row in rows if row["risk"]["level"] == "medium"),
         "low": sum(1 for row in rows if row["risk"]["level"] == "low"),
+        "external": sum(1 for row in rows if row["risk"]["exposure"]["external"]),
+        "risk_appetite": min(1000, ASSET_RISK_APPETITE),
+        "above_risk_appetite": sum(
+            1 for row in rows
+            if row["risk"]["score"] >= min(1000, ASSET_RISK_APPETITE)
+        ),
         "average_score": round(
             sum(row["risk"]["score"] for row in rows) / len(rows), 1
         ) if rows else 0.0,
@@ -3334,6 +3341,8 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
     online = sum(1 for a in agents if is_online(a))
     compliant = sum(1 for a in agents if a.pending_updates == 0)
     sla_report = vulnerability_sla_report(db)
+    remediation_report = remediation_queue_report(db)
+    asset_report = asset_risk_report(db)
     return {
         "agents": total,
         "online": online,
@@ -3360,10 +3369,12 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             for finding in db.query(VulnerabilityFinding).filter(VulnerabilityFinding.status == "open").all()
             if vulnerability_risk(finding)["level"] == "urgent"
         ),
-        "remediation_ready_vulnerabilities": remediation_queue_report(db)["summary"]["eligible_for_campaign"],
-        "critical_risk_assets": asset_risk_report(db)["summary"]["critical"],
-        "high_risk_assets": asset_risk_report(db)["summary"]["high"],
-        "average_asset_risk": asset_risk_report(db)["summary"]["average_score"],
+        "remediation_ready_vulnerabilities": remediation_report["summary"]["eligible_for_campaign"],
+        "critical_risk_assets": asset_report["summary"]["critical"],
+        "high_risk_assets": asset_report["summary"]["high"],
+        "average_asset_risk": asset_report["summary"]["average_score"],
+        "assets_above_risk_appetite": asset_report["summary"]["above_risk_appetite"],
+        "asset_risk_appetite": asset_report["summary"]["risk_appetite"],
         "agent_supported": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "supported"),
         "agent_outdated": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "outdated"),
         "agent_unknown": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "unknown"),
