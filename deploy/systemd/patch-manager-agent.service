@@ -7,9 +7,10 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/patch-manager-agent
-ExecStart=/opt/patch-manager-agent/.venv/bin/python /opt/patch-manager-agent/patch_agent.py --config /etc/patch-manager/agent.json
+ExecStart=/opt/patch-manager-agent/.venv/bin/python /opt/patch-manager-agent/agent_launcher.py --config /etc/patch-manager/agent.json
 Restart=always
 RestartSec=15
+Environment=PATCH_AGENT_ACTIVATION_MAX_ATTEMPTS=3
 NoNewPrivileges=false
 
 [Install]

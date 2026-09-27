@@ -14,5 +14,7 @@
   "client_key": "/etc/patch-manager/tls/agent.key",
   "update_public_key": "/etc/patch-manager/update-trust/agent-update-public.pem",
   "update_check_seconds": 21600,
-  "update_staging_dir": "/var/lib/patch-manager/updates"
+  "update_staging_dir": "/var/lib/patch-manager/updates",
+  "agent_base_dir": "/opt/patch-manager-agent",
+  "activation_state_file": "/var/lib/patch-manager/activation.json"
 }
