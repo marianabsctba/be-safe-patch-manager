@@ -1376,7 +1376,7 @@ def campaign_ring_jobs(c: Campaign):
 
 def campaign_health(c: Campaign):
     jobs = campaign_ring_jobs(c)
-    counts = {"pending": 0, "claimed": 0, "running": 0, "stalled": 0, "success": 0, "failed": 0, "skipped": 0}
+    counts = {"pending": 0, "blocked": 0, "claimed": 0, "running": 0, "stalled": 0, "success": 0, "failed": 0, "skipped": 0}
     validations = {"passed": 0, "waiting": 0, "failed": 0, "disabled": 0}
     validation_details = []
 
@@ -1394,7 +1394,7 @@ def campaign_health(c: Campaign):
                     **validation,
                 })
 
-    active = counts["pending"] + counts["claimed"] + counts["running"] + counts["stalled"]
+    active = counts["pending"] + counts["blocked"] + counts["claimed"] + counts["running"] + counts["stalled"]
     terminal = counts["success"] + counts["failed"] + counts["skipped"]
     success_rate = round((counts["success"] / terminal * 100), 1) if terminal else 0.0
     validation_blocked = validations["failed"] > 0 or validations["waiting"] > 0
@@ -1410,6 +1410,8 @@ def campaign_health(c: Campaign):
         reason = "no jobs in current ring"
     elif counts["stalled"]:
         reason = "current ring has stalled jobs"
+    elif counts["blocked"]:
+        reason = "current ring has compatibility-blocked jobs"
     elif active:
         reason = "current ring still has active jobs"
     elif terminal != len(jobs):
@@ -1438,7 +1440,7 @@ def campaign_health(c: Campaign):
 
 
 def serialize_campaign(c: Campaign):
-    counts = {"pending": 0, "claimed": 0, "running": 0, "success": 0, "failed": 0, "skipped": 0}
+    counts = {"pending": 0, "blocked": 0, "claimed": 0, "running": 0, "success": 0, "failed": 0, "skipped": 0}
     for j in c.jobs:
         counts[j.status] = counts.get(j.status, 0) + 1
     return {
@@ -1513,6 +1515,95 @@ def _audit_pending(db: Session, actor: str, event_type: str, object_type: str, o
         object_id=object_id,
         details_json=dump(details or {}),
     ))
+
+
+
+def compatibility_block_reason(result: dict) -> str:
+    status = str(result.get("status") or "unknown")
+    missing = result.get("missing_capabilities") or []
+    runtime = result.get("agent") or {}
+    parts = [f"agent compatibility blocked: {status}"]
+    if runtime.get("version"):
+        parts.append(f"version={runtime['version']}")
+    if runtime.get("protocol"):
+        parts.append(f"protocol={runtime['protocol']}")
+    if missing:
+        parts.append("missing=" + ",".join(missing))
+    return "; ".join(parts)[:2000]
+
+
+def block_incompatible_job(db: Session, job: PatchJob, agent: Agent) -> bool:
+    if not AGENT_ENFORCE_COMPATIBILITY:
+        return False
+
+    result = job_agent_compatibility(job, agent)
+    if result.get("compatible"):
+        return False
+
+    job.status = "blocked"
+    job.error = compatibility_block_reason(result)
+    job.claimed_at = None
+    job.claim_token_hash = ""
+    job.lease_expires_at = None
+    job.last_lease_at = None
+
+    _audit_pending(
+        db,
+        "system",
+        "job.compatibility.blocked",
+        "job",
+        job.id,
+        {
+            "agent_id": agent.id,
+            "compatibility_status": result.get("status"),
+            "agent_version": (result.get("agent") or {}).get("version", ""),
+            "agent_protocol": (result.get("agent") or {}).get("protocol", 0),
+            "required_capabilities": result.get("required_capabilities") or [],
+            "missing_capabilities": result.get("missing_capabilities") or [],
+        },
+    )
+    return True
+
+
+def reconcile_blocked_agent_jobs(db: Session, agent: Agent) -> int:
+    if not AGENT_ENFORCE_COMPATIBILITY:
+        return 0
+
+    changed = 0
+    jobs = db.query(PatchJob).filter(
+        PatchJob.agent_id == agent.id,
+        PatchJob.status == "blocked",
+    ).order_by(PatchJob.created_at.asc()).all()
+
+    for job in jobs:
+        if not str(job.error or "").startswith("agent compatibility blocked:"):
+            continue
+
+        result = job_agent_compatibility(job, agent)
+        if not result.get("compatible"):
+            job.error = compatibility_block_reason(result)
+            continue
+
+        job.status = "pending"
+        job.error = ""
+        changed += 1
+        _audit_pending(
+            db,
+            "system",
+            "job.compatibility.unblocked",
+            "job",
+            job.id,
+            {
+                "agent_id": agent.id,
+                "agent_version": (result.get("agent") or {}).get("version", ""),
+                "agent_protocol": (result.get("agent") or {}).get("protocol", 0),
+            },
+        )
+
+    if changed:
+        db.commit()
+    return changed
+
 
 
 def sweep_expired_job_leases(db: Session, agent_id: str | None = None):
@@ -1847,7 +1938,12 @@ def heartbeat(
     agent.pending_updates = len(body.patch_scan)
     agent.critical_updates = sum(1 for x in body.patch_scan if str(x.get("severity", "")).lower() in {"critical", "important", "security"})
     db.commit()
-    return {"ok": True}
+    unblocked = reconcile_blocked_agent_jobs(db, agent)
+    return {
+        "ok": True,
+        "agent_compatibility": agent_runtime_metadata(agent),
+        "jobs_unblocked": unblocked,
+    }
 
 
 @app.get("/api/agent/{agent_id}/jobs")
@@ -1866,7 +1962,12 @@ def poll_jobs(
         PatchJob.status == "pending",
     ).order_by(PatchJob.created_at.asc()).limit(100).all()
 
+    blocked_any = False
     for job in jobs:
+        if block_incompatible_job(db, job, agent):
+            blocked_any = True
+            continue
+
         if job.not_before:
             nb = job.not_before
             if nb.tzinfo is None:
@@ -1910,6 +2011,9 @@ def poll_jobs(
         db.expire_all()
         claimed = db.get(PatchJob, job.id)
         return [serialize_job(claimed, claim_token=claim_token)]
+
+    if blocked_any:
+        db.commit()
 
     return []
 
@@ -2044,6 +2148,16 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             VulnerabilityFinding.status == "open",
             VulnerabilityFinding.agent_id.is_(None),
         ).count(),
+        "agent_supported": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "supported"),
+        "agent_outdated": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "outdated"),
+        "agent_unknown": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "unknown"),
+        "agent_protocol_unsupported": sum(
+            1 for a in agents if agent_runtime_metadata(a)["status"] == "protocol_unsupported"
+        ),
+        "compatibility_enforced": AGENT_ENFORCE_COMPATIBILITY,
+        "minimum_agent_version": AGENT_MIN_VERSION,
+        "minimum_agent_protocol": AGENT_MIN_PROTOCOL,
+        "blocked_jobs": db.query(PatchJob).filter(PatchJob.status == "blocked").count(),
     }
 
 
