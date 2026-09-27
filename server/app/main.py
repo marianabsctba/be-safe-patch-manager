@@ -28,7 +28,7 @@ from .greenbone import public_config as public_greenbone_config
 from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.12.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.13.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -53,6 +53,9 @@ def _bool_setting(name: str, default: bool = False) -> bool:
 JOB_CLAIM_LEASE_SECONDS = _seconds_setting("JOB_CLAIM_LEASE_SECONDS", 300, 60)
 JOB_RUNNING_LEASE_SECONDS = _seconds_setting("JOB_RUNNING_LEASE_SECONDS", 7200, 300)
 AGENT_MTLS_REQUIRED = _bool_setting("AGENT_MTLS_REQUIRED", False)
+AGENT_MIN_VERSION = os.getenv("AGENT_MIN_VERSION", "0.13.0").strip() or "0.13.0"
+AGENT_MIN_PROTOCOL = _seconds_setting("AGENT_MIN_PROTOCOL", 2, 1)
+AGENT_ENFORCE_COMPATIBILITY = _bool_setting("AGENT_ENFORCE_COMPATIBILITY", False)
 TERMINAL_JOB_STATUSES = {"success", "failed", "skipped"}
 
 
@@ -183,6 +186,123 @@ def get_agent(
     return agent
 
 
+
+def _version_tuple(value: str):
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", text)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def version_at_least(current: str, minimum: str) -> bool:
+    current_tuple = _version_tuple(current)
+    minimum_tuple = _version_tuple(minimum)
+    if current_tuple is None or minimum_tuple is None:
+        return False
+    return current_tuple >= minimum_tuple
+
+
+def agent_runtime_metadata(agent: Agent) -> dict:
+    inventory = load(agent.inventory_json, {})
+    runtime = inventory.get("agent") if isinstance(inventory.get("agent"), dict) else {}
+    version = str(runtime.get("version") or "").strip()
+
+    try:
+        protocol = int(runtime.get("protocol") or 0)
+    except (TypeError, ValueError):
+        protocol = 0
+
+    raw_capabilities = runtime.get("capabilities")
+    capabilities = sorted({
+        str(item).strip()
+        for item in (raw_capabilities if isinstance(raw_capabilities, list) else [])
+        if str(item).strip()
+    })
+
+    known = bool(version and protocol)
+    version_supported = version_at_least(version, AGENT_MIN_VERSION)
+    protocol_supported = protocol >= AGENT_MIN_PROTOCOL
+    if not known:
+        status = "unknown"
+    elif not version_supported:
+        status = "outdated"
+    elif not protocol_supported:
+        status = "protocol_unsupported"
+    else:
+        status = "supported"
+
+    return {
+        "version": version,
+        "protocol": protocol,
+        "capabilities": capabilities,
+        "known": known,
+        "minimum_version": AGENT_MIN_VERSION,
+        "minimum_protocol": AGENT_MIN_PROTOCOL,
+        "version_supported": version_supported,
+        "protocol_supported": protocol_supported,
+        "status": status,
+        "enforced": AGENT_ENFORCE_COMPATIBILITY,
+    }
+
+
+def required_capabilities_for_job(job: PatchJob) -> list[str]:
+    payload = load(job.payload_json, {})
+    required = {"job_leases_v1"}
+
+    if job.action == "scan_updates":
+        required.add("scan_updates")
+    elif job.action == "install_updates":
+        required.add("install_updates")
+        if payload.get("prepare_rollback", True):
+            required.add("rollback_checkpoint_v1")
+        health_policy = payload.get("health_policy")
+        if isinstance(health_policy, dict) and health_policy.get("enabled"):
+            required.add("health_telemetry_v1")
+    elif job.action == "rollback_checkpoint":
+        required.add("rollback_restore_v1")
+
+    return sorted(required)
+
+
+def job_agent_compatibility(job: PatchJob, agent: Agent | None = None) -> dict:
+    agent = agent or job.agent
+    if not agent:
+        return {
+            "compatible": False,
+            "status": "agent_unavailable",
+            "required_capabilities": required_capabilities_for_job(job),
+            "missing_capabilities": [],
+            "agent": {},
+        }
+
+    runtime = agent_runtime_metadata(agent)
+    required = required_capabilities_for_job(job)
+    available = set(runtime.get("capabilities") or [])
+    missing = sorted(set(required) - available)
+
+    compatible = (
+        runtime.get("status") == "supported"
+        and not missing
+    )
+    if runtime.get("status") != "supported":
+        status = runtime.get("status") or "unknown"
+    elif missing:
+        status = "missing_capabilities"
+    else:
+        status = "supported"
+
+    return {
+        "compatible": compatible,
+        "status": status,
+        "required_capabilities": required,
+        "missing_capabilities": missing,
+        "agent": runtime,
+        "enforced": AGENT_ENFORCE_COMPATIBILITY,
+    }
+
+
+
 def serialize_agent(a: Agent):
     return {
         "id": a.id,
@@ -204,6 +324,7 @@ def serialize_agent(a: Agent):
         "critical_updates": a.critical_updates,
         "inventory": load(a.inventory_json, {}),
         "patch_scan": load(a.patch_scan_json, []),
+        "runtime": agent_runtime_metadata(a),
         "created_at": a.created_at.isoformat(),
     }
 
@@ -1362,6 +1483,7 @@ def serialize_job(j: PatchJob, claim_token: str | None = None):
         "lease_expires_at": j.lease_expires_at.isoformat() if j.lease_expires_at else None,
         "last_lease_at": j.last_lease_at.isoformat() if j.last_lease_at else None,
         "attempt_count": j.attempt_count,
+        "agent_compatibility": job_agent_compatibility(j),
         "remediation": (
             serialize_remediation_evidence(j.remediation_evidence)
             if j.remediation_evidence
