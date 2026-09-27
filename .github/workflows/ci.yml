@@ -44,6 +44,23 @@ jobs:
       - name: Python syntax
         run: python -m compileall -q server agent scripts
 
+      - name: Agent signed release drill
+        run: |
+          TMP_RELEASE="$(mktemp -d)"
+          python scripts/agent-release.py generate-key \
+            --private-key "$TMP_RELEASE/signing-private.pem" \
+            --public-key "$TMP_RELEASE/signing-public.pem"
+          python scripts/agent-release.py build \
+            --private-key "$TMP_RELEASE/signing-private.pem" \
+            --output "$TMP_RELEASE/release" \
+            --version 0.14.0 \
+            --source-commit "$GITHUB_SHA"
+          python scripts/agent-release.py verify \
+            --public-key "$TMP_RELEASE/signing-public.pem" \
+            --release-dir "$TMP_RELEASE/release"
+          rm -rf "$TMP_RELEASE"
+
+
       - name: Alembic migration on PostgreSQL
         env:
           DATABASE_URL: postgresql+psycopg://patchmgr:ci-postgres-password@127.0.0.1:5432/patchmgr

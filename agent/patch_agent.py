@@ -191,9 +191,10 @@ def validate_update_manifest(manifest):
 
 
 def update_public_key(cfg):
-    path = Path(str(cfg.get("update_public_key") or "").strip())
-    if not str(path):
+    raw_path = str(cfg.get("update_public_key") or "").strip()
+    if not raw_path:
         raise RuntimeError("update public key is not configured")
+    path = Path(raw_path)
     if not path.is_file():
         raise RuntimeError(f"update public key not found: {path}")
     try:
