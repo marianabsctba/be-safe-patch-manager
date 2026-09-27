@@ -565,6 +565,88 @@ def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> 
     }
 
 
+RISK_ASSET_TAG_WEIGHTS = {
+    "critical": 15,
+    "mission-critical": 15,
+    "tier0": 15,
+    "prod": 10,
+    "production": 10,
+    "internet-facing": 15,
+    "public": 10,
+    "dmz": 10,
+}
+
+
+def vulnerability_risk(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    raw = load(finding.raw_json, {})
+    reasons = []
+
+    cvss = max(0.0, min(10.0, float(finding.cvss or 0.0)))
+    cvss_points = round(cvss * 4.0, 1)
+    score = cvss_points
+    reasons.append({"factor": "cvss", "points": cvss_points, "value": cvss})
+
+    epss_value = raw.get("epss")
+    try:
+        epss = float(epss_value) if epss_value is not None else None
+    except (TypeError, ValueError):
+        epss = None
+    if epss is not None:
+        epss = max(0.0, min(1.0, epss))
+        epss_points = round(epss * 20.0, 1)
+        score += epss_points
+        reasons.append({"factor": "epss", "points": epss_points, "value": epss})
+
+    kev = bool(raw.get("kev") or raw.get("known_exploited") or raw.get("cisa_kev"))
+    if kev:
+        score += 20
+        reasons.append({"factor": "known_exploited", "points": 20, "value": True})
+
+    first_seen = finding.first_seen or finding.created_at or reference
+    if first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (reference - first_seen).total_seconds() / 86400.0)
+    age_points = min(10.0, age_days / 9.0)
+    if age_points > 0:
+        score += age_points
+        reasons.append({"factor": "age", "points": round(age_points, 1), "value_days": round(age_days, 1)})
+
+    asset_points = 0
+    tags = []
+    if finding.agent:
+        tags = [str(tag).strip().lower() for tag in load(finding.agent.tags, []) if str(tag).strip()]
+        for tag in tags:
+            asset_points = max(asset_points, RISK_ASSET_TAG_WEIGHTS.get(tag, 0))
+    if asset_points:
+        score += asset_points
+        reasons.append({"factor": "asset_criticality", "points": asset_points, "tags": tags})
+
+    if finding.agent is None:
+        score += 5
+        reasons.append({"factor": "unmanaged_or_unmatched", "points": 5, "value": True})
+
+    score = round(min(100.0, score), 1)
+    if score >= 80:
+        level = "urgent"
+    elif score >= 60:
+        level = "high"
+    elif score >= 40:
+        level = "medium"
+    else:
+        level = "low"
+
+    return {
+        "score": score,
+        "level": level,
+        "epss": epss,
+        "kev": kev,
+        "age_days": round(age_days, 1),
+        "asset_tags": tags,
+        "reasons": reasons,
+    }
+
+
 def match_agent_for_vulnerability(db: Session, host: str, ip_address: str):
     host_key = str(host or "").strip().lower().rstrip(".")
     short_host = host_key.split(".", 1)[0] if host_key else ""
@@ -636,6 +718,7 @@ def serialize_vulnerability(v: VulnerabilityFinding):
         "status": v.status,
         "matched": bool(v.agent_id),
         "sla": vulnerability_sla(v),
+        "risk": vulnerability_risk(v),
         "first_seen": v.first_seen.isoformat() if v.first_seen else None,
         "last_seen": v.last_seen.isoformat() if v.last_seen else None,
         "resolved_at": v.resolved_at.isoformat() if v.resolved_at else None,
@@ -2734,6 +2817,11 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
         "sla_breached_vulnerabilities": sla_report["summary"]["breached"],
         "sla_due_soon_vulnerabilities": sla_report["summary"]["due_soon"],
         "sla_exception_vulnerabilities": sla_report["summary"]["exception"],
+        "urgent_risk_vulnerabilities": sum(
+            1
+            for finding in db.query(VulnerabilityFinding).filter(VulnerabilityFinding.status == "open").all()
+            if vulnerability_risk(finding)["level"] == "urgent"
+        ),
         "agent_supported": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "supported"),
         "agent_outdated": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "outdated"),
         "agent_unknown": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "unknown"),
@@ -3109,7 +3197,6 @@ def list_vulnerabilities(
     db: Session = Depends(get_db),
 ):
     q = db.query(VulnerabilityFinding).order_by(
-        VulnerabilityFinding.cvss.desc(),
         VulnerabilityFinding.last_seen.desc(),
     )
     if status:
@@ -3118,7 +3205,13 @@ def list_vulnerabilities(
         q = q.filter(VulnerabilityFinding.severity == severity.lower())
     if agent_id:
         q = q.filter(VulnerabilityFinding.agent_id == agent_id)
-    return [serialize_vulnerability(item) for item in q.limit(1000).all()]
+    items = [serialize_vulnerability(item) for item in q.limit(1000).all()]
+    items.sort(key=lambda item: (
+        item["status"] != "open",
+        -(item.get("risk") or {}).get("score", 0),
+        -float(item.get("cvss") or 0),
+    ))
+    return items
 
 
 @app.post("/api/admin/vulnerabilities/import")
