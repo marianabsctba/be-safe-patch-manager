@@ -15,7 +15,17 @@ from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, Vuln
 
 
 APP_VERSION = "0.10.0"
-AGENT_ONLINE_SECONDS = max(60, int(os.getenv("AGENT_ONLINE_SECONDS", "300")))
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return max(minimum, value)
+
+
+AGENT_ONLINE_SECONDS = _env_int("AGENT_ONLINE_SECONDS", 300, minimum=60)
 BACKUP_STATUS_FILE = Path(os.getenv("BACKUP_STATUS_FILE", "/runtime/backup-status.json"))
 
 HTTP_REQUESTS = Counter(
