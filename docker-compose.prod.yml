@@ -1,0 +1,18 @@
+services:
+  patch-manager:
+    environment:
+      AGENT_MTLS_REQUIRED: "true"
+
+  reverse-proxy:
+    image: nginx:stable-alpine
+    container_name: patch-manager-proxy
+    restart: unless-stopped
+    depends_on:
+      patch-manager:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx/tls:/etc/nginx/tls:ro

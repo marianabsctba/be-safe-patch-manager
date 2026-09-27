@@ -33,6 +33,7 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
       AUTH_SESSION_TTL_SECONDS: ${AUTH_SESSION_TTL_SECONDS:-28800}
       BREAK_GLASS_ADMIN_TOKEN: ${BREAK_GLASS_ADMIN_TOKEN:-}
+      AGENT_MTLS_REQUIRED: ${AGENT_MTLS_REQUIRED:-false}
       JOB_CLAIM_LEASE_SECONDS: ${JOB_CLAIM_LEASE_SECONDS:-300}
       JOB_RUNNING_LEASE_SECONDS: ${JOB_RUNNING_LEASE_SECONDS:-7200}
       GREENBONE_ENABLED: ${GREENBONE_ENABLED:-false}
@@ -53,7 +54,7 @@ services:
       GREENBONE_REPORT_ID: ${GREENBONE_REPORT_ID:-}
       GREENBONE_RECONCILE_ABSENT: ${GREENBONE_RECONCILE_ABSENT:-false}
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
       interval: 30s
