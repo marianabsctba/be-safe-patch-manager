@@ -19,15 +19,16 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, VulnerabilityFinding
+from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
 from .schemas import AgentMtlsBindRequest, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
 from .greenbone import public_config as public_greenbone_config
+from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.11.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.12.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -262,6 +263,39 @@ def match_agent_for_vulnerability(db: Session, host: str, ip_address: str):
     return None
 
 
+def serialize_remediation_evidence(item: RemediationEvidence):
+    evidence = load(item.evidence_json, {})
+    return {
+        "id": item.id,
+        "finding_id": item.finding_id,
+        "campaign_id": item.campaign_id,
+        "campaign_name": item.campaign.name if item.campaign else "",
+        "job_id": item.job_id,
+        "agent_id": item.agent_id,
+        "hostname": item.agent.hostname if item.agent else "",
+        "source": item.source,
+        "cve": item.cve,
+        "greenbone_task_id": item.greenbone_task_id,
+        "baseline_report_id": item.baseline_report_id,
+        "rescan_report_id": item.rescan_report_id,
+        "status": item.status,
+        "error": item.error,
+        "evidence": evidence,
+        "requested_at": item.requested_at.isoformat() if item.requested_at else None,
+        "verified_at": item.verified_at.isoformat() if item.verified_at else None,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+    }
+
+
+def latest_remediation_evidence(finding: VulnerabilityFinding):
+    items = list(finding.remediation_evidence or [])
+    if not items:
+        return None
+    items.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return items[0]
+
+
 def serialize_vulnerability(v: VulnerabilityFinding):
     return {
         "id": v.id,
@@ -285,6 +319,11 @@ def serialize_vulnerability(v: VulnerabilityFinding):
         "first_seen": v.first_seen.isoformat() if v.first_seen else None,
         "last_seen": v.last_seen.isoformat() if v.last_seen else None,
         "resolved_at": v.resolved_at.isoformat() if v.resolved_at else None,
+        "remediation": (
+            serialize_remediation_evidence(latest_remediation_evidence(v))
+            if latest_remediation_evidence(v)
+            else None
+        ),
     }
 
 
@@ -412,6 +451,254 @@ def reconcile_greenbone_absent(db: Session, reports, source: str = "openvas"):
     return marked
 
 
+
+def remediation_evidence_for_job(db: Session, job: PatchJob, payload: dict):
+    finding_id = str(payload.get("source_finding_id") or "")
+    if not finding_id or job.action != "install_updates":
+        return None
+
+    existing = db.query(RemediationEvidence).filter(RemediationEvidence.job_id == job.id).first()
+    if existing:
+        return existing
+
+    finding = db.get(VulnerabilityFinding, finding_id)
+    if not finding or finding.source != "openvas":
+        return None
+
+    raw = load(finding.raw_json, {})
+    task_id = str(raw.get("greenbone_task_id") or "")
+    status = "waiting_validation" if task_id else "unsupported"
+    error = "" if task_id else "source finding has no Greenbone task id"
+
+    item = RemediationEvidence(
+        id=str(uuid.uuid4()),
+        finding_id=finding.id,
+        campaign_id=job.campaign_id,
+        job_id=job.id,
+        agent_id=job.agent_id,
+        source=finding.source,
+        cve=finding.cve,
+        greenbone_task_id=task_id,
+        baseline_report_id=finding.scan_id or str(raw.get("greenbone_report_id") or ""),
+        status=status,
+        error=error,
+        evidence_json=dump({
+            "source_external_id": finding.external_id,
+            "source_last_seen": finding.last_seen.isoformat() if finding.last_seen else None,
+            "source_status": finding.status,
+            "source_title": finding.title,
+            "source_cvss": finding.cvss,
+            "source_port": finding.port,
+        }),
+    )
+    db.add(item)
+    return item
+
+
+def remediation_scan_active_count(db: Session) -> int:
+    return db.query(RemediationEvidence).filter(
+        RemediationEvidence.status == "rescan_requested"
+    ).count()
+
+
+def start_remediation_rescan(db: Session, item: RemediationEvidence, actor: str) -> bool:
+    if item.status == "verified":
+        return False
+
+    job = db.get(PatchJob, item.job_id)
+    finding = db.get(VulnerabilityFinding, item.finding_id)
+    if not job or not finding:
+        item.status = "error"
+        item.error = "job or source finding is unavailable"
+        db.commit()
+        return False
+
+    validation = job_post_patch_validation(job)
+    if validation.get("status") != "passed":
+        return False
+
+    if not item.greenbone_task_id:
+        item.status = "unsupported"
+        item.error = "source finding has no Greenbone task id"
+        db.commit()
+        return False
+
+    config_obj = get_greenbone_config()
+    config = public_greenbone_config(config_obj)
+    if not config.get("enabled") or not config.get("configured"):
+        item.status = "error"
+        item.error = "Greenbone integration is not enabled and configured"
+        db.commit()
+        return False
+
+    if not GREENBONE_SYNC_LOCK.acquire(blocking=False):
+        return False
+
+    try:
+        started = start_greenbone_task_rescan(item.greenbone_task_id, config_obj)
+        item.status = "rescan_requested"
+        item.rescan_report_id = str(started.get("report_id") or "")
+        item.requested_at = now()
+        item.verified_at = None
+        item.error = ""
+
+        evidence = load(item.evidence_json, {})
+        evidence.update({
+            "validation": validation,
+            "rescan": {
+                "task_id": item.greenbone_task_id,
+                "task_name": started.get("task_name", ""),
+                "previous_status": started.get("previous_status", ""),
+                "report_id": item.rescan_report_id,
+                "requested_at": item.requested_at.isoformat(),
+            },
+        })
+        item.evidence_json = dump(evidence)
+        db.commit()
+        audit(
+            db,
+            actor,
+            "remediation.rescan.requested",
+            "remediation_evidence",
+            item.id,
+            {
+                "finding_id": item.finding_id,
+                "campaign_id": item.campaign_id,
+                "job_id": item.job_id,
+                "task_id": item.greenbone_task_id,
+                "report_id": item.rescan_report_id,
+                "cve": item.cve,
+            },
+        )
+        return True
+    except Exception as exc:
+        item.status = "error"
+        item.error = str(exc)[:2000]
+        evidence = load(item.evidence_json, {})
+        evidence["rescan_error"] = {
+            "time": now().isoformat(),
+            "error": str(exc)[:1000],
+        }
+        item.evidence_json = dump(evidence)
+        db.commit()
+        audit(
+            db,
+            actor,
+            "remediation.rescan.failed",
+            "remediation_evidence",
+            item.id,
+            {"error": str(exc)[:1000]},
+        )
+        return False
+    finally:
+        GREENBONE_SYNC_LOCK.release()
+
+
+def process_ready_remediation_rescans() -> int:
+    db = SessionLocal()
+    requested = 0
+    try:
+        items = db.query(RemediationEvidence).filter(
+            RemediationEvidence.status == "waiting_validation"
+        ).order_by(RemediationEvidence.created_at.asc()).limit(20).all()
+        for item in items:
+            if start_remediation_rescan(db, item, "system"):
+                requested += 1
+        return requested
+    finally:
+        db.close()
+
+
+def reconcile_remediation_evidence(db: Session, reports) -> dict:
+    report_map = {
+        (str(report.get("task_id") or ""), str(report.get("report_id") or "")): report
+        for report in reports
+    }
+    verified = 0
+    still_detected = 0
+    waiting = 0
+    timestamp = now()
+
+    items = db.query(RemediationEvidence).filter(
+        RemediationEvidence.status == "rescan_requested"
+    ).all()
+
+    for item in items:
+        report = report_map.get((item.greenbone_task_id, item.rescan_report_id))
+        if not report:
+            waiting += 1
+            continue
+
+        task_status = str(report.get("task_status") or "").strip().lower()
+        if task_status != "done":
+            waiting += 1
+            continue
+
+        finding = db.get(VulnerabilityFinding, item.finding_id)
+        if not finding:
+            item.status = "error"
+            item.error = "source finding no longer exists"
+            continue
+
+        source_external_id = str(load(item.evidence_json, {}).get("source_external_id") or finding.external_id)
+        detected = source_external_id in set(report.get("external_ids") or [])
+        item.verified_at = timestamp
+        item.error = ""
+
+        evidence = load(item.evidence_json, {})
+        evidence["verification"] = {
+            "checked_at": timestamp.isoformat(),
+            "task_id": item.greenbone_task_id,
+            "task_status": report.get("task_status", ""),
+            "report_id": item.rescan_report_id,
+            "source_external_id": source_external_id,
+            "cve": item.cve,
+            "detected": detected,
+            "finding_count": report.get("finding_count", 0),
+        }
+
+        if detected:
+            item.status = "still_detected"
+            still_detected += 1
+            if finding.status not in {"accepted_risk", "false_positive"}:
+                finding.status = "open"
+                finding.resolved_at = None
+            event_type = "remediation.rescan.still_detected"
+        else:
+            item.status = "verified"
+            verified += 1
+            if finding.status not in {"accepted_risk", "false_positive"}:
+                finding.status = "remediated"
+                finding.resolved_at = timestamp
+            event_type = "remediation.verified"
+
+        item.evidence_json = dump(evidence)
+        _audit_pending(
+            db,
+            "integration:greenbone",
+            event_type,
+            "remediation_evidence",
+            item.id,
+            {
+                "finding_id": item.finding_id,
+                "campaign_id": item.campaign_id,
+                "job_id": item.job_id,
+                "report_id": item.rescan_report_id,
+                "cve": item.cve,
+                "detected": detected,
+            },
+        )
+
+    if items:
+        db.commit()
+
+    return {
+        "verified": verified,
+        "still_detected": still_detected,
+        "waiting": waiting,
+    }
+
+
 def run_greenbone_sync():
     if not GREENBONE_SYNC_LOCK.acquire(blocking=False):
         raise RuntimeError("Greenbone sync is already running")
@@ -431,6 +718,7 @@ def run_greenbone_sync():
         report_ids = [item["report_id"] for item in data["reports"]]
         scan_id = report_ids[0] if len(report_ids) == 1 else f"multi:{len(report_ids)}"
         stats = upsert_vulnerability_findings(db, "openvas", scan_id, data["findings"])
+        remediation = reconcile_remediation_evidence(db, data["reports"])
         not_detected = 0
         if config_obj.reconcile_absent:
             not_detected = reconcile_greenbone_absent(db, data["reports"])
@@ -443,6 +731,9 @@ def run_greenbone_sync():
             "updated": stats["updated"],
             "matched": stats["matched"],
             "not_detected": not_detected,
+            "remediation_verified": remediation["verified"],
+            "remediation_still_detected": remediation["still_detected"],
+            "remediation_waiting": remediation["waiting"],
         }
         state.status = "ok"
         state.last_success_at = now()
@@ -473,13 +764,31 @@ def greenbone_worker():
     config = get_greenbone_config()
     if not config.enabled:
         return
-    delay = 10
-    while not GREENBONE_STOP.wait(delay):
+
+    next_sync_at = now()
+    while not GREENBONE_STOP.wait(30):
+        try:
+            process_ready_remediation_rescans()
+        except Exception:
+            pass
+
+        db = SessionLocal()
+        try:
+            active_rescans = remediation_scan_active_count(db)
+        finally:
+            db.close()
+
+        current = now()
+        if current < next_sync_at and not active_rescans:
+            continue
+
         try:
             run_greenbone_sync()
         except Exception:
             pass
-        delay = get_greenbone_config().interval_seconds
+
+        interval = 60 if active_rescans else get_greenbone_config().interval_seconds
+        next_sync_at = now() + timedelta(seconds=interval)
 
 
 @app.on_event("startup")
@@ -1048,6 +1357,11 @@ def serialize_job(j: PatchJob, claim_token: str | None = None):
         "lease_expires_at": j.lease_expires_at.isoformat() if j.lease_expires_at else None,
         "last_lease_at": j.last_lease_at.isoformat() if j.last_lease_at else None,
         "attempt_count": j.attempt_count,
+        "remediation": (
+            serialize_remediation_evidence(j.remediation_evidence)
+            if j.remediation_evidence
+            else None
+        ),
     }
     if claim_token is not None:
         data["claim_token"] = claim_token
@@ -1912,6 +2226,7 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
             status="pending",
         )
         db.add(job)
+        remediation_evidence_for_job(db, job, payload)
         created.append(job)
     return created
 

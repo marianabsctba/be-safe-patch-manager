@@ -30,6 +30,7 @@ class Agent(Base):
 
     jobs = relationship("PatchJob", back_populates="agent", cascade="all, delete-orphan")
     vulnerabilities = relationship("VulnerabilityFinding", back_populates="agent")
+    remediation_evidence = relationship("RemediationEvidence", back_populates="agent")
 
 
 class Campaign(Base):
@@ -48,6 +49,7 @@ class Campaign(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     jobs = relationship("PatchJob", back_populates="campaign", cascade="all, delete-orphan")
+    remediation_evidence = relationship("RemediationEvidence", back_populates="campaign")
 
 
 class PatchJob(Base):
@@ -72,6 +74,7 @@ class PatchJob(Base):
 
     campaign = relationship("Campaign", back_populates="jobs")
     agent = relationship("Agent", back_populates="jobs")
+    remediation_evidence = relationship("RemediationEvidence", back_populates="job", uselist=False)
 
 
 class VulnerabilityFinding(Base):
@@ -102,6 +105,7 @@ class VulnerabilityFinding(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     agent = relationship("Agent", back_populates="vulnerabilities")
+    remediation_evidence = relationship("RemediationEvidence", back_populates="finding")
 
 
 class RemediationEvidence(Base):
@@ -128,10 +132,10 @@ class RemediationEvidence(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
-    finding = relationship("VulnerabilityFinding")
-    campaign = relationship("Campaign")
-    job = relationship("PatchJob")
-    agent = relationship("Agent")
+    finding = relationship("VulnerabilityFinding", back_populates="remediation_evidence")
+    campaign = relationship("Campaign", back_populates="remediation_evidence")
+    job = relationship("PatchJob", back_populates="remediation_evidence")
+    agent = relationship("Agent", back_populates="remediation_evidence")
 
 
 class IntegrationState(Base):
