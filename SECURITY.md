@@ -37,3 +37,22 @@ The endpoint agent removes the shared enrollment token from its configuration af
 This repository is an MVP and should not be exposed directly to the public Internet without additional controls. Native RBAC is implemented, but production deployments should still use HTTPS, network segmentation, rate limiting, database backups, credential lifecycle controls, and optionally external SSO/federation.
 
 The agent deliberately does not expose arbitrary remote shell execution. Keep that property when contributing new job types.
+
+
+## Production TLS and agent identity
+
+The production Compose overlay terminates HTTPS at NGINX and requires a verified client certificate for every `/api/agent/` request. The backend is bound on the host only to `127.0.0.1:8080`.
+
+Each agent certificate fingerprint is bound to one agent record. The fingerprint is an identity-binding value supplied by NGINX after certificate-chain validation; certificate trust comes from mTLS validation against the configured agent CA.
+
+Agents still require their individual application token. Possession of only a valid client certificate or only an agent token is not sufficient when `AGENT_MTLS_REQUIRED=true`.
+
+Never commit server private keys, agent private keys, CA private keys or generated certificates. The repository ignores common certificate and key extensions.
+
+## Backups
+
+Database backups may contain endpoint inventory, vulnerability information, audit records and authentication metadata. Treat them as sensitive.
+
+The included backup script creates a PostgreSQL custom-format dump and SHA-256 checksum but does not encrypt the dump. Production copies should be stored off-host in encrypted storage with access control and retention.
+
+Restore requires explicit `CONFIRM_RESTORE=YES`. If restore fails, the application is intentionally left stopped for investigation.

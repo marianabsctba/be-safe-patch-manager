@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.8. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.9. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -39,6 +39,14 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - bootstrap do primeiro administrador e break-glass opcional;
 - autenticação separada para usuários, enrollment e agentes;
 - token individual por endpoint;
+- HTTPS de produção com NGINX e TLS 1.2/1.3;
+- mTLS obrigatório nas rotas de agentes no overlay de produção;
+- certificado cliente vinculado ao `agent_id` por fingerprint;
+- rotação auditada de certificado mTLS por admin;
+- API do backend exposta no host somente em `127.0.0.1:8080`;
+- backup PostgreSQL em formato custom com SHA-256;
+- restore protegido por confirmação explícita;
+- restore drill real no CI;
 - nenhuma ação de shell remoto arbitrário.
 
 ## Dashboard
@@ -214,20 +222,27 @@ O Compose sobe PostgreSQL, aguarda o healthcheck do banco e executa `alembic upg
 
 > A v0.8 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
 
-Suba o serviço:
+Para laboratório local:
 
 ```bash
 docker compose up -d --build
 docker compose ps
 ```
 
-Dashboard local:
+A porta 8080 fica vinculada somente ao loopback do host:
 
 ```text
-http://IP-DO-SERVIDOR:8080
+http://127.0.0.1:8080
 ```
 
-Em produção, use reverse proxy com HTTPS e não exponha a API administrativa diretamente à Internet.
+Para implantação com HTTPS e mTLS:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+```
+
+Nesse modo, o acesso externo deve ocorrer por HTTPS na porta 443.
 
 ### Agente Linux
 
@@ -301,6 +316,79 @@ Perfis:
 
 A auditoria registra ações humanas com `user:<username>`.
 
+## HTTPS e mTLS
+
+O `docker-compose.yml` base mantém o backend acessível no host somente em `127.0.0.1:8080`. Para implantação, use o overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+O overlay adiciona NGINX nas portas 80/443. HTTP é redirecionado para HTTPS. O console usa TLS normal; as rotas `/api/agent/` exigem certificado cliente válido assinado pela CA configurada.
+
+Antes de subir o overlay, coloque fora do Git:
+
+```text
+deploy/nginx/tls/server.crt
+deploy/nginx/tls/server.key
+deploy/nginx/tls/agent-ca.crt
+```
+
+`server.crt` pode ser uma cadeia de certificado público ou privado. `agent-ca.crt` é a CA usada para validar os certificados individuais dos agentes.
+
+Cada agente deve receber um certificado cliente próprio. No enrollment, o NGINX valida a cadeia e encaminha o fingerprint do certificado para o backend. O Patch Manager vincula esse fingerprint ao `agent_id`. Depois disso, chamadas do agente exigem simultaneamente certificado válido, fingerprint correto e token individual do endpoint.
+
+O fingerprint informado pelo NGINX é usado como identificador de vínculo. A autenticação criptográfica continua sendo a validação mTLS da cadeia do certificado.
+
+Para Linux:
+
+```bash
+sudo env \
+  PATCH_CLIENT_CERT=/caminho/agent.crt \
+  PATCH_CLIENT_KEY=/caminho/agent.key \
+  PATCH_CA_CERT=/caminho/server-ca.crt \
+  ./deploy/install-linux.sh https://patch.seudominio.local piloto
+```
+
+`PATCH_CA_CERT` é opcional quando o certificado do servidor já é confiado pelo sistema operacional.
+
+No Windows:
+
+```powershell
+.\deploy\windows\install-agent.ps1 `
+  -ServerUrl "https://patch.seudominio.local" `
+  -ClientCertificatePath "C:\Temp\agent.crt" `
+  -ClientKeyPath "C:\Temp\agent.key" `
+  -CaCertificatePath "C:\Temp\server-ca.crt" `
+  -Tags @("piloto")
+```
+
+A chave privada é copiada para a área do agente com ACL restrita. O agente também recusa `http://` e `tls_verify=false`.
+
+Admins podem vincular ou rotacionar explicitamente um fingerprint pela tela do endpoint ou por `PUT /api/admin/agents/{agent_id}/mtls`. Isso permite migrar endpoints existentes sem recriar o inventário.
+
+## Backup e restore
+
+Crie um dump PostgreSQL:
+
+```bash
+./scripts/backup-postgres.sh
+```
+
+O script usa `pg_dump --format=custom`, valida o dump com `pg_restore --list` e gera um arquivo `.sha256`.
+
+Para restaurar:
+
+```bash
+CONFIRM_RESTORE=YES ./scripts/restore-postgres.sh backups/patchmgr-YYYYMMDDTHHMMSSZ.dump
+```
+
+O restore verifica o checksum quando disponível, valida o dump, para o Patch Manager, executa o restore em transação única e só volta a iniciar a aplicação se o processo terminar com sucesso. Em caso de falha, a aplicação permanece parada para revisão.
+
+Os dumps contêm dados operacionais e devem ser tratados como informação sensível. O script não criptografa o arquivo. Para produção, envie os backups para armazenamento off-host criptografado e com retenção definida.
+
+O CI executa um restore drill real em PostgreSQL: cria dado marcador, gera dump, restaura em outro database e confirma o conteúdo restaurado.
+
 ## Segurança já implementada
 
 - autenticação humana por usuário/senha com Argon2;
@@ -335,11 +423,9 @@ A auditoria registra ações humanas com `user:<username>`.
 
 Para produção, ainda são recomendados:
 
-- TLS obrigatório;
 - SSO/federação de identidade opcional;
 - política de rotação de senhas e credenciais de agentes;
-- mTLS para agentes;
-- backup e HA;
+- HA e replicação/estratégia de continuidade;
 - rate limiting;
 - code signing do agente;
 - assinatura de políticas/campanhas;
@@ -353,6 +439,7 @@ Leia também [SECURITY.md](SECURITY.md).
 ```text
 be-safe-patch-manager/
 ├── docker-compose.yml
+├── docker-compose.prod.yml
 ├── .env.example
 ├── LICENSE
 ├── README.md
@@ -366,6 +453,8 @@ be-safe-patch-manager/
 │       └── secure-rollout-flow.webp
 ├── .github/workflows/ci.yml
 ├── scripts/pre-publish-check.py
+├── scripts/backup-postgres.sh
+├── scripts/restore-postgres.sh
 ├── server/
 │   ├── Dockerfile
 │   ├── entrypoint.sh
@@ -393,7 +482,8 @@ be-safe-patch-manager/
 └── deploy/
     ├── install-linux.sh
     ├── systemd/patch-manager-agent.service
-    └── windows/install-agent.ps1
+    ├── windows/install-agent.ps1
+    └── nginx/default.conf
 ```
 
 ## Roadmap
@@ -408,7 +498,7 @@ Próximas evoluções planejadas:
 - SLA, exceções e relatórios consolidados;
 - testes de integração reais em endpoints Windows/Linux;
 - assinatura e distribuição endurecida do agente;
-- HA e estratégia de backup/restore testada.
+- HA, retenção off-host e testes periódicos de recuperação completa.
 
 ## Licença
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.0
+
+- backend passa para versão 0.9.0;
+- API do host vinculada somente a `127.0.0.1:8080` no Compose base;
+- adicionado `docker-compose.prod.yml` com NGINX em 80/443;
+- HTTP redirecionado para HTTPS;
+- TLS limitado a TLS 1.2/1.3 no proxy de produção;
+- certificado cliente obrigatório nas rotas dos agentes;
+- fingerprint do certificado mTLS vinculado ao `agent_id`;
+- token individual do agente continua obrigatório além do mTLS;
+- migration `0004_agent_mtls`;
+- rotação/vínculo de fingerprint auditado por administrador;
+- estado mTLS exibido no drawer do endpoint;
+- agente recusa URL HTTP e `tls_verify=false`;
+- agentes Linux e Windows aceitam material mTLS e CA customizada;
+- chave privada do agente protegida por permissões/ACL;
+- adicionados scripts de backup e restore PostgreSQL;
+- dumps em formato custom, validados e acompanhados de SHA-256;
+- restore exige confirmação explícita e mantém a aplicação parada em caso de falha;
+- adicionado restore drill real no CI;
+- CI valida o overlay de produção e executa `nginx -t` com certificados efêmeros;
+- adicionados testes de vínculo, rejeição e rotação mTLS.
+
 ## 0.8.0
 
 - removida a dependência do token administrativo compartilhado para operação normal;
