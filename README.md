@@ -105,6 +105,12 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - CI validando rules Prometheus e JSON do Grafana;
 - nenhuma ação de shell remoto arbitrário.
 
+## Modelo de risco
+
+O Be Safe v0.18 adiciona um modelo próprio de risk-based vulnerability management com score individual por finding, Asset Risk 0–1000, criticidade 1–5, exposição externa, controles compensatórios, risk appetite, histórico e decomposição de contributors.
+
+A referência técnica completa, incluindo fórmula, faixas, tags reconhecidas, exemplos, APIs e princípios de segurança, está em [docs/risk-model.md](docs/risk-model.md).
+
 ## Dashboard
 
 ### Visão geral
