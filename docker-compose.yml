@@ -34,6 +34,8 @@ services:
       AUTH_SESSION_TTL_SECONDS: ${AUTH_SESSION_TTL_SECONDS:-28800}
       BREAK_GLASS_ADMIN_TOKEN: ${BREAK_GLASS_ADMIN_TOKEN:-}
       AGENT_MTLS_REQUIRED: ${AGENT_MTLS_REQUIRED:-false}
+      AGENT_ONLINE_SECONDS: ${AGENT_ONLINE_SECONDS:-300}
+      BACKUP_STATUS_FILE: /runtime/backup-status.json
       JOB_CLAIM_LEASE_SECONDS: ${JOB_CLAIM_LEASE_SECONDS:-300}
       JOB_RUNNING_LEASE_SECONDS: ${JOB_RUNNING_LEASE_SECONDS:-7200}
       GREENBONE_ENABLED: ${GREENBONE_ENABLED:-false}
@@ -55,8 +57,10 @@ services:
       GREENBONE_RECONCILE_ABSENT: ${GREENBONE_RECONCILE_ABSENT:-false}
     ports:
       - "127.0.0.1:8080:8080"
+    volumes:
+      - ./runtime:/runtime:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
