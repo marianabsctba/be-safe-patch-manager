@@ -1,11 +1,12 @@
 import hashlib
+import hmac
 import math
 import json
 import os
 import re
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -17,15 +18,28 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
 from .models import Agent, AuditEvent, Campaign, IntegrationState, PatchJob, VulnerabilityFinding
-from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, VulnerabilityImportRequest, VulnerabilityStatusUpdate
+from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, VulnerabilityImportRequest, VulnerabilityStatusUpdate
 from .security import hash_token, new_token, require_admin, require_enrollment
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
 from .greenbone import public_config as public_greenbone_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.6.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.7.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+def _seconds_setting(name: str, default: int, minimum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return max(minimum, value)
+
+
+JOB_CLAIM_LEASE_SECONDS = _seconds_setting("JOB_CLAIM_LEASE_SECONDS", 300, 60)
+JOB_RUNNING_LEASE_SECONDS = _seconds_setting("JOB_RUNNING_LEASE_SECONDS", 7200, 300)
+TERMINAL_JOB_STATUSES = {"success", "failed", "skipped"}
 
 
 def now():
@@ -610,7 +624,7 @@ def campaign_ring_jobs(c: Campaign):
 
 def campaign_health(c: Campaign):
     jobs = campaign_ring_jobs(c)
-    counts = {"pending": 0, "claimed": 0, "running": 0, "success": 0, "failed": 0, "skipped": 0}
+    counts = {"pending": 0, "claimed": 0, "running": 0, "stalled": 0, "success": 0, "failed": 0, "skipped": 0}
     validations = {"passed": 0, "waiting": 0, "failed": 0, "disabled": 0}
     validation_details = []
 
@@ -628,7 +642,7 @@ def campaign_health(c: Campaign):
                     **validation,
                 })
 
-    active = counts["pending"] + counts["claimed"] + counts["running"]
+    active = counts["pending"] + counts["claimed"] + counts["running"] + counts["stalled"]
     terminal = counts["success"] + counts["failed"] + counts["skipped"]
     success_rate = round((counts["success"] / terminal * 100), 1) if terminal else 0.0
     validation_blocked = validations["failed"] > 0 or validations["waiting"] > 0
@@ -642,6 +656,8 @@ def campaign_health(c: Campaign):
 
     if not jobs:
         reason = "no jobs in current ring"
+    elif counts["stalled"]:
+        reason = "current ring has stalled jobs"
     elif active:
         reason = "current ring still has active jobs"
     elif terminal != len(jobs):
@@ -693,8 +709,8 @@ def serialize_campaign(c: Campaign):
     }
 
 
-def serialize_job(j: PatchJob):
-    return {
+def serialize_job(j: PatchJob, claim_token: str | None = None):
+    data = {
         "id": j.id,
         "campaign_id": j.campaign_id,
         "campaign_name": j.campaign.name if j.campaign else "",
@@ -712,7 +728,89 @@ def serialize_job(j: PatchJob):
         "validation": job_post_patch_validation(j),
         "maintenance_window": maintenance_window_state(load(j.payload_json, {})),
         "rollback": rollback_state(j),
+        "lease_expires_at": j.lease_expires_at.isoformat() if j.lease_expires_at else None,
+        "last_lease_at": j.last_lease_at.isoformat() if j.last_lease_at else None,
+        "attempt_count": j.attempt_count,
     }
+    if claim_token is not None:
+        data["claim_token"] = claim_token
+        data["lease_seconds"] = JOB_CLAIM_LEASE_SECONDS
+    return data
+
+
+
+def _job_claim_matches(job: PatchJob, claim_token: str) -> bool:
+    if not job.claim_token_hash:
+        return not claim_token
+    if not claim_token:
+        return False
+    return hmac.compare_digest(job.claim_token_hash, hash_token(claim_token))
+
+
+def _audit_pending(db: Session, actor: str, event_type: str, object_type: str, object_id: str, details=None):
+    db.add(AuditEvent(
+        actor=actor,
+        event_type=event_type,
+        object_type=object_type,
+        object_id=object_id,
+        details_json=dump(details or {}),
+    ))
+
+
+def sweep_expired_job_leases(db: Session, agent_id: str | None = None):
+    t = now()
+    q = db.query(PatchJob).filter(
+        PatchJob.status.in_(["claimed", "running"]),
+        PatchJob.lease_expires_at.is_not(None),
+        PatchJob.lease_expires_at < t,
+    )
+    if agent_id:
+        q = q.filter(PatchJob.agent_id == agent_id)
+
+    expired = q.all()
+    requeued = 0
+    stalled = 0
+    for job in expired:
+        if job.status == "claimed":
+            job.status = "pending"
+            job.claimed_at = None
+            job.claim_token_hash = ""
+            job.lease_expires_at = None
+            job.last_lease_at = None
+            requeued += 1
+            _audit_pending(
+                db,
+                "system",
+                "job.claim.expired",
+                "job",
+                job.id,
+                {"attempt_count": job.attempt_count, "action": job.action},
+            )
+        else:
+            job.status = "stalled"
+            job.lease_expires_at = None
+            job.error = "execution lease expired; manual review required before retry"
+            stalled += 1
+            _audit_pending(
+                db,
+                "system",
+                "job.execution.stalled",
+                "job",
+                job.id,
+                {"attempt_count": job.attempt_count, "action": job.action},
+            )
+
+    if expired:
+        db.commit()
+    return {"requeued": requeued, "stalled": stalled}
+
+
+def _terminal_result_matches(job: PatchJob, body: JobResultRequest) -> bool:
+    return (
+        job.status == body.status
+        and job.result_json == dump(body.result)
+        and job.error == body.error
+    )
 
 
 @app.get("/")
@@ -763,9 +861,14 @@ def heartbeat(agent_id: str, body: HeartbeatRequest, x_agent_token: str | None =
 @app.get("/api/agent/{agent_id}/jobs")
 def poll_jobs(agent_id: str, x_agent_token: str | None = Header(default=None), db: Session = Depends(get_db)):
     agent = get_agent(db, agent_id, x_agent_token)
+    sweep_expired_job_leases(db, agent.id)
     t = now()
-    jobs = db.query(PatchJob).filter(PatchJob.agent_id == agent.id, PatchJob.status == "pending").order_by(PatchJob.created_at.asc()).all()
-    ready = []
+
+    jobs = db.query(PatchJob).filter(
+        PatchJob.agent_id == agent.id,
+        PatchJob.status == "pending",
+    ).order_by(PatchJob.created_at.asc()).limit(100).all()
+
     for job in jobs:
         if job.not_before:
             nb = job.not_before
@@ -773,16 +876,75 @@ def poll_jobs(agent_id: str, x_agent_token: str | None = Header(default=None), d
                 nb = nb.replace(tzinfo=timezone.utc)
             if nb > t:
                 continue
+
         payload = load(job.payload_json, {})
         if not maintenance_window_state(payload, t)["eligible_now"]:
             continue
-        job.status = "claimed"
-        job.claimed_at = t
-        ready.append(serialize_job(job))
-        if len(ready) >= 1:
-            break
+
+        claim_token = new_token()
+        lease_expires = t + timedelta(seconds=JOB_CLAIM_LEASE_SECONDS)
+        updated = db.query(PatchJob).filter(
+            PatchJob.id == job.id,
+            PatchJob.status == "pending",
+        ).update(
+            {
+                PatchJob.status: "claimed",
+                PatchJob.claimed_at: t,
+                PatchJob.claim_token_hash: hash_token(claim_token),
+                PatchJob.lease_expires_at: lease_expires,
+                PatchJob.last_lease_at: t,
+                PatchJob.attempt_count: PatchJob.attempt_count + 1,
+            },
+            synchronize_session=False,
+        )
+        if updated != 1:
+            db.rollback()
+            continue
+
+        _audit_pending(
+            db,
+            f"agent:{agent.id}",
+            "job.claimed",
+            "job",
+            job.id,
+            {"lease_seconds": JOB_CLAIM_LEASE_SECONDS},
+        )
+        db.commit()
+        db.expire_all()
+        claimed = db.get(PatchJob, job.id)
+        return [serialize_job(claimed, claim_token=claim_token)]
+
+    return []
+
+
+@app.post("/api/agent/{agent_id}/jobs/{job_id}/lease")
+def renew_job_lease(
+    agent_id: str,
+    job_id: str,
+    body: LeaseRenewRequest,
+    x_agent_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    agent = get_agent(db, agent_id, x_agent_token)
+    job = db.get(PatchJob, job_id)
+    if not job or job.agent_id != agent.id:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status not in {"claimed", "running"}:
+        raise HTTPException(status_code=409, detail="job lease cannot be renewed in current state")
+    if not _job_claim_matches(job, body.claim_token):
+        raise HTTPException(status_code=409, detail="stale or invalid job claim")
+
+    lease_seconds = JOB_RUNNING_LEASE_SECONDS if job.status == "running" else JOB_CLAIM_LEASE_SECONDS
+    t = now()
+    job.last_lease_at = t
+    job.lease_expires_at = t + timedelta(seconds=lease_seconds)
     db.commit()
-    return ready
+    return {
+        "ok": True,
+        "status": job.status,
+        "lease_seconds": lease_seconds,
+        "lease_expires_at": job.lease_expires_at.isoformat(),
+    }
 
 
 @app.post("/api/agent/{agent_id}/jobs/{job_id}/result")
@@ -793,24 +955,60 @@ def job_result(agent_id: str, job_id: str, body: JobResultRequest, x_agent_token
         raise HTTPException(status_code=404, detail="job not found")
     if body.status not in {"running", "success", "failed", "skipped"}:
         raise HTTPException(status_code=400, detail="invalid status")
+    if not _job_claim_matches(job, body.claim_token):
+        raise HTTPException(status_code=409, detail="stale or invalid job claim")
+
+    if job.status in TERMINAL_JOB_STATUSES:
+        if _terminal_result_matches(job, body):
+            return {"ok": True, "idempotent": True}
+        raise HTTPException(status_code=409, detail="job is already terminal with a different result")
+
+    if job.status == "stalled" and body.status == "running":
+        raise HTTPException(status_code=409, detail="stalled job requires manual review before retry")
+    if job.status not in {"claimed", "running", "stalled"}:
+        raise HTTPException(status_code=409, detail="job is not owned by an active execution attempt")
+
+    previous_status = job.status
     job.status = body.status
     job.result_json = dump(body.result)
     job.error = body.error
+
     if body.started_at:
         job.started_at = body.started_at
     elif body.status == "running" and not job.started_at:
         job.started_at = now()
-    if body.finished_at:
-        job.finished_at = body.finished_at
-    elif body.status in {"success", "failed", "skipped"}:
-        job.finished_at = now()
+
+    if body.status == "running":
+        t = now()
+        job.last_lease_at = t
+        job.lease_expires_at = t + timedelta(seconds=JOB_RUNNING_LEASE_SECONDS)
+    else:
+        if body.finished_at:
+            job.finished_at = body.finished_at
+        else:
+            job.finished_at = now()
+        job.lease_expires_at = None
+
     db.commit()
-    audit(db, f"agent:{agent.id}", f"job.{body.status}", "job", job.id, {"campaign_id": job.campaign_id, "error": body.error})
-    return {"ok": True}
+    audit(
+        db,
+        f"agent:{agent.id}",
+        f"job.{body.status}",
+        "job",
+        job.id,
+        {
+            "campaign_id": job.campaign_id,
+            "error": body.error,
+            "previous_status": previous_status,
+            "attempt_count": job.attempt_count,
+        },
+    )
+    return {"ok": True, "idempotent": False}
 
 
 @app.get("/api/admin/summary")
 def admin_summary(_=Depends(require_admin), db: Session = Depends(get_db)):
+    sweep_expired_job_leases(db)
     agents = db.query(Agent).all()
     total = len(agents)
     
@@ -1193,6 +1391,52 @@ def advance_campaign(
     }
 
 
+@app.post("/api/admin/jobs/{job_id}/retry")
+def retry_stalled_job(
+    job_id: str,
+    body: JobRetryRequest,
+    _=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if not body.acknowledge_risk:
+        raise HTTPException(status_code=400, detail="explicit retry risk acknowledgement is required")
+
+    job = db.get(PatchJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status != "stalled":
+        raise HTTPException(status_code=409, detail="only stalled jobs can be retried")
+
+    previous = {
+        "attempt_count": job.attempt_count,
+        "claimed_at": job.claimed_at.isoformat() if job.claimed_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "last_lease_at": job.last_lease_at.isoformat() if job.last_lease_at else None,
+        "error": job.error,
+    }
+
+    job.status = "pending"
+    job.claimed_at = None
+    job.claim_token_hash = ""
+    job.lease_expires_at = None
+    job.last_lease_at = None
+    job.started_at = None
+    job.finished_at = None
+    job.result_json = "{}"
+    job.error = ""
+    db.commit()
+
+    audit(
+        db,
+        "admin",
+        "job.retry.approved",
+        "job",
+        job.id,
+        {"reason": body.reason, "previous_attempt": previous},
+    )
+    return {"ok": True, "job": serialize_job(job)}
+
+
 @app.post("/api/admin/jobs/{job_id}/rollback")
 def approve_rollback(
     job_id: str,
@@ -1262,6 +1506,7 @@ def approve_rollback(
 
 @app.get("/api/admin/jobs")
 def list_jobs(campaign_id: str | None = None, _=Depends(require_admin), db: Session = Depends(get_db)):
+    sweep_expired_job_leases(db)
     q = db.query(PatchJob).order_by(PatchJob.created_at.desc())
     if campaign_id:
         q = q.filter(PatchJob.campaign_id == campaign_id)
