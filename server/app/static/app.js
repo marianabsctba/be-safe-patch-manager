@@ -720,7 +720,7 @@ function renderAssetRisk() {
 
   if (!assets.length) {
     $('#assetRiskTable').innerHTML =
-      '<tr><td colspan="9"><div class="empty-state">Nenhum ativo calculado.</div></td></tr>';
+      '<tr><td colspan="10"><div class="empty-state">Nenhum ativo calculado.</div></td></tr>';
     return;
   }
 
@@ -750,10 +750,105 @@ function renderAssetRisk() {
         Array.isArray(compensating.controls) && compensating.controls.length
           ? compensating.controls.map((control) => control.tag).join(', ')
           : 'nenhum'
-      ) + '</small></td>' +
+      ) + '<br><span class="muted">fonte: ' + esc(compensating.source || 'tags') + '</span></small></td>' +
+      '<td>' + (
+        roleAtLeast('admin')
+          ? '<button class="row-action" onclick="editAssetRiskProfile(\'' + item.agent_id + '\')">Perfil de risco</button>'
+          : ''
+      ) + '</td>' +
     '</tr>';
   }).join('');
 }
+
+
+window.editAssetRiskProfile = async (agentId) => {
+  if (!requireRole('admin', 'Somente admin pode alterar o perfil de risco.')) return;
+
+  const item = state.assetRisk && Array.isArray(state.assetRisk.assets)
+    ? state.assetRisk.assets.find((asset) => asset.agent_id === agentId)
+    : null;
+  if (!item) {
+    toast('Ativo não encontrado no relatório de risco.', 'fail');
+    return;
+  }
+
+  let current = null;
+  try {
+    current = await api('/api/admin/agents/' + agentId + '/risk-profile');
+  } catch (error) {
+    toast('Perfil de risco: ' + error.message, 'fail');
+    return;
+  }
+
+  const profile = current.profile || {};
+  const effective = current.effective || {};
+  const currentCriticality = profile.criticality == null
+    ? ''
+    : String(profile.criticality);
+  const criticalityRaw = prompt(
+    'Criticidade 1–5. Deixe vazio para automático por tags.\nAtual efetiva: ' +
+    String((effective.criticality || {}).score || '-'),
+    currentCriticality
+  );
+  if (criticalityRaw === null) return;
+  let criticality = null;
+  if (criticalityRaw.trim() !== '') {
+    criticality = Number(criticalityRaw);
+    if (!Number.isInteger(criticality) || criticality < 1 || criticality > 5) {
+      toast('Criticidade precisa ser um inteiro entre 1 e 5.', 'fail');
+      return;
+    }
+  }
+
+  const exposureDefault = profile.external === true ? 'externo' : profile.external === false ? 'interno' : 'auto';
+  const exposureRaw = prompt('Exposição: auto, interno ou externo.', exposureDefault);
+  if (exposureRaw === null) return;
+  const exposureValue = exposureRaw.trim().toLowerCase();
+  if (!['auto', 'interno', 'externo'].includes(exposureValue)) {
+    toast('Use auto, interno ou externo.', 'fail');
+    return;
+  }
+  const external = exposureValue === 'auto' ? null : exposureValue === 'externo';
+
+  const controlsDefault = Array.isArray(profile.compensating_controls)
+    ? profile.compensating_controls.join(', ')
+    : 'auto';
+  const controlsRaw = prompt(
+    'Controles: auto ou lista separada por vírgula.\nPermitidos: segmented, edr-protected, restricted-egress',
+    controlsDefault
+  );
+  if (controlsRaw === null) return;
+
+  let compensatingControls = null;
+  if (controlsRaw.trim().toLowerCase() !== 'auto') {
+    compensatingControls = controlsRaw
+      .split(',')
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  const reason = prompt('Motivo da alteração do perfil de risco:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+
+  try {
+    await api('/api/admin/agents/' + agentId + '/risk-profile', {
+      method: 'PUT',
+      body: JSON.stringify({
+        criticality,
+        external,
+        compensating_controls: compensatingControls,
+        reason: reason.trim(),
+      }),
+    });
+    toast('Perfil de risco atualizado e snapshot registrado.');
+    await load();
+  } catch (error) {
+    toast('Perfil de risco: ' + error.message, 'fail');
+  }
+};
 
 
 function remediationStatusLabel(status) {
