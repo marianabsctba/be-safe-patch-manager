@@ -54,6 +54,11 @@ def _bool_setting(name: str, default: bool = False) -> bool:
 
 JOB_CLAIM_LEASE_SECONDS = _seconds_setting("JOB_CLAIM_LEASE_SECONDS", 300, 60)
 JOB_RUNNING_LEASE_SECONDS = _seconds_setting("JOB_RUNNING_LEASE_SECONDS", 7200, 300)
+AGENT_ACTIVATION_CONFIRM_TIMEOUT_SECONDS = _seconds_setting(
+    "AGENT_ACTIVATION_CONFIRM_TIMEOUT_SECONDS",
+    900,
+    60,
+)
 AGENT_MTLS_REQUIRED = _bool_setting("AGENT_MTLS_REQUIRED", False)
 AGENT_MIN_VERSION = os.getenv("AGENT_MIN_VERSION", "0.13.0").strip() or "0.13.0"
 AGENT_MIN_PROTOCOL = _seconds_setting("AGENT_MIN_PROTOCOL", 2, 1)
@@ -1320,6 +1325,20 @@ def job_post_patch_validation(job: PatchJob):
             and str(activation.get("confirmed_version") or "") == expected_version
             and str(runtime.get("version") or "") == expected_version
         )
+        if not committed and job.finished_at:
+            finished = job.finished_at
+            if finished.tzinfo is None:
+                finished = finished.replace(tzinfo=timezone.utc)
+            elapsed = (now() - finished).total_seconds()
+            if elapsed > AGENT_ACTIVATION_CONFIRM_TIMEOUT_SECONDS:
+                return {
+                    "status": "failed",
+                    "reason": "agent activation confirmation timed out",
+                    "timeout_seconds": AGENT_ACTIVATION_CONFIRM_TIMEOUT_SECONDS,
+                    "elapsed_seconds": int(elapsed),
+                    "activation": activation,
+                }
+
         if committed:
             if job.finished_at and agent.last_seen:
                 finished = job.finished_at
@@ -1479,12 +1498,13 @@ def campaign_health(c: Campaign):
     active = counts["pending"] + counts["blocked"] + counts["claimed"] + counts["running"] + counts["stalled"]
     terminal = counts["success"] + counts["failed"] + counts["skipped"]
     success_rate = round((counts["success"] / terminal * 100), 1) if terminal else 0.0
+    required_success_rate = 100.0 if c.action == "activate_agent_update" else 90.0
     validation_blocked = validations["failed"] > 0 or validations["waiting"] > 0
     ready = (
         bool(jobs)
         and active == 0
         and terminal == len(jobs)
-        and success_rate >= 90.0
+        and success_rate >= required_success_rate
         and not validation_blocked
     )
 
@@ -1498,8 +1518,8 @@ def campaign_health(c: Campaign):
         reason = "current ring still has active jobs"
     elif terminal != len(jobs):
         reason = "current ring has non-terminal jobs"
-    elif success_rate < 90.0:
-        reason = "success rate below 90%"
+    elif success_rate < required_success_rate:
+        reason = "success rate below required threshold"
     elif validations["failed"]:
         reason = "post-patch validation failed"
     elif validations["waiting"]:
@@ -1514,6 +1534,7 @@ def campaign_health(c: Campaign):
         "active": active,
         "terminal": terminal,
         "success_rate": success_rate,
+        "required_success_rate": required_success_rate,
         "validation": validations,
         "validation_details": validation_details[:20],
         "ready": ready,

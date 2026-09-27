@@ -975,6 +975,8 @@ function healthReasonLabel(reason) {
     'current ring still has active jobs': 'jobs ainda em execução',
     'current ring has non-terminal jobs': 'jobs ainda não finalizados',
     'success rate below 90%': 'sucesso abaixo de 90%',
+    'success rate below required threshold': 'sucesso abaixo do mínimo exigido',
+    'agent activation confirmation timed out': 'timeout aguardando confirmação do agente',
     'post-patch validation failed': 'validação pós-patch falhou',
     'waiting for post-patch validation': 'aguardando validação pós-patch',
     'post-patch health regression or unhealthy critical check': 'regressão de saúde pós-patch',
@@ -1082,7 +1084,7 @@ function campaignCard(campaign, compact = false) {
             ? badge(ringReady ? 'health gate OK' : 'health gate bloqueado', ringReady ? 'ok' : 'warn')
             : ''}
           ${campaign.status === 'deployed' ? `<span>Ring: ${Number(health.jobs || 0)} job(s)</span>` : ''}
-          ${campaign.status === 'deployed' ? `<span>Sucesso: ${healthRate}%</span>` : ''}
+          ${campaign.status === 'deployed' ? `<span>Sucesso: ${healthRate}% / mínimo ${Number(health.required_success_rate || 90)}%</span>` : ''}
           ${campaign.status === 'deployed' && Number(health.active || 0) ? `<span>Ativos: ${health.active}</span>` : ''}
           ${campaign.status === 'deployed' && Number(validation.waiting || 0) ? `<span>Validação aguardando: ${validation.waiting}</span>` : ''}
           ${campaign.status === 'deployed' && Number(validation.failed || 0) ? `<span class="text-danger">Validação falhou: ${validation.failed}</span>` : ''}
