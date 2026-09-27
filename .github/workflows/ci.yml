@@ -25,5 +25,13 @@ jobs:
       - name: Shell syntax
         run: bash -n deploy/install-linux.sh
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: JavaScript syntax
+        run: node --check server/app/static/app.js
+
       - name: Pre-publish security check
         run: python scripts/pre-publish-check.py
