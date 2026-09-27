@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import base64
+import hashlib
 import ipaddress
 import json
 import os
@@ -11,19 +13,23 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 
 import psutil
 import requests
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
 DEFAULT_CONFIG = Path(os.getenv("PATCH_AGENT_CONFIG", "/etc/patch-manager/agent.json" if os.name != "nt" else r"C:\ProgramData\PatchManager\agent.json"))
 PKG_RE = re.compile(r"^[A-Za-z0-9._+:-]{1,128}$")
 KB_RE = re.compile(r"^KB\d{4,10}$", re.I)
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@:-]{1,128}$")
 
-AGENT_VERSION = "0.13.0"
+AGENT_VERSION = "0.14.0"
 AGENT_PROTOCOL = 2
 AGENT_CAPABILITIES = (
     "scan_updates",
@@ -33,7 +39,15 @@ AGENT_CAPABILITIES = (
     "rollback_checkpoint_v1",
     "rollback_restore_v1",
     "mtls_client_v1",
+    "signed_update_staging_v1",
 )
+
+UPDATE_PRODUCT = "be-safe-patch-agent"
+UPDATE_MAX_BYTES = 50 * 1024 * 1024
+UPDATE_ALLOWED_FILES = {"patch_agent.py", "requirements.txt"}
+UPDATE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
+UPDATE_FILENAME_RE = re.compile(r"^be-safe-patch-agent-[A-Za-z0-9.+-]+\.zip$")
+UPDATE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def utcnow():
@@ -110,6 +124,338 @@ def api(cfg, method, path, *, json_body=None, headers=None, timeout=60):
     )
     r.raise_for_status()
     return r.json() if r.content else {}
+
+
+def _version_tuple(value):
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", str(value or "").strip())
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def version_newer(candidate, current):
+    candidate_tuple = _version_tuple(candidate)
+    current_tuple = _version_tuple(current)
+    return bool(candidate_tuple and current_tuple and candidate_tuple > current_tuple)
+
+
+def canonical_update_manifest(manifest):
+    return json.dumps(
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def validate_update_manifest(manifest):
+    if not isinstance(manifest, dict):
+        raise RuntimeError("update manifest must be an object")
+    if manifest.get("schema") != 1 or manifest.get("product") != UPDATE_PRODUCT:
+        raise RuntimeError("unsupported update manifest")
+    version = str(manifest.get("version") or "")
+    if not UPDATE_VERSION_RE.fullmatch(version):
+        raise RuntimeError("invalid update version")
+
+    try:
+        protocol = int(manifest.get("protocol"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("invalid update protocol") from exc
+    if protocol < 1 or protocol > 1000:
+        raise RuntimeError("update protocol outside allowed range")
+
+    capabilities = manifest.get("capabilities")
+    if not isinstance(capabilities, list) or len(capabilities) > 64:
+        raise RuntimeError("invalid update capabilities")
+    for capability in capabilities:
+        if not re.fullmatch(r"[a-z0-9_]{1,64}", str(capability or "")):
+            raise RuntimeError("invalid update capability")
+
+    artifact = manifest.get("artifact")
+    if not isinstance(artifact, dict):
+        raise RuntimeError("update artifact metadata missing")
+    filename = str(artifact.get("filename") or "")
+    if not UPDATE_FILENAME_RE.fullmatch(filename) or Path(filename).name != filename:
+        raise RuntimeError("invalid update artifact filename")
+    sha256 = str(artifact.get("sha256") or "").lower()
+    if not UPDATE_SHA256_RE.fullmatch(sha256):
+        raise RuntimeError("invalid update artifact SHA-256")
+    try:
+        size_bytes = int(artifact.get("size_bytes"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("invalid update artifact size") from exc
+    if size_bytes < 1 or size_bytes > UPDATE_MAX_BYTES:
+        raise RuntimeError("update artifact size outside allowed range")
+
+    return manifest
+
+
+def update_public_key(cfg):
+    path = Path(str(cfg.get("update_public_key") or "").strip())
+    if not str(path):
+        raise RuntimeError("update public key is not configured")
+    if not path.is_file():
+        raise RuntimeError(f"update public key not found: {path}")
+    try:
+        key = load_pem_public_key(path.read_bytes())
+    except Exception as exc:
+        raise RuntimeError("invalid update public key") from exc
+    if not isinstance(key, Ed25519PublicKey):
+        raise RuntimeError("update public key must be Ed25519")
+    return key
+
+
+def verify_update_manifest(cfg, manifest, signature_b64):
+    validate_update_manifest(manifest)
+    try:
+        signature = base64.b64decode(str(signature_b64 or ""), validate=True)
+    except Exception as exc:
+        raise RuntimeError("invalid update signature encoding") from exc
+    if len(signature) != 64:
+        raise RuntimeError("invalid update signature length")
+    try:
+        update_public_key(cfg).verify(signature, canonical_update_manifest(manifest))
+    except InvalidSignature as exc:
+        raise RuntimeError("update manifest signature verification failed") from exc
+    return manifest, signature
+
+
+def default_update_staging_dir():
+    if os.name == "nt":
+        return Path(r"C:\ProgramData\PatchManager\updates")
+    return Path("/var/lib/patch-manager/updates")
+
+
+def update_staging_dir(cfg):
+    configured = str(cfg.get("update_staging_dir") or "").strip()
+    return Path(configured) if configured else default_update_staging_dir()
+
+
+def update_state_path(cfg):
+    return update_staging_dir(cfg) / "state.json"
+
+
+def read_update_state(cfg):
+    if not str(cfg.get("update_public_key") or "").strip():
+        return {"status": "disabled", "current_version": AGENT_VERSION}
+    path = update_state_path(cfg)
+    if not path.is_file():
+        return {"status": "idle", "current_version": AGENT_VERSION}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {"status": "error", "current_version": AGENT_VERSION, "last_error": "invalid local update state"}
+
+
+def write_update_state(cfg, data):
+    root = update_staging_dir(cfg)
+    root.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(root, 0o700)
+    path = root / "state.json"
+    tmp = root / "state.json.tmp"
+    payload = {
+        **data,
+        "current_version": AGENT_VERSION,
+    }
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(tmp, 0o600)
+    tmp.replace(path)
+    return payload
+
+
+def _update_headers(cfg):
+    return {
+        "User-Agent": f"PatchManagerAgent/{AGENT_VERSION}",
+        "X-Agent-Token": cfg["agent_token"],
+    }
+
+
+def download_update_artifact(cfg, artifact_url, destination, expected_size):
+    expected_prefix = f"/api/agent/{cfg['agent_id']}/updates/artifact/"
+    if not str(artifact_url or "").startswith(expected_prefix):
+        raise RuntimeError("update artifact URL is outside the allowed agent endpoint")
+
+    url = cfg["server_url"].rstrip("/") + artifact_url
+    tls = tls_request_options(cfg)
+    with requests.get(
+        url,
+        headers=_update_headers(cfg),
+        timeout=120,
+        verify=tls["verify"],
+        cert=tls["cert"],
+        allow_redirects=False,
+        stream=True,
+    ) as response:
+        response.raise_for_status()
+        if 300 <= response.status_code < 400:
+            raise RuntimeError("update artifact redirects are not allowed")
+
+        content_length = response.headers.get("Content-Length")
+        if content_length:
+            try:
+                advertised = int(content_length)
+            except ValueError as exc:
+                raise RuntimeError("invalid update artifact Content-Length") from exc
+            if advertised != expected_size or advertised > UPDATE_MAX_BYTES:
+                raise RuntimeError("update artifact Content-Length mismatch")
+
+        written = 0
+        digest = hashlib.sha256()
+        with destination.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                written += len(chunk)
+                if written > expected_size or written > UPDATE_MAX_BYTES:
+                    raise RuntimeError("update artifact exceeded expected size")
+                digest.update(chunk)
+                handle.write(chunk)
+
+    if written != expected_size:
+        raise RuntimeError("update artifact size mismatch")
+    return digest.hexdigest()
+
+
+def inspect_update_archive(path):
+    with zipfile.ZipFile(path, "r") as archive:
+        names = archive.namelist()
+        if len(names) != len(set(names)):
+            raise RuntimeError("update archive contains duplicate entries")
+        if set(names) != UPDATE_ALLOWED_FILES:
+            raise RuntimeError("update archive contains unexpected files")
+        for info in archive.infolist():
+            name = info.filename
+            if Path(name).name != name or name.startswith(("/", "\\")) or ".." in Path(name).parts:
+                raise RuntimeError("update archive contains unsafe paths")
+            if info.is_dir() or info.file_size < 1 or info.file_size > 20 * 1024 * 1024:
+                raise RuntimeError("update archive entry size is invalid")
+    return True
+
+
+def extract_staged_update(archive_path, target_dir):
+    payload_dir = target_dir / "payload"
+    payload_dir.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(payload_dir, 0o700)
+
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        for name in sorted(UPDATE_ALLOWED_FILES):
+            data = archive.read(name)
+            target = payload_dir / name
+            target.write_bytes(data)
+            if os.name != "nt":
+                os.chmod(target, 0o600)
+    return payload_dir
+
+
+def stage_signed_update(cfg):
+    checked_at = utcnow()
+    if not str(cfg.get("update_public_key") or "").strip():
+        return write_update_state(cfg, {
+            "status": "disabled",
+            "checked_at": checked_at,
+        })
+
+    metadata = api(
+        cfg,
+        "GET",
+        f"/api/agent/{cfg['agent_id']}/updates/latest",
+        headers={"X-Agent-Token": cfg["agent_token"]},
+        timeout=60,
+    )
+
+    if not metadata.get("enabled"):
+        return write_update_state(cfg, {
+            "status": "server_disabled",
+            "checked_at": checked_at,
+        })
+
+    if not metadata.get("available"):
+        return write_update_state(cfg, {
+            "status": "current" if metadata.get("status") == "current" else "unavailable",
+            "checked_at": checked_at,
+            "latest_version": metadata.get("latest_version", ""),
+            "last_error": metadata.get("error", ""),
+        })
+
+    manifest = metadata.get("manifest")
+    signature_b64 = metadata.get("signature")
+    manifest, signature = verify_update_manifest(cfg, manifest, signature_b64)
+    version = manifest["version"]
+    if not version_newer(version, AGENT_VERSION):
+        raise RuntimeError("refusing non-upgrade agent release")
+
+    artifact = manifest["artifact"]
+    artifact_url = str(metadata.get("artifact_url") or "")
+    expected_url = (
+        f"/api/agent/{cfg['agent_id']}/updates/artifact/"
+        f"{artifact['filename']}"
+    )
+    if artifact_url != expected_url:
+        raise RuntimeError("update artifact URL does not match signed manifest")
+
+    root = update_staging_dir(cfg)
+    target_dir = root / version
+    target_dir.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(target_dir, 0o700)
+
+    archive_path = target_dir / artifact["filename"]
+    temporary = target_dir / (artifact["filename"] + ".tmp")
+    temporary.unlink(missing_ok=True)
+
+    try:
+        actual_sha256 = download_update_artifact(
+            cfg,
+            artifact_url,
+            temporary,
+            int(artifact["size_bytes"]),
+        )
+        if actual_sha256 != artifact["sha256"]:
+            raise RuntimeError("update artifact SHA-256 mismatch")
+        inspect_update_archive(temporary)
+        temporary.replace(archive_path)
+        if os.name != "nt":
+            os.chmod(archive_path, 0o600)
+
+        extract_staged_update(archive_path, target_dir)
+        (target_dir / "agent-release.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (target_dir / "agent-release.sig").write_bytes(signature)
+        if os.name != "nt":
+            os.chmod(target_dir / "agent-release.json", 0o600)
+            os.chmod(target_dir / "agent-release.sig", 0o600)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+    return write_update_state(cfg, {
+        "status": "staged",
+        "checked_at": checked_at,
+        "staged_at": utcnow(),
+        "staged_version": version,
+        "artifact_sha256": artifact["sha256"],
+        "artifact_filename": artifact["filename"],
+        "activation": "manual",
+    })
+
+
+def safe_stage_signed_update(cfg):
+    try:
+        return stage_signed_update(cfg)
+    except Exception as exc:
+        return write_update_state(cfg, {
+            "status": "error",
+            "checked_at": utcnow(),
+            "last_error": str(exc)[:500],
+        })
 
 
 def os_info():
@@ -342,7 +688,8 @@ def persist_health_policy(cfg, cfg_path, policy):
         save_config(Path(cfg_path), cfg)
 
 
-def inventory():
+def inventory(cfg=None):
+    cfg = cfg if isinstance(cfg, dict) else {}
     info = os_info()
     info.update({
         "python": sys.version.split()[0],
@@ -353,6 +700,7 @@ def inventory():
             "protocol": AGENT_PROTOCOL,
             "capabilities": list(AGENT_CAPABILITIES),
         },
+        "update": read_update_state(cfg),
         "rollback": rollback_capability(),
     })
     if os.name == "nt":
@@ -671,7 +1019,7 @@ def enroll(cfg, cfg_path):
 
 
 def heartbeat(cfg, patches):
-    current_inventory = inventory()
+    current_inventory = inventory(cfg)
     current_inventory["health"] = collect_health(active_health_policy(cfg))
     return api(
         cfg,
@@ -779,8 +1127,13 @@ def loop(cfg, cfg_path):
     poll=max(15,int(cfg.get("poll_seconds",60)))
     scan_every=max(300,int(cfg.get("scan_every_seconds",1800)))
     last_scan=0; patches=[]
+    last_update_check=0
+    update_every=max(900,int(cfg.get("update_check_seconds",21600)))
     while True:
         try:
+            if str(cfg.get("update_public_key") or "").strip() and time.time()-last_update_check >= update_every:
+                safe_stage_signed_update(cfg)
+                last_update_check=time.time()
             if time.time()-last_scan >= scan_every:
                 patches=scan_updates(); heartbeat(cfg,patches); last_scan=time.time()
             jobs=api(cfg,"GET",f"/api/agent/{cfg['agent_id']}/jobs",headers={"X-Agent-Token":cfg["agent_token"]})
@@ -799,8 +1152,15 @@ def main():
     p=argparse.ArgumentParser(description="Patch Manager endpoint agent")
     p.add_argument("--config",default=str(DEFAULT_CONFIG))
     p.add_argument("--once",action="store_true",help="faz scan/heartbeat e processa no máximo um job")
+    p.add_argument("--check-update",action="store_true",help="verifica e prepara update assinado sem ativá-lo")
     args=p.parse_args(); path=Path(args.config); cfg=load_config(path); enroll(cfg,path)
+    if args.check_update:
+        state=safe_stage_signed_update(cfg)
+        print(json.dumps(state,ensure_ascii=False,indent=2))
+        return
     if args.once:
+        if str(cfg.get("update_public_key") or "").strip():
+            safe_stage_signed_update(cfg)
         patches=scan_updates(); heartbeat(cfg,patches)
         jobs=api(cfg,"GET",f"/api/agent/{cfg['agent_id']}/jobs",headers={"X-Agent-Token":cfg["agent_token"]})
         for job in jobs[:1]: execute_job(cfg,job,path)

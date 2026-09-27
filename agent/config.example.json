@@ -3,11 +3,16 @@
   "enrollment_token": "SET_ONLY_FOR_FIRST_ENROLLMENT",
   "agent_id": "",
   "agent_token": "",
-  "tags": ["piloto"],
+  "tags": [
+    "piloto"
+  ],
   "poll_seconds": 60,
   "scan_every_seconds": 1800,
   "tls_verify": true,
   "ca_cert": "/etc/patch-manager/tls/server-ca.crt",
   "client_cert": "/etc/patch-manager/tls/agent.crt",
-  "client_key": "/etc/patch-manager/tls/agent.key"
+  "client_key": "/etc/patch-manager/tls/agent.key",
+  "update_public_key": "/etc/patch-manager/update-trust/agent-update-public.pem",
+  "update_check_seconds": 21600,
+  "update_staging_dir": "/var/lib/patch-manager/updates"
 }
