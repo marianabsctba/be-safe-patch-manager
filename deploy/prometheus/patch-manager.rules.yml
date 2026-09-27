@@ -1,0 +1,76 @@
+groups:
+  - name: be-safe-patch-manager
+    rules:
+      - alert: PatchManagerDown
+        expr: up{job="be-safe-patch-manager"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Be Safe Patch Manager indisponível
+          description: O Prometheus não consegue coletar métricas do Patch Manager há pelo menos 2 minutos.
+
+      - alert: PatchManagerDatabaseUnavailable
+        expr: patch_manager_database_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Banco do Patch Manager indisponível
+          description: A aplicação não consegue consultar o PostgreSQL.
+
+      - alert: PatchManagerStalledJobs
+        expr: patch_manager_jobs{status="stalled"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Há jobs stalled no Patch Manager
+          description: Existe pelo menos uma execução que exige revisão administrativa antes de qualquer retry.
+
+      - alert: PatchManagerBackupMissing
+        expr: patch_manager_backup_status == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Nenhum backup recente registrado
+          description: O exporter não encontrou estado de um backup PostgreSQL concluído com sucesso.
+
+      - alert: PatchManagerBackupStale
+        expr: patch_manager_backup_status == 1 and patch_manager_backup_age_seconds > 86400
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Backup PostgreSQL antigo
+          description: O último backup concluído do Patch Manager tem mais de 24 horas.
+
+      - alert: PatchManagerGreenboneSyncFailed
+        expr: patch_manager_greenbone_enabled == 1 and patch_manager_greenbone_sync_ok == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Integração Greenbone sem sync saudável
+          description: O Greenbone está habilitado, mas o estado mais recente de sincronização não está OK.
+
+      - alert: PatchManagerHighOfflineRatio
+        expr: |
+          (patch_manager_agents_offline / (patch_manager_agents_online + patch_manager_agents_offline)) > 0.10
+          and (patch_manager_agents_online + patch_manager_agents_offline) >= 10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Muitos endpoints estão offline
+          description: Mais de 10% dos endpoints gerenciados estão fora da janela de heartbeat.
+
+      - alert: PatchManagerHTTP5xx
+        expr: sum(rate(patch_manager_http_requests_total{status=~"5.."}[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Taxa persistente de erros HTTP 5xx
+          description: O Patch Manager está retornando erros 5xx de forma persistente.
