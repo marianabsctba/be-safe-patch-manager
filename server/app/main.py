@@ -501,6 +501,133 @@ def vulnerability_sla(finding: VulnerabilityFinding, reference: datetime | None 
     }
 
 
+def remediation_recommendation(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    risk = vulnerability_risk(finding, reference)
+    sla = vulnerability_sla(finding, reference)
+    matched = bool(finding.agent_id and finding.agent)
+    patch_refs = load(finding.patch_refs_json, [])
+    patchable = bool(patch_refs)
+    reasons = []
+
+    priority = float(risk["score"])
+    if sla["state"] == "breached":
+        priority += 20
+        reasons.append("SLA vencido")
+    elif sla["state"] == "due_soon":
+        priority += 10
+        reasons.append("SLA próximo do vencimento")
+    elif sla["state"] == "exception":
+        reasons.append("exceção de SLA ativa")
+
+    if risk["kev"]:
+        priority += 10
+        reasons.append("CVE presente no CISA KEV")
+    if risk["epss"] is not None and risk["epss"] >= 0.5:
+        reasons.append(f"EPSS {round(risk['epss'] * 100)}%")
+    if not matched:
+        reasons.append("finding sem endpoint gerenciado correlacionado")
+    if matched and not patchable:
+        reasons.append("sem referência de patch/KB normalizada")
+
+    priority = round(min(100.0, priority), 1)
+
+    if finding.status != "open":
+        action = "none"
+        eligible = False
+        reasons.append("finding não está aberto")
+    elif sla["state"] == "exception":
+        action = "exception_active"
+        eligible = False
+    elif not matched:
+        action = "correlate_asset"
+        eligible = False
+    elif not patchable:
+        action = "scan_or_manual_triage"
+        eligible = True
+    elif risk["level"] == "urgent" or sla["state"] == "breached":
+        action = "patch_now"
+        eligible = True
+    elif risk["level"] == "high" or sla["state"] == "due_soon":
+        action = "schedule_patch"
+        eligible = True
+    else:
+        action = "plan_patch"
+        eligible = True
+
+    return {
+        "priority_score": priority,
+        "action": action,
+        "eligible_for_campaign": eligible,
+        "matched": matched,
+        "patchable": patchable,
+        "patch_refs": patch_refs,
+        "risk": risk,
+        "sla": sla,
+        "reasons": reasons,
+    }
+
+
+def remediation_queue_report(db: Session, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    findings = db.query(VulnerabilityFinding).filter(
+        VulnerabilityFinding.status == "open"
+    ).all()
+
+    items = []
+    summary = {
+        "total_open": len(findings),
+        "patch_now": 0,
+        "schedule_patch": 0,
+        "plan_patch": 0,
+        "scan_or_manual_triage": 0,
+        "correlate_asset": 0,
+        "exception_active": 0,
+        "eligible_for_campaign": 0,
+    }
+
+    for finding in findings:
+        recommendation = remediation_recommendation(finding, reference)
+        action = recommendation["action"]
+        summary[action] = summary.get(action, 0) + 1
+        if recommendation["eligible_for_campaign"]:
+            summary["eligible_for_campaign"] += 1
+
+        items.append({
+            "id": finding.id,
+            "cve": finding.cve,
+            "title": finding.title,
+            "severity": finding.severity,
+            "cvss": finding.cvss,
+            "agent_id": finding.agent_id,
+            "hostname": finding.agent.hostname if finding.agent else "",
+            "source": finding.source,
+            "last_seen": finding.last_seen.isoformat() if finding.last_seen else None,
+            "recommendation": recommendation,
+        })
+
+    action_rank = {
+        "patch_now": 0,
+        "schedule_patch": 1,
+        "scan_or_manual_triage": 2,
+        "plan_patch": 3,
+        "correlate_asset": 4,
+        "exception_active": 5,
+        "none": 9,
+    }
+    items.sort(key=lambda item: (
+        action_rank.get(item["recommendation"]["action"], 8),
+        -item["recommendation"]["priority_score"],
+        -float(item.get("cvss") or 0),
+    ))
+
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": summary,
+        "items": items,
+    }
+
+
 def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> dict:
     reference = reference or now()
     findings = db.query(VulnerabilityFinding).all()
@@ -2987,6 +3114,7 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             for finding in db.query(VulnerabilityFinding).filter(VulnerabilityFinding.status == "open").all()
             if vulnerability_risk(finding)["level"] == "urgent"
         ),
+        "remediation_ready_vulnerabilities": remediation_queue_report(db)["summary"]["eligible_for_campaign"],
         "agent_supported": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "supported"),
         "agent_outdated": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "outdated"),
         "agent_unknown": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "unknown"),
@@ -3034,6 +3162,14 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             )
         ),
     }
+
+
+@app.get("/api/admin/reports/remediation-queue")
+def remediation_queue(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return remediation_queue_report(db)
 
 
 @app.get("/api/admin/reports/vulnerability-sla")
