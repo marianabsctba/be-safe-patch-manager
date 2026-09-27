@@ -4,7 +4,8 @@ param(
   [string[]]$Tags = @("piloto"),
   [string]$ClientCertificatePath = "",
   [string]$ClientKeyPath = "",
-  [string]$CaCertificatePath = ""
+  [string]$CaCertificatePath = "",
+  [string]$UpdatePublicKeyPath = ""
 )
 $ErrorActionPreference = "Stop"
 
@@ -34,7 +35,7 @@ if (
   throw "ClientCertificatePath e ClientKeyPath devem ser informados juntos."
 }
 
-foreach ($PathItem in @($ClientCertificatePath, $ClientKeyPath, $CaCertificatePath)) {
+foreach ($PathItem in @($ClientCertificatePath, $ClientKeyPath, $CaCertificatePath, $UpdatePublicKeyPath)) {
   if (-not [string]::IsNullOrWhiteSpace($PathItem) -and -not (Test-Path -LiteralPath $PathItem -PathType Leaf)) {
     throw "Arquivo TLS não encontrado: $PathItem"
   }
@@ -42,9 +43,13 @@ foreach ($PathItem in @($ClientCertificatePath, $ClientKeyPath, $CaCertificatePa
 
 $Base = "C:\ProgramData\PatchManager"
 $TlsBase = Join-Path $Base "tls"
+$UpdateTrustBase = Join-Path $Base "update-trust"
+$UpdateStagingBase = Join-Path $Base "updates"
 $ConfigPath = Join-Path $Base "agent.json"
 New-Item -ItemType Directory -Force -Path $Base | Out-Null
 New-Item -ItemType Directory -Force -Path $TlsBase | Out-Null
+New-Item -ItemType Directory -Force -Path $UpdateTrustBase | Out-Null
+New-Item -ItemType Directory -Force -Path $UpdateStagingBase | Out-Null
 
 Copy-Item "$PSScriptRoot\..\..\agent\patch_agent.py" "$Base\patch_agent.py" -Force
 Copy-Item "$PSScriptRoot\..\..\agent\requirements.txt" "$Base\requirements.txt" -Force
@@ -68,6 +73,12 @@ if (-not [string]::IsNullOrWhiteSpace($CaCertificatePath)) {
   Copy-Item -LiteralPath $CaCertificatePath -Destination $CaCertTarget -Force
 }
 
+$UpdatePublicKeyTarget = ""
+if (-not [string]::IsNullOrWhiteSpace($UpdatePublicKeyPath)) {
+  $UpdatePublicKeyTarget = Join-Path $UpdateTrustBase "agent-update-public.pem"
+  Copy-Item -LiteralPath $UpdatePublicKeyPath -Destination $UpdatePublicKeyTarget -Force
+}
+
 @{
   server_url=$ServerUrl
   enrollment_token=$EnrollmentToken
@@ -80,6 +91,9 @@ if (-not [string]::IsNullOrWhiteSpace($CaCertificatePath)) {
   ca_cert=$CaCertTarget
   client_cert=$ClientCertTarget
   client_key=$ClientKeyTarget
+  update_public_key=$UpdatePublicKeyTarget
+  update_check_seconds=21600
+  update_staging_dir=$UpdateStagingBase
 } | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
 
 # Restrict credential-bearing files to LocalSystem and Administrators.
@@ -88,6 +102,11 @@ foreach ($ProtectedPath in @($ConfigPath, $ClientKeyTarget)) {
     & icacls.exe $ProtectedPath /inheritance:r | Out-Null
     & icacls.exe $ProtectedPath /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
   }
+}
+
+foreach ($ProtectedDirectory in @($UpdateStagingBase, $UpdateTrustBase)) {
+  & icacls.exe $ProtectedDirectory /inheritance:r | Out-Null
+  & icacls.exe $ProtectedDirectory /grant:r '*S-1-5-18:(OI)(CI)(F)' '*S-1-5-32-544:(OI)(CI)(F)' | Out-Null
 }
 
 $EnrollmentToken = $null

@@ -5,6 +5,7 @@ if [ "$#" -lt 1 ]; then
   echo "Uso: sudo $0 https://patch.exemplo [tag]"
   echo "Opcional para automação: PATCH_ENROLLMENT_TOKEN."
   echo "mTLS: PATCH_CLIENT_CERT, PATCH_CLIENT_KEY e opcional PATCH_CA_CERT."
+  echo "Update assinado: PATCH_UPDATE_PUBLIC_KEY (chave publica Ed25519)."
   exit 1
 fi
 
@@ -34,13 +35,14 @@ fi
 CLIENT_CERT_SOURCE="${PATCH_CLIENT_CERT:-}"
 CLIENT_KEY_SOURCE="${PATCH_CLIENT_KEY:-}"
 CA_CERT_SOURCE="${PATCH_CA_CERT:-}"
+UPDATE_PUBLIC_KEY_SOURCE="${PATCH_UPDATE_PUBLIC_KEY:-}"
 
 if { [ -n "$CLIENT_CERT_SOURCE" ] && [ -z "$CLIENT_KEY_SOURCE" ]; } || { [ -z "$CLIENT_CERT_SOURCE" ] && [ -n "$CLIENT_KEY_SOURCE" ]; }; then
   echo "PATCH_CLIENT_CERT e PATCH_CLIENT_KEY devem ser informados juntos." >&2
   exit 1
 fi
 
-for SOURCE in "$CLIENT_CERT_SOURCE" "$CLIENT_KEY_SOURCE" "$CA_CERT_SOURCE"; do
+for SOURCE in "$CLIENT_CERT_SOURCE" "$CLIENT_KEY_SOURCE" "$CA_CERT_SOURCE" "$UPDATE_PUBLIC_KEY_SOURCE"; do
   if [ -n "$SOURCE" ] && [ ! -f "$SOURCE" ]; then
     echo "Arquivo TLS não encontrado: $SOURCE" >&2
     exit 1
@@ -50,9 +52,11 @@ done
 BASE=/opt/patch-manager-agent
 CONFIG_DIR=/etc/patch-manager
 TLS_DIR="$CONFIG_DIR/tls"
+UPDATE_TRUST_DIR="$CONFIG_DIR/update-trust"
+UPDATE_STAGING_DIR="/var/lib/patch-manager/updates"
 
-mkdir -p "$BASE" "$CONFIG_DIR" "$TLS_DIR"
-chmod 700 "$CONFIG_DIR" "$TLS_DIR"
+mkdir -p "$BASE" "$CONFIG_DIR" "$TLS_DIR" "$UPDATE_TRUST_DIR" "$UPDATE_STAGING_DIR"
+chmod 700 "$CONFIG_DIR" "$TLS_DIR" "$UPDATE_TRUST_DIR" "$UPDATE_STAGING_DIR"
 
 cp "$(dirname "$0")/../agent/patch_agent.py" "$BASE/patch_agent.py"
 cp "$(dirname "$0")/../agent/requirements.txt" "$BASE/requirements.txt"
@@ -79,11 +83,18 @@ if [ -n "$CA_CERT_SOURCE" ]; then
   chmod 644 "$CA_CERT"
 fi
 
-python3 - "$CONFIG_DIR/agent.json" "$SERVER_URL" "$ENROLL" "$TAG" "$CA_CERT" "$CLIENT_CERT" "$CLIENT_KEY" <<'PY'
+UPDATE_PUBLIC_KEY=""
+if [ -n "$UPDATE_PUBLIC_KEY_SOURCE" ]; then
+  UPDATE_PUBLIC_KEY="$UPDATE_TRUST_DIR/agent-update-public.pem"
+  cp "$UPDATE_PUBLIC_KEY_SOURCE" "$UPDATE_PUBLIC_KEY"
+  chmod 644 "$UPDATE_PUBLIC_KEY"
+fi
+
+python3 - "$CONFIG_DIR/agent.json" "$SERVER_URL" "$ENROLL" "$TAG" "$CA_CERT" "$CLIENT_CERT" "$CLIENT_KEY" "$UPDATE_PUBLIC_KEY" "$UPDATE_STAGING_DIR" <<'PY'
 import json
 import sys
 
-path, server_url, enrollment, tag, ca_cert, client_cert, client_key = sys.argv[1:]
+path, server_url, enrollment, tag, ca_cert, client_cert, client_key, update_public_key, update_staging_dir = sys.argv[1:]
 data = {
     "server_url": server_url,
     "enrollment_token": enrollment,
@@ -96,13 +107,16 @@ data = {
     "ca_cert": ca_cert,
     "client_cert": client_cert,
     "client_key": client_key,
+    "update_public_key": update_public_key,
+    "update_check_seconds": 21600,
+    "update_staging_dir": update_staging_dir,
 }
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(data, handle, ensure_ascii=False, indent=2)
 PY
 
 chmod 600 "$CONFIG_DIR/agent.json"
-unset ENROLL PATCH_ENROLLMENT_TOKEN || true
+unset ENROLL PATCH_ENROLLMENT_TOKEN PATCH_UPDATE_PUBLIC_KEY || true
 
 cp "$(dirname "$0")/systemd/patch-manager-agent.service" /etc/systemd/system/
 systemctl daemon-reload
