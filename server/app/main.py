@@ -30,7 +30,7 @@ from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 from .agent_updates import AgentReleaseError, load_signed_release
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.13.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.14.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -1870,7 +1870,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.13.0", "time": now().isoformat()}
+    return {"status": "ok", "version": "0.14.0", "time": now().isoformat()}
 
 
 @app.get("/ready")
@@ -2260,6 +2260,15 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
         "minimum_agent_version": AGENT_MIN_VERSION,
         "minimum_agent_protocol": AGENT_MIN_PROTOCOL,
         "blocked_jobs": db.query(PatchJob).filter(PatchJob.status == "blocked").count(),
+        "agent_update_staged": sum(
+            1 for a in agents
+            if (load(a.inventory_json, {}).get("update") or {}).get("status") == "staged"
+        ),
+        "agent_update_errors": sum(
+            1 for a in agents
+            if (load(a.inventory_json, {}).get("update") or {}).get("status") == "error"
+        ),
+        "agent_update_distribution_enabled": AGENT_UPDATE_ENABLED,
     }
 
 

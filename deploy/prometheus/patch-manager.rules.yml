@@ -131,3 +131,13 @@ groups:
         annotations:
           summary: Agentes incompatíveis na frota
           description: Um ou mais endpoints não atendem a versão/protocolo mínimo exigido pelo Patch Manager.
+
+
+      - alert: PatchManagerAgentUpdateStagingErrors
+        expr: patch_manager_agent_update_distribution_enabled == 1 and patch_manager_agent_update_state{status="error"} > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Falha no staging de update do agente
+          description: Um ou mais agentes não conseguiram verificar ou preparar a release assinada.

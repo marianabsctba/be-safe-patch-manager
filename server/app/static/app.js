@@ -293,6 +293,8 @@ function renderSummary(summary) {
     { label: 'Falhas', value: summary.failed_jobs || 0, hint: 'jobs acumulados', cls: summary.failed_jobs ? 'danger' : 'ok' },
     { label: 'Agentes incompatíveis', value: Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0), hint: summary.compatibility_enforced ? 'enforcement ativo' : 'somente observação', cls: (Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0)) ? 'danger' : 'ok' },
     { label: 'Jobs bloqueados', value: summary.blocked_jobs || 0, hint: 'aguardando upgrade do agente', cls: summary.blocked_jobs ? 'danger' : 'ok' },
+    { label: 'Update staged', value: summary.agent_update_staged || 0, hint: 'assinado e aguardando ativação', cls: summary.agent_update_staged ? 'accent' : 'ok' },
+    { label: 'Erro update agente', value: summary.agent_update_errors || 0, hint: summary.agent_update_distribution_enabled ? 'distribuição habilitada' : 'distribuição desligada', cls: summary.agent_update_errors ? 'danger' : 'ok' },
   ];
 
   $('#summary').innerHTML = entries.map((item) => `
@@ -721,6 +723,9 @@ function renderAgentDrawer(agent = selectedAgent()) {
     ? Object.values(healthSnapshot.applications)
     : [];
   const unhealthyChecks = [...healthServices, ...healthApps].filter((item) => item && item.healthy === false).length;
+  const agentUpdate = agent.inventory && agent.inventory.update && typeof agent.inventory.update === 'object'
+    ? agent.inventory.update
+    : {};
 
   $('#drawerHostname').textContent = agent.hostname || '-';
   $('#drawerSubtitle').textContent = ((agent.os_name || agent.os_family || '-') + ' ' + (agent.os_version || '')).trim();
@@ -753,6 +758,7 @@ function renderAgentDrawer(agent = selectedAgent()) {
     ['Versão agente', agent.runtime && agent.runtime.version ? agent.runtime.version : '-', agent.runtime && agent.runtime.status === 'supported' ? 'ok' : 'danger'],
     ['Protocolo', agent.runtime && agent.runtime.protocol ? agent.runtime.protocol : '-', agent.runtime && agent.runtime.protocol_supported ? 'ok' : 'danger'],
     ['Capabilities', agent.runtime && agent.runtime.capabilities ? agent.runtime.capabilities.length : 0, 'neutral'],
+    ['Update agente', agentUpdate.status === 'staged' ? 'staged ' + (agentUpdate.staged_version || '') : (agentUpdate.status || '-'), agentUpdate.status === 'error' ? 'danger' : agentUpdate.status === 'staged' ? 'warn' : 'neutral'],
   ];
 
   $('#drawerMetrics').innerHTML = metrics.map((item) =>

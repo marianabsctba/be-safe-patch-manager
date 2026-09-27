@@ -14,7 +14,7 @@ from .database import SessionLocal
 from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
 
 
-APP_VERSION = "0.13.0"
+APP_VERSION = "0.14.0"
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -211,6 +211,7 @@ class PatchManagerCollector:
                 "protocol_unsupported": 0,
                 "unknown": 0,
             }
+            update_counts = {}
 
             for agent in agents:
                 family = (agent.os_family or "unknown").lower()
@@ -230,6 +231,9 @@ class PatchManagerCollector:
                     inventory = {}
                 compatibility_status = _agent_compatibility_status(inventory)
                 compatibility_counts[compatibility_status] = compatibility_counts.get(compatibility_status, 0) + 1
+                update_state = inventory.get("update") if isinstance(inventory.get("update"), dict) else {}
+                update_status = str(update_state.get("status") or "unknown")
+                update_counts[update_status] = update_counts.get(update_status, 0) + 1
                 health = inventory.get("health") if isinstance(inventory.get("health"), dict) else {}
                 if health:
                     health_reporting += 1
@@ -272,6 +276,25 @@ class PatchManagerCollector:
                 1 if os.getenv("AGENT_ENFORCE_COMPATIBILITY", "").strip().lower() in {"1", "true", "yes", "on"} else 0,
             )
             yield enforcement
+
+            update_state_metric = GaugeMetricFamily(
+                "patch_manager_agent_update_state",
+                "Managed agents by signed update staging state.",
+                labels=["status"],
+            )
+            for status, count in sorted(update_counts.items()):
+                update_state_metric.add_metric([status], count)
+            yield update_state_metric
+
+            update_distribution = GaugeMetricFamily(
+                "patch_manager_agent_update_distribution_enabled",
+                "Whether signed agent release distribution is enabled.",
+            )
+            update_distribution.add_metric(
+                [],
+                1 if os.getenv("AGENT_UPDATE_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"} else 0,
+            )
+            yield update_distribution
 
             for name, description, value in [
                 ("patch_manager_agents_online", "Agents seen inside the online threshold.", online),
