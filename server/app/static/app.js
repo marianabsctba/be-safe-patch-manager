@@ -94,7 +94,7 @@ function isOnline(agent) {
 
 function jobClass(status) {
   if (status === 'success') return 'ok';
-  if (status === 'failed') return 'fail';
+  if (status === 'failed' || status === 'stalled') return 'fail';
   if (status === 'running' || status === 'claimed') return 'warn';
   return 'info';
 }
@@ -112,6 +112,7 @@ function statusLabel(status) {
     pending: 'Pendente',
     claimed: 'Recebida',
     running: 'Executando',
+    stalled: 'Travado / revisão',
     success: 'Sucesso',
     failed: 'Falha',
     skipped: 'Ignorada',
@@ -731,6 +732,7 @@ function validationBadge(validation) {
 function healthReasonLabel(reason) {
   const labels = {
     'no jobs in current ring': 'sem jobs no ring',
+    'current ring has stalled jobs': 'há job travado exigindo revisão',
     'current ring still has active jobs': 'jobs ainda em execução',
     'current ring has non-terminal jobs': 'jobs ainda não finalizados',
     'success rate below 90%': 'sucesso abaixo de 90%',
@@ -845,6 +847,16 @@ function renderOverviewCampaigns() {
     : '<div class="empty-state">Nenhuma campanha ainda.</div>';
 }
 
+function executionStatusControl(job) {
+  const status = badge(statusLabel(job.status), jobClass(job.status));
+  const attempt = '<small class="muted">tentativa ' + esc(job.attempt_count || 0) + '</small>';
+  if (job.status === 'stalled') {
+    return status + '<br>' + attempt +
+      '<br><button class="row-action danger-action" onclick="retryStalledJob(\'' + job.id + '\')">Revisar e tentar novamente</button>';
+  }
+  return status + '<br>' + attempt;
+}
+
 function renderJobs() {
   $('#jobCount').textContent = `${state.jobs.length} job${state.jobs.length === 1 ? '' : 's'}`;
 
@@ -861,7 +873,7 @@ function renderJobs() {
       <td><strong>${esc(job.hostname || '-')}</strong></td>
       <td>${esc(job.campaign_name || '-')}</td>
       <td>${esc(actionLabel(job.action))}</td>
-      <td>${badge(statusLabel(job.status), jobClass(job.status))}</td>
+      <td>${executionStatusControl(job)}</td>
       <td>${when(job.started_at || job.claimed_at)}</td>
       <td>${when(job.finished_at)}</td>
       <td>${validationBadge(job.validation)}</td>
@@ -924,6 +936,27 @@ window.advanceCampaign = async (id, targetPercent) => {
     await load();
   } catch (error) {
     toast('Health gate: ' + error.message, 'fail');
+  }
+};
+
+
+window.retryStalledJob = async (jobId) => {
+  const reason = prompt('Descreva a revisão feita antes de reexecutar este job:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+  if (!confirm('ATENÇÃO: a tentativa anterior pode ter executado parcialmente. Confirmar nova tentativa?')) return;
+
+  try {
+    await api('/api/admin/jobs/' + jobId + '/retry', {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim(), acknowledge_risk: true }),
+    });
+    toast('Job revisado e devolvido à fila.');
+    await load();
+  } catch (error) {
+    toast('Retry: ' + error.message, 'fail');
   }
 };
 
