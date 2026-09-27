@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
 from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
-from .schemas import AgentMtlsBindRequest, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -30,7 +30,7 @@ from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 from .agent_updates import AgentReleaseError, load_signed_release
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.14.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.15.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -268,6 +268,8 @@ def required_capabilities_for_job(job: PatchJob) -> list[str]:
             required.add("health_telemetry_v1")
     elif job.action == "rollback_checkpoint":
         required.add("rollback_restore_v1")
+    elif job.action == "activate_agent_update":
+        required.add("signed_update_activation_v1")
 
     return sorted(required)
 
@@ -1870,7 +1872,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.14.0", "time": now().isoformat()}
+    return {"status": "ok", "version": "0.15.0", "time": now().isoformat()}
 
 
 @app.get("/ready")
@@ -2311,6 +2313,115 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
 @app.get("/api/admin/agents")
 def list_agents(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return [serialize_agent(a) for a in db.query(Agent).order_by(Agent.hostname.asc()).all()]
+
+
+@app.post("/api/admin/agents/{agent_id}/updates/activate")
+def approve_agent_update_activation(
+    agent_id: str,
+    body: AgentUpdateActivationRequest,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if not body.acknowledge_risk:
+        raise HTTPException(
+            status_code=400,
+            detail="explicit agent update activation risk acknowledgement is required",
+        )
+
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    if str(agent.os_family or "").lower() != "linux":
+        raise HTTPException(
+            status_code=409,
+            detail="automatic agent activation is supported only on Linux in v0.15",
+        )
+
+    inventory = load(agent.inventory_json, {})
+    update_state = inventory.get("update") if isinstance(inventory.get("update"), dict) else {}
+    activation_state = inventory.get("activation") if isinstance(inventory.get("activation"), dict) else {}
+    runtime = agent_runtime_metadata(agent)
+
+    if update_state.get("status") != "staged":
+        raise HTTPException(status_code=409, detail="agent does not report a staged update")
+    if str(update_state.get("staged_version") or "") != body.expected_version:
+        raise HTTPException(status_code=409, detail="staged agent version does not match approval")
+    if "signed_update_activation_v1" not in set(runtime.get("capabilities") or []):
+        raise HTTPException(status_code=409, detail="agent does not support signed update activation")
+    if activation_state.get("status") in {"switching", "pending"}:
+        raise HTTPException(status_code=409, detail="agent update activation is already pending")
+
+    active_execution = db.query(PatchJob).filter(
+        PatchJob.agent_id == agent.id,
+        PatchJob.status.in_(["claimed", "running", "stalled"]),
+    ).first()
+    if active_execution:
+        raise HTTPException(
+            status_code=409,
+            detail=f"agent has active execution {active_execution.id} in status {active_execution.status}",
+        )
+
+    existing_update = db.query(PatchJob).filter(
+        PatchJob.agent_id == agent.id,
+        PatchJob.action == "activate_agent_update",
+        PatchJob.status.in_(["pending", "blocked", "claimed", "running", "stalled"]),
+    ).first()
+    if existing_update:
+        raise HTTPException(
+            status_code=409,
+            detail="agent already has an unfinished update activation job",
+        )
+
+    payload = {
+        "expected_version": body.expected_version,
+        "approved_reason": body.reason,
+        "approved_by": principal["actor"],
+        "activation_platform": "linux",
+    }
+
+    campaign = Campaign(
+        id=str(uuid.uuid4()),
+        name=f"Agent update {agent.hostname} -> v{body.expected_version}",
+        description=body.reason,
+        target_os="linux",
+        target_tag="",
+        ring_percent=100,
+        action="activate_agent_update",
+        payload_json=dump(payload),
+        allow_reboot=False,
+        status="deployed",
+    )
+    job = PatchJob(
+        id=str(uuid.uuid4()),
+        campaign=campaign,
+        agent=agent,
+        action="activate_agent_update",
+        payload_json=dump(payload),
+        status="pending",
+    )
+    db.add_all([campaign, job])
+    db.commit()
+
+    audit(
+        db,
+        principal["actor"],
+        "agent.update.activation.approved",
+        "job",
+        job.id,
+        {
+            "agent_id": agent.id,
+            "hostname": agent.hostname,
+            "from_version": runtime.get("version", ""),
+            "to_version": body.expected_version,
+            "reason": body.reason,
+        },
+    )
+
+    return {
+        "ok": True,
+        "campaign": serialize_campaign(campaign),
+        "job": serialize_job(job),
+    }
 
 
 @app.put("/api/admin/agents/{agent_id}/mtls")
