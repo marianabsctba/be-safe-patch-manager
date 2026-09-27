@@ -31,6 +31,7 @@ class Agent(Base):
     jobs = relationship("PatchJob", back_populates="agent", cascade="all, delete-orphan")
     vulnerabilities = relationship("VulnerabilityFinding", back_populates="agent")
     remediation_evidence = relationship("RemediationEvidence", back_populates="agent")
+    risk_snapshots = relationship("AssetRiskSnapshot", back_populates="agent", cascade="all, delete-orphan")
 
 
 class Campaign(Base):
@@ -153,6 +154,23 @@ class RemediationEvidence(Base):
     campaign = relationship("Campaign", back_populates="remediation_evidence")
     job = relationship("PatchJob", back_populates="remediation_evidence")
     agent = relationship("Agent", back_populates="remediation_evidence")
+
+
+class AssetRiskSnapshot(Base):
+    __tablename__ = "asset_risk_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(String(36), ForeignKey("agents.id"), nullable=False, index=True)
+    score = Column(Float, nullable=False)
+    level = Column(String(32), nullable=False, index=True)
+    criticality = Column(Integer, nullable=False)
+    external = Column(Boolean, nullable=False, default=False)
+    open_findings = Column(Integer, nullable=False, default=0)
+    factors_json = Column(Text, nullable=False, default="[]")
+    source = Column(String(64), nullable=False, default="manual")
+    captured_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+    agent = relationship("Agent", back_populates="risk_snapshots")
 
 
 class IntegrationState(Base):
