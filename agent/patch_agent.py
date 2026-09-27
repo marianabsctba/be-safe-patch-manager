@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import zipfile
 from urllib.parse import urlparse
@@ -29,7 +30,7 @@ PKG_RE = re.compile(r"^[A-Za-z0-9._+:-]{1,128}$")
 KB_RE = re.compile(r"^KB\d{4,10}$", re.I)
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@:-]{1,128}$")
 
-AGENT_VERSION = "0.14.0"
+AGENT_VERSION = "0.15.0"
 AGENT_PROTOCOL = 2
 AGENT_CAPABILITIES = (
     "scan_updates",
@@ -40,6 +41,7 @@ AGENT_CAPABILITIES = (
     "rollback_restore_v1",
     "mtls_client_v1",
     "signed_update_staging_v1",
+    "signed_update_activation_v1",
 )
 
 UPDATE_PRODUCT = "be-safe-patch-agent"
@@ -459,6 +461,291 @@ def safe_stage_signed_update(cfg):
         })
 
 
+
+def agent_base_dir(cfg):
+    configured = str(cfg.get("agent_base_dir") or "").strip()
+    return Path(configured) if configured else Path("/opt/patch-manager-agent")
+
+
+def activation_state_path(cfg):
+    configured = str(cfg.get("activation_state_file") or "").strip()
+    return Path(configured) if configured else Path("/var/lib/patch-manager/activation.json")
+
+
+def read_activation_state(cfg):
+    path = activation_state_path(cfg)
+    if not path.is_file():
+        return {"status": "idle", "current_version": AGENT_VERSION}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {
+        "status": "error",
+        "current_version": AGENT_VERSION,
+        "last_error": "invalid activation state",
+    }
+
+
+def write_activation_state(cfg, data):
+    path = activation_state_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(path.parent, 0o700)
+    tmp = path.with_name(path.name + ".tmp")
+    payload = dict(data)
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if os.name != "nt":
+        os.chmod(tmp, 0o600)
+    tmp.replace(path)
+    return payload
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verified_staged_release(cfg, expected_version):
+    state = read_update_state(cfg)
+    if state.get("status") != "staged":
+        raise RuntimeError("agent update is not staged")
+    if str(state.get("staged_version") or "") != str(expected_version or ""):
+        raise RuntimeError("staged agent version does not match approved version")
+    if not version_newer(expected_version, AGENT_VERSION):
+        raise RuntimeError("approved agent version is not newer than current version")
+
+    stage_dir = update_staging_dir(cfg) / expected_version
+    manifest_path = stage_dir / "agent-release.json"
+    signature_path = stage_dir / "agent-release.sig"
+    if not manifest_path.is_file() or not signature_path.is_file():
+        raise RuntimeError("staged release metadata is incomplete")
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError("staged release manifest is invalid") from exc
+
+    signature = signature_path.read_bytes()
+    manifest, _ = verify_update_manifest(
+        cfg,
+        manifest,
+        base64.b64encode(signature).decode("ascii"),
+    )
+    if manifest["version"] != expected_version:
+        raise RuntimeError("staged manifest version mismatch")
+
+    artifact = manifest["artifact"]
+    archive_path = stage_dir / artifact["filename"]
+    if not archive_path.is_file():
+        raise RuntimeError("staged agent archive is missing")
+    if archive_path.stat().st_size != int(artifact["size_bytes"]):
+        raise RuntimeError("staged agent archive size mismatch")
+    if file_sha256(archive_path) != artifact["sha256"]:
+        raise RuntimeError("staged agent archive SHA-256 mismatch")
+    inspect_update_archive(archive_path)
+
+    return {
+        "state": state,
+        "manifest": manifest,
+        "signature": signature,
+        "archive_path": archive_path,
+        "stage_dir": stage_dir,
+    }
+
+
+def _safe_live_release(cfg):
+    base = agent_base_dir(cfg).resolve()
+    releases = (base / "releases").resolve()
+    current = base / "current"
+    if not current.is_symlink():
+        raise RuntimeError("managed release layout is not installed; run the v0.15 installer once")
+
+    try:
+        target = current.resolve(strict=True)
+        target.relative_to(releases)
+    except Exception as exc:
+        raise RuntimeError("current agent release symlink is invalid") from exc
+
+    if not (target / "patch_agent.py").is_file() or not (target / "requirements.txt").is_file():
+        raise RuntimeError("current agent release is incomplete")
+    return base, releases, current, target
+
+
+def _atomic_current_symlink(current, target_dir):
+    relative_target = os.path.relpath(target_dir, current.parent)
+    temporary = current.parent / (".current." + str(os.getpid()) + ".tmp")
+    temporary.unlink(missing_ok=True)
+    os.symlink(relative_target, temporary)
+    os.replace(temporary, current)
+
+
+def activate_staged_update(cfg, expected_version, job_id):
+    if os.name == "nt":
+        raise RuntimeError("automatic agent activation is not supported on Windows in v0.15")
+
+    expected_version = str(expected_version or "").strip()
+    if not UPDATE_VERSION_RE.fullmatch(expected_version):
+        raise RuntimeError("approved agent version is invalid")
+
+    release = verified_staged_release(cfg, expected_version)
+    base, releases, current, live_release = _safe_live_release(cfg)
+    previous_version = live_release.name
+
+    if previous_version != AGENT_VERSION:
+        raise RuntimeError("running agent version does not match managed current release")
+
+    with zipfile.ZipFile(release["archive_path"], "r") as archive:
+        new_requirements = archive.read("requirements.txt")
+        new_agent = archive.read("patch_agent.py")
+
+    current_requirements = (live_release / "requirements.txt").read_bytes()
+    if new_requirements != current_requirements:
+        raise RuntimeError(
+            "automatic activation refuses dependency changes; redeploy the agent with the installer"
+        )
+
+    target_dir = releases / expected_version
+    if target_dir.exists():
+        expected_agent_sha = hashlib.sha256(new_agent).hexdigest()
+        existing_agent = target_dir / "patch_agent.py"
+        existing_requirements = target_dir / "requirements.txt"
+        if (
+            not existing_agent.is_file()
+            or not existing_requirements.is_file()
+            or hashlib.sha256(existing_agent.read_bytes()).hexdigest() != expected_agent_sha
+            or existing_requirements.read_bytes() != new_requirements
+        ):
+            raise RuntimeError("target agent release directory already exists with different content")
+    else:
+        releases.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            os.chmod(releases, 0o755)
+
+        temp_dir = Path(tempfile.mkdtemp(prefix=f".{expected_version}.", dir=str(releases)))
+        try:
+            (temp_dir / "patch_agent.py").write_bytes(new_agent)
+            (temp_dir / "requirements.txt").write_bytes(new_requirements)
+            (temp_dir / "agent-release.json").write_text(
+                json.dumps(release["manifest"], ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (temp_dir / "agent-release.sig").write_bytes(release["signature"])
+
+            for file_path in temp_dir.iterdir():
+                os.chmod(file_path, 0o600)
+            os.chmod(temp_dir / "patch_agent.py", 0o700)
+
+            compile_result = run(
+                [sys.executable, "-m", "py_compile", str(temp_dir / "patch_agent.py")],
+                timeout=60,
+            )
+            if compile_result["returncode"] != 0:
+                raise RuntimeError(
+                    "new agent failed Python compile check: "
+                    + (compile_result["stderr"] or compile_result["stdout"])[-1000:]
+                )
+
+            help_result = run(
+                [sys.executable, str(temp_dir / "patch_agent.py"), "--help"],
+                timeout=60,
+            )
+            if help_result["returncode"] != 0:
+                raise RuntimeError(
+                    "new agent failed startup preflight: "
+                    + (help_result["stderr"] or help_result["stdout"])[-1000:]
+                )
+
+            os.replace(temp_dir, target_dir)
+        except Exception:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+
+    switching = {
+        "status": "switching",
+        "job_id": str(job_id or ""),
+        "previous_version": previous_version,
+        "target_version": expected_version,
+        "attempts": 0,
+        "approved_at": utcnow(),
+        "last_error": "",
+    }
+    write_activation_state(cfg, switching)
+
+    try:
+        _atomic_current_symlink(current, target_dir)
+    except Exception as exc:
+        write_activation_state(cfg, {
+            **switching,
+            "status": "aborted_before_switch",
+            "last_error": str(exc)[:500],
+            "aborted_at": utcnow(),
+        })
+        raise
+
+    pending = {
+        **switching,
+        "status": "pending",
+        "switched_at": utcnow(),
+    }
+    write_activation_state(cfg, pending)
+
+    update_state = read_update_state(cfg)
+    write_update_state(cfg, {
+        **update_state,
+        "status": "activating",
+        "activation": "pending_restart",
+        "target_version": expected_version,
+        "previous_version": previous_version,
+        "activation_job_id": str(job_id or ""),
+    })
+
+    return {
+        "status": "activation_prepared",
+        "target_version": expected_version,
+        "previous_version": previous_version,
+        "restart_required": True,
+        "watchdog": "launcher",
+    }
+
+
+def confirm_pending_activation(cfg):
+    if os.name == "nt":
+        return False
+    state = read_activation_state(cfg)
+    if state.get("status") not in {"pending", "switching"}:
+        return False
+    if str(state.get("target_version") or "") != AGENT_VERSION:
+        return False
+
+    committed = {
+        **state,
+        "status": "committed",
+        "committed_at": utcnow(),
+        "confirmed_version": AGENT_VERSION,
+        "last_error": "",
+    }
+    write_activation_state(cfg, committed)
+
+    update_state = read_update_state(cfg)
+    write_update_state(cfg, {
+        **update_state,
+        "status": "activated",
+        "activation": "committed",
+        "active_version": AGENT_VERSION,
+        "activated_at": committed["committed_at"],
+    })
+    return True
+
+
 def os_info():
     family = "windows" if os.name == "nt" else "linux"
     return {
@@ -702,6 +989,7 @@ def inventory(cfg=None):
             "capabilities": list(AGENT_CAPABILITIES),
         },
         "update": read_update_state(cfg),
+        "activation": read_activation_state(cfg),
         "rollback": rollback_capability(),
     })
     if os.name == "nt":
@@ -1022,7 +1310,7 @@ def enroll(cfg, cfg_path):
 def heartbeat(cfg, patches):
     current_inventory = inventory(cfg)
     current_inventory["health"] = collect_health(active_health_policy(cfg))
-    return api(
+    response = api(
         cfg,
         "POST",
         f"/api/agent/{cfg['agent_id']}/heartbeat",
@@ -1033,6 +1321,8 @@ def heartbeat(cfg, patches):
         },
         headers={"X-Agent-Token": cfg["agent_token"]},
     )
+    confirm_pending_activation(cfg)
+    return response
 
 
 def send_job_result(cfg, job_id, status, claim_token, result=None, error="", started_at=None, finished_at=None):
@@ -1090,6 +1380,7 @@ def execute_job(cfg, job, cfg_path=None):
     )
     lease_thread.start()
 
+    restart_after_success = False
     try:
         action=job["action"]
         if action == "scan_updates":
@@ -1113,6 +1404,14 @@ def execute_job(cfg, job, cfg_path=None):
                 result["health_post"] = collect_health(health_policy)
         elif action == "rollback_checkpoint":
             result=rollback_checkpoint(job.get("payload") or {})
+        elif action == "activate_agent_update":
+            payload = job.get("payload") or {}
+            result = activate_staged_update(
+                cfg,
+                str(payload.get("expected_version") or ""),
+                jid,
+            )
+            restart_after_success = True
         else:
             raise RuntimeError(f"Ação não permitida: {action}")
         send_job_result(cfg,jid,"success",claim_token,result=result,started_at=started,finished_at=utcnow())
@@ -1121,6 +1420,9 @@ def execute_job(cfg, job, cfg_path=None):
     finally:
         lease_stop.set()
         lease_thread.join(timeout=5)
+
+    if restart_after_success:
+        raise SystemExit(0)
 
 
 def loop(cfg, cfg_path):
