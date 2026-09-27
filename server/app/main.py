@@ -1238,7 +1238,7 @@ def job_result(agent_id: str, job_id: str, body: JobResultRequest, x_agent_token
 
 
 @app.get("/api/admin/summary")
-def admin_summary(_=Depends(require_admin), db: Session = Depends(get_db)):
+def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
     sweep_expired_job_leases(db)
     agents = db.query(Agent).all()
     total = len(agents)
@@ -1274,23 +1274,23 @@ def admin_summary(_=Depends(require_admin), db: Session = Depends(get_db)):
 
 
 @app.get("/api/admin/agents")
-def list_agents(_=Depends(require_admin), db: Session = Depends(get_db)):
+def list_agents(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return [serialize_agent(a) for a in db.query(Agent).order_by(Agent.hostname.asc()).all()]
 
 
 @app.put("/api/admin/agents/{agent_id}/tags")
-def update_tags(agent_id: str, body: TagUpdate, _=Depends(require_admin), db: Session = Depends(get_db)):
+def update_tags(agent_id: str, body: TagUpdate, principal=Depends(require_operator), db: Session = Depends(get_db)):
     agent = db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="agent not found")
     agent.tags = dump(sorted(set(body.tags)))
     db.commit()
-    audit(db, "admin", "agent.tags.updated", "agent", agent_id, {"tags": body.tags})
+    audit(db, principal["actor"], "agent.tags.updated", "agent", agent_id, {"tags": body.tags})
     return serialize_agent(agent)
 
 
 @app.get("/api/admin/integrations/greenbone")
-def greenbone_status(_=Depends(require_admin), db: Session = Depends(get_db)):
+def greenbone_status(_=Depends(require_viewer), db: Session = Depends(get_db)):
     config = public_greenbone_config()
     state = integration_state(db, "greenbone")
     state.enabled = config["enabled"]
@@ -1299,12 +1299,14 @@ def greenbone_status(_=Depends(require_admin), db: Session = Depends(get_db)):
 
 
 @app.post("/api/admin/integrations/greenbone/sync")
-def greenbone_sync_now(_=Depends(require_admin)):
+def greenbone_sync_now(principal=Depends(require_operator), db: Session = Depends(get_db)):
     config = public_greenbone_config()
     if not config["configured"]:
         raise HTTPException(status_code=409, detail="Greenbone integration is not fully configured")
     try:
-        return {"ok": True, "result": run_greenbone_sync()}
+        result = run_greenbone_sync()
+        audit(db, principal["actor"], "greenbone.sync.requested", "integration", "greenbone", result)
+        return {"ok": True, "result": result}
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1314,7 +1316,7 @@ def list_vulnerabilities(
     status: str | None = None,
     severity: str | None = None,
     agent_id: str | None = None,
-    _=Depends(require_admin),
+    _=Depends(require_viewer),
     db: Session = Depends(get_db),
 ):
     q = db.query(VulnerabilityFinding).order_by(
@@ -1333,7 +1335,7 @@ def list_vulnerabilities(
 @app.post("/api/admin/vulnerabilities/import")
 def import_vulnerabilities(
     body: VulnerabilityImportRequest,
-    _=Depends(require_admin),
+    principal=Depends(require_operator),
     db: Session = Depends(get_db),
 ):
     source = body.source.strip().lower()
@@ -1343,7 +1345,7 @@ def import_vulnerabilities(
     stats = upsert_vulnerability_findings(db, source, body.scan_id, body.findings)
     audit(
         db,
-        "admin",
+        principal["actor"],
         "vulnerabilities.imported",
         "vulnerability_source",
         source,
@@ -1372,7 +1374,7 @@ def import_vulnerabilities(
 def update_vulnerability_status(
     finding_id: str,
     body: VulnerabilityStatusUpdate,
-    _=Depends(require_admin),
+    principal=Depends(require_operator),
     db: Session = Depends(get_db),
 ):
     allowed = {"open", "not_detected", "remediated", "accepted_risk", "false_positive"}
@@ -1389,7 +1391,7 @@ def update_vulnerability_status(
     db.commit()
     audit(
         db,
-        "admin",
+        principal["actor"],
         "vulnerability.status.updated",
         "vulnerability",
         finding.id,
@@ -1400,13 +1402,13 @@ def update_vulnerability_status(
 
 
 @app.get("/api/admin/campaigns")
-def list_campaigns(_=Depends(require_admin), db: Session = Depends(get_db)):
+def list_campaigns(_=Depends(require_viewer), db: Session = Depends(get_db)):
     campaigns = db.query(Campaign).order_by(Campaign.created_at.desc()).all()
     return [serialize_campaign(c) for c in campaigns]
 
 
 @app.post("/api/admin/campaigns")
-def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session = Depends(get_db)):
+def create_campaign(body: CampaignCreate, principal=Depends(require_operator), db: Session = Depends(get_db)):
     if body.action not in {"scan_updates", "install_updates"}:
         raise HTTPException(status_code=400, detail="unsupported action")
 
@@ -1468,7 +1470,7 @@ def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session 
     db.commit()
     audit(
         db,
-        "admin",
+        principal["actor"],
         "campaign.created",
         "campaign",
         campaign.id,
@@ -1535,7 +1537,7 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
 
 
 @app.post("/api/admin/campaigns/{campaign_id}/deploy")
-def deploy_campaign(campaign_id: str, _=Depends(require_admin), db: Session = Depends(get_db)):
+def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: Session = Depends(get_db)):
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="campaign not found")
@@ -1551,7 +1553,7 @@ def deploy_campaign(campaign_id: str, _=Depends(require_admin), db: Session = De
     db.commit()
     audit(
         db,
-        "admin",
+        principal["actor"],
         "campaign.deployed",
         "campaign",
         campaign.id,
@@ -1569,7 +1571,7 @@ def deploy_campaign(campaign_id: str, _=Depends(require_admin), db: Session = De
 def advance_campaign(
     campaign_id: str,
     body: RingAdvance,
-    _=Depends(require_admin),
+    principal=Depends(require_operator),
     db: Session = Depends(get_db),
 ):
     campaign = db.get(Campaign, campaign_id)
@@ -1598,7 +1600,7 @@ def advance_campaign(
 
     audit(
         db,
-        "admin",
+        principal["actor"],
         "campaign.advanced",
         "campaign",
         campaign.id,
@@ -1626,7 +1628,7 @@ def advance_campaign(
 def retry_stalled_job(
     job_id: str,
     body: JobRetryRequest,
-    _=Depends(require_admin),
+    principal=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     if not body.acknowledge_risk:
@@ -1659,7 +1661,7 @@ def retry_stalled_job(
 
     audit(
         db,
-        "admin",
+        principal["actor"],
         "job.retry.approved",
         "job",
         job.id,
@@ -1672,7 +1674,7 @@ def retry_stalled_job(
 def approve_rollback(
     job_id: str,
     body: RollbackRequest,
-    _=Depends(require_admin),
+    principal=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     if not body.acknowledge_risk:
@@ -1719,7 +1721,7 @@ def approve_rollback(
     db.commit()
     audit(
         db,
-        "admin",
+        principal["actor"],
         "rollback.approved",
         "job",
         rollback_job.id,
@@ -1736,7 +1738,7 @@ def approve_rollback(
 
 
 @app.get("/api/admin/jobs")
-def list_jobs(campaign_id: str | None = None, _=Depends(require_admin), db: Session = Depends(get_db)):
+def list_jobs(campaign_id: str | None = None, _=Depends(require_viewer), db: Session = Depends(get_db)):
     sweep_expired_job_leases(db)
     q = db.query(PatchJob).order_by(PatchJob.created_at.desc())
     if campaign_id:
@@ -1745,7 +1747,7 @@ def list_jobs(campaign_id: str | None = None, _=Depends(require_admin), db: Sess
 
 
 @app.get("/api/admin/audit")
-def list_audit(_=Depends(require_admin), db: Session = Depends(get_db)):
+def list_audit(_=Depends(require_viewer), db: Session = Depends(get_db)):
     items = db.query(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(500).all()
     return [{
         "id": e.id,
