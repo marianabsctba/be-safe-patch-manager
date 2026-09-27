@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.7. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.8. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -32,7 +32,12 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - resultados terminais idempotentes;
 - jobs em execução com lease expirado viram `stalled` e nunca são reentregues automaticamente;
 - retry de job `stalled` exige revisão e confirmação administrativa;
-- autenticação separada para administrador, enrollment e agentes;
+- autenticação humana por usuário e senha com hash Argon2;
+- RBAC nativo com perfis `viewer`, `operator` e `admin`;
+- sessões opacas server-side com token armazenado apenas em hash no banco;
+- sessão do console mantida somente em memória no navegador;
+- bootstrap do primeiro administrador e break-glass opcional;
+- autenticação separada para usuários, enrollment e agentes;
 - token individual por endpoint;
 - nenhuma ação de shell remoto arbitrário.
 
@@ -57,6 +62,8 @@ A tela de execuções consolida status do job, validação pós-patch e estado d
 A implementação atual é centralizada em FastAPI. O Docker Compose usa PostgreSQL por padrão e o schema é versionado com Alembic. SQLite continua disponível para desenvolvimento e testes. Os agentes Windows e Linux fazem polling de jobs, enviam heartbeat, inventário, patch scan e evidências de execução.
 
 A v0.6 possui ingestão normalizada, correlação com endpoints e sync opcional automático ou manual via GMP. A plataforma continua sem declarar remediação automaticamente: o status remediado deve representar evidência explícita do scanner/processo.
+
+A v0.8 adiciona autenticação humana e RBAC no próprio Patch Manager. Leituras administrativas exigem pelo menos `viewer`; operação de campanhas, tags, vulnerabilidades e sync exige `operator`; gestão de usuários, retry de jobs `stalled` e rollback exigem `admin`.
 
 ## Fluxo seguro de implantação
 
@@ -169,7 +176,7 @@ O job de rollback usa somente o restore point registrado e agenda o reboot neces
 
 ### Linux
 
-O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.7, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
+O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.8, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
 
 A campanha pode usar dois modos:
 
@@ -191,15 +198,21 @@ Gere os segredos antes de subir o ambiente:
 ```bash
 python3 - <<'PY'
 import secrets
-print("ADMIN_TOKEN=" + secrets.token_urlsafe(48))
+print("BOOTSTRAP_ADMIN_PASSWORD=" + secrets.token_urlsafe(32))
 print("ENROLLMENT_TOKEN=" + secrets.token_urlsafe(48))
 print("POSTGRES_PASSWORD=" + secrets.token_urlsafe(48))
 PY
 ```
 
-Copie os valores para `.env`. O Compose sobe PostgreSQL, aguarda o healthcheck do banco e executa `alembic upgrade head` antes de iniciar a API.
+Defina também `BOOTSTRAP_ADMIN_USERNAME` no `.env`. No primeiro startup, se ainda não existir nenhum usuário, o servidor cria esse administrador e grava somente o hash Argon2 da senha.
 
-> A v0.7 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
+Depois do primeiro login confirmado, os valores `BOOTSTRAP_ADMIN_USERNAME` e `BOOTSTRAP_ADMIN_PASSWORD` podem ser removidos do `.env`; eles não são necessários quando já existe usuário no banco.
+
+`BREAK_GLASS_ADMIN_TOKEN` é opcional e deve permanecer vazio em operação normal. Se for usado para contingência, precisa ser um valor aleatório forte e separado do `ENROLLMENT_TOKEN`.
+
+O Compose sobe PostgreSQL, aguarda o healthcheck do banco e executa `alembic upgrade head` antes de iniciar a API.
+
+> A v0.8 não migra automaticamente dados de um banco SQLite criado por versões anteriores. Para uma implantação nova, comece diretamente no PostgreSQL.
 
 Suba o serviço:
 
@@ -274,12 +287,32 @@ Cada entrega de job recebe um token efêmero de claim e um lease.
 
 Os tempos padrão são configuráveis por `JOB_CLAIM_LEASE_SECONDS` e `JOB_RUNNING_LEASE_SECONDS`.
 
+## Autenticação e RBAC
+
+O console usa login por usuário e senha. As senhas são armazenadas com Argon2 e cada login gera uma sessão opaca com expiração configurável por `AUTH_SESSION_TTL_SECONDS`.
+
+A sessão é mantida somente em memória no navegador. Um refresh da página exige novo login por design.
+
+Perfis:
+
+- `viewer`: leitura de dashboard, endpoints, vulnerabilidades, campanhas, execuções e auditoria;
+- `operator`: inclui criação/implantação/avanço de campanhas, tags, tratamento de vulnerabilidades e sync Greenbone;
+- `admin`: inclui gestão de usuários, retry de job `stalled` e aprovação de rollback.
+
+A auditoria registra ações humanas com `user:<username>`.
+
 ## Segurança já implementada
 
-- `ADMIN_TOKEN` e `ENROLLMENT_TOKEN` obrigatórios, fortes e distintos;
+- autenticação humana por usuário/senha com Argon2;
+- RBAC `viewer` / `operator` / `admin`;
+- sessão opaca com token armazenado somente em SHA-256 no banco;
+- sessão do console somente em memória no navegador, sem `localStorage` ou `sessionStorage`;
+- bootstrap seguro do primeiro administrador;
+- break-glass opcional e desabilitado quando não configurado;
+- proteção contra auto-rebaixamento e remoção do último admin ativo;
+- `ENROLLMENT_TOKEN` forte e separado da autenticação humana;
 - credencial individual por agente;
 - enrollment token descartado após registro;
-- token administrativo somente em memória no navegador;
 - ações do agente em allowlist;
 - validação de nomes de pacotes e KBs;
 - arquivo de configuração Linux com modo `0600`;
@@ -303,8 +336,8 @@ Os tempos padrão são configuráveis por `JOB_CLAIM_LEASE_SECONDS` e `JOB_RUNNI
 Para produção, ainda são recomendados:
 
 - TLS obrigatório;
-- SSO/RBAC;
-- rotação e revogação de credenciais;
+- SSO/federação de identidade opcional;
+- política de rotação de senhas e credenciais de agentes;
 - mTLS para agentes;
 - backup e HA;
 - rate limiting;

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.0
+
+- removida a dependência do token administrativo compartilhado para operação normal;
+- adicionados usuários humanos persistidos no PostgreSQL;
+- senhas protegidas com Argon2;
+- adicionadas sessões opacas server-side com expiração configurável;
+- token bruto de sessão nunca é persistido no banco;
+- dashboard mantém a sessão somente em memória do navegador;
+- adicionado login/logout e troca de senha no console;
+- adicionado RBAC nativo com `viewer`, `operator` e `admin`;
+- leituras administrativas exigem `viewer`;
+- campanhas, tags, vulnerabilidades e sync Greenbone exigem `operator`;
+- rollback, retry de `stalled` e gestão de usuários exigem `admin`;
+- adicionada tela administrativa de usuários;
+- ações humanas passam a registrar `user:<username>` na auditoria;
+- adicionado bootstrap seguro do primeiro administrador;
+- adicionado break-glass opcional, desabilitado quando não configurado;
+- impedido auto-rebaixamento do administrador atual;
+- impedida remoção ou desativação do último administrador ativo;
+- adicionada migration `0003_rbac_sessions`;
+- adicionados testes de login, sessão, logout e matriz RBAC.
+
 ## 0.7.0
 
 - PostgreSQL passa a ser o banco padrão no Docker Compose;
