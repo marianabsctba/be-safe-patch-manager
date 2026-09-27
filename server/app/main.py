@@ -1642,6 +1642,78 @@ def _audit_pending(db: Session, actor: str, event_type: str, object_type: str, o
 
 
 
+def _approval_expiry(payload: dict):
+    text = str(payload.get("approval_expires_at") or "")
+    if not text:
+        return None
+    try:
+        value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def agent_update_authorization_check(job: PatchJob, agent: Agent, instant=None) -> tuple[bool, str]:
+    if job.action != "activate_agent_update":
+        return True, "not_agent_activation"
+
+    payload = load(job.payload_json, {})
+    current = instant or now()
+    expiry = _approval_expiry(payload)
+    if not expiry:
+        return False, "approval_expiry_missing"
+    if current >= expiry:
+        return False, "approval_expired"
+
+    binding = payload.get("release_binding")
+    if not isinstance(binding, dict):
+        return False, "release_binding_missing"
+
+    expected_version = str(payload.get("expected_version") or "")
+    if str(binding.get("version") or "") != expected_version:
+        return False, "release_binding_version_mismatch"
+
+    matches, reason = staged_release_binding_matches(agent, binding)
+    if not matches:
+        return False, reason
+
+    try:
+        current_binding = signed_release_binding(expected_version)
+    except HTTPException:
+        return False, "published_release_unavailable"
+
+    for key in ("version", "artifact_sha256", "source_commit", "signing_key_id"):
+        if str(current_binding.get(key) or "").lower() != str(binding.get(key) or "").lower():
+            return False, "published_release_changed"
+
+    return True, "authorized"
+
+
+def invalidate_agent_update_authorization(db: Session, job: PatchJob, reason: str):
+    job.status = "skipped"
+    job.error = f"agent update authorization invalidated: {reason}"
+    job.finished_at = now()
+    job.claimed_at = None
+    job.claim_token_hash = ""
+    job.lease_expires_at = None
+    job.last_lease_at = None
+    _audit_pending(
+        db,
+        "system",
+        "agent.update.authorization.invalidated",
+        "job",
+        job.id,
+        {
+            "agent_id": job.agent_id,
+            "reason": reason,
+            "expected_version": load(job.payload_json, {}).get("expected_version", ""),
+        },
+    )
+    db.commit()
+
+
 def compatibility_block_reason(result: dict) -> str:
     status = str(result.get("status") or "unknown")
     missing = result.get("missing_capabilities") or []
@@ -2269,6 +2341,11 @@ def poll_jobs(
 
     blocked_any = False
     for job in jobs:
+        authorized, authorization_reason = agent_update_authorization_check(job, agent, t)
+        if not authorized:
+            invalidate_agent_update_authorization(db, job, authorization_reason)
+            continue
+
         if block_incompatible_job(db, job, agent):
             blocked_any = True
             continue
@@ -2647,7 +2724,20 @@ def approve_agent_update_activation(
     if str(agent.os_family or "").lower() != "linux":
         raise HTTPException(
             status_code=409,
-            detail="automatic agent activation is supported only on Linux in v0.15",
+            detail="automatic agent activation is supported only on Linux",
+        )
+    if not agent_heartbeat_fresh(agent):
+        raise HTTPException(
+            status_code=409,
+            detail="agent heartbeat is too old for update activation approval",
+        )
+
+    release_binding = signed_release_binding(body.expected_version)
+    binding_ok, binding_reason = staged_release_binding_matches(agent, release_binding)
+    if not binding_ok:
+        raise HTTPException(
+            status_code=409,
+            detail=f"staged release does not match published signed release: {binding_reason}",
         )
 
     inventory = load(agent.inventory_json, {})
@@ -2690,11 +2780,16 @@ def approve_agent_update_activation(
             detail="agent already has an unfinished update activation job",
         )
 
+    approved_at = now()
+    approval_expires_at = approved_at + timedelta(seconds=AGENT_UPDATE_APPROVAL_TTL_SECONDS)
     payload = {
         "expected_version": body.expected_version,
         "approved_reason": body.reason,
         "approved_by": principal["actor"],
         "activation_platform": "linux",
+        "approved_at": approved_at.isoformat(),
+        "approval_expires_at": approval_expires_at.isoformat(),
+        "release_binding": release_binding,
     }
 
     campaign = Campaign(
@@ -2732,6 +2827,8 @@ def approve_agent_update_activation(
             "from_version": runtime.get("version", ""),
             "to_version": body.expected_version,
             "reason": body.reason,
+            "approval_expires_at": approval_expires_at.isoformat(),
+            "release_binding": release_binding,
         },
     )
 
@@ -2993,9 +3090,12 @@ def agent_update_rollout_eligibility(
     agent: Agent,
     expected_version: str,
     target_tag: str = "",
+    release_binding: dict | None = None,
 ) -> tuple[bool, str]:
     if str(agent.os_family or "").lower() != "linux":
         return False, "not_linux"
+    if not agent_heartbeat_fresh(agent):
+        return False, "stale_heartbeat"
 
     tags = load(agent.tags, [])
     if target_tag and target_tag not in tags:
@@ -3017,6 +3117,10 @@ def agent_update_rollout_eligibility(
         return False, "not_staged"
     if str(update_state.get("staged_version") or "") != expected_version:
         return False, "staged_version_mismatch"
+    if release_binding:
+        binding_ok, binding_reason = staged_release_binding_matches(agent, release_binding)
+        if not binding_ok:
+            return False, binding_reason
     if activation_state.get("status") in {"switching", "pending", "rolled_back"}:
         return False, "activation_not_eligible"
 
@@ -3044,6 +3148,7 @@ def create_agent_update_rollout(
     if body.ring_percent not in {10, 30, 100}:
         raise HTTPException(status_code=400, detail="agent update ring must be 10, 30 or 100")
 
+    release_binding = signed_release_binding(body.expected_version)
     eligible = []
     skipped = {}
     for agent in db.query(Agent).order_by(Agent.id.asc()).all():
@@ -3052,6 +3157,7 @@ def create_agent_update_rollout(
             agent,
             body.expected_version,
             body.target_tag.strip(),
+            release_binding,
         )
         if ok:
             eligible.append(agent)
@@ -3065,11 +3171,16 @@ def create_agent_update_rollout(
         )
 
     snapshot_ids = sorted(agent.id for agent in eligible)
+    approved_at = now()
+    approval_expires_at = approved_at + timedelta(seconds=AGENT_UPDATE_APPROVAL_TTL_SECONDS)
     payload = {
         "rollout_type": "agent_update",
         "expected_version": body.expected_version,
         "approved_reason": body.reason,
         "approved_by": principal["actor"],
+        "approved_at": approved_at.isoformat(),
+        "approval_expires_at": approval_expires_at.isoformat(),
+        "release_binding": release_binding,
         "target_agent_ids": snapshot_ids,
         "post_patch_validation": True,
         "health_gate_override_allowed": False,
@@ -3115,6 +3226,8 @@ def create_agent_update_rollout(
             "target_tag": body.target_tag.strip(),
             "skipped": skipped,
             "reason": body.reason,
+            "approval_expires_at": approval_expires_at.isoformat(),
+            "release_binding": release_binding,
         },
     )
 
@@ -3339,6 +3452,16 @@ def advance_campaign(
     if campaign.action == "activate_agent_update":
         payload = load(campaign.payload_json, {})
         expected_version = str(payload.get("expected_version") or "")
+        release_binding = signed_release_binding(expected_version)
+        original_binding = payload.get("release_binding") if isinstance(payload.get("release_binding"), dict) else {}
+        if any(
+            str(original_binding.get(key) or "").lower() != str(release_binding.get(key) or "").lower()
+            for key in ("version", "artifact_sha256", "source_commit", "signing_key_id")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="published signed release changed since rollout creation",
+            )
         unavailable = []
         for agent in new_agents:
             ok, reason = agent_update_rollout_eligibility(
@@ -3346,6 +3469,7 @@ def advance_campaign(
                 agent,
                 expected_version,
                 campaign.target_tag,
+                release_binding,
             )
             if not ok:
                 unavailable.append({
@@ -3363,6 +3487,14 @@ def advance_campaign(
             )
 
     previous_ring = campaign.ring_percent
+    if campaign.action == "activate_agent_update":
+        payload = load(campaign.payload_json, {})
+        approved_at = now()
+        payload["approved_at"] = approved_at.isoformat()
+        payload["approval_expires_at"] = (
+            approved_at + timedelta(seconds=AGENT_UPDATE_APPROVAL_TTL_SECONDS)
+        ).isoformat()
+        campaign.payload_json = dump(payload)
     add_ring_jobs(db, campaign, new_agents, body.target_percent)
     campaign.ring_percent = body.target_percent
     db.commit()
