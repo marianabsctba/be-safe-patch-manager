@@ -26,10 +26,20 @@ class HeartbeatRequest(BaseModel):
 
 class JobResultRequest(BaseModel):
     status: str
+    claim_token: str = ""
     result: Dict[str, Any] = Field(default_factory=dict)
     error: str = ""
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+
+
+class LeaseRenewRequest(BaseModel):
+    claim_token: str = Field(min_length=16, max_length=256)
+
+
+class JobRetryRequest(BaseModel):
+    reason: str = Field(min_length=5, max_length=500)
+    acknowledge_risk: bool = False
 
 
 class CampaignCreate(BaseModel):
