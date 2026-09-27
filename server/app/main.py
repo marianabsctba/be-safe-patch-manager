@@ -30,7 +30,7 @@ from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 from .agent_updates import AgentReleaseError, load_signed_release
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.16.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.17.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -56,6 +56,16 @@ JOB_CLAIM_LEASE_SECONDS = _seconds_setting("JOB_CLAIM_LEASE_SECONDS", 300, 60)
 JOB_RUNNING_LEASE_SECONDS = _seconds_setting("JOB_RUNNING_LEASE_SECONDS", 7200, 300)
 AGENT_ACTIVATION_CONFIRM_TIMEOUT_SECONDS = _seconds_setting(
     "AGENT_ACTIVATION_CONFIRM_TIMEOUT_SECONDS",
+    900,
+    60,
+)
+AGENT_UPDATE_APPROVAL_TTL_SECONDS = _seconds_setting(
+    "AGENT_UPDATE_APPROVAL_TTL_SECONDS",
+    1800,
+    300,
+)
+AGENT_UPDATE_MAX_HEARTBEAT_AGE_SECONDS = _seconds_setting(
+    "AGENT_UPDATE_MAX_HEARTBEAT_AGE_SECONDS",
     900,
     60,
 )
@@ -213,6 +223,17 @@ def version_at_least(current: str, minimum: str) -> bool:
     if current_tuple is None or minimum_tuple is None:
         return False
     return current_tuple >= minimum_tuple
+
+
+def agent_heartbeat_fresh(agent: Agent, max_age_seconds: int | None = None) -> bool:
+    if not agent.last_seen:
+        return False
+    seen = agent.last_seen
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    age = (now() - seen).total_seconds()
+    limit = max_age_seconds or AGENT_UPDATE_MAX_HEARTBEAT_AGE_SECONDS
+    return 0 <= age <= limit
 
 
 def agent_runtime_metadata(agent: Agent) -> dict:
@@ -1966,7 +1987,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.16.0", "time": now().isoformat()}
+    return {"status": "ok", "version": "0.17.0", "time": now().isoformat()}
 
 
 @app.get("/ready")
@@ -2032,6 +2053,50 @@ def signed_agent_release():
         AGENT_RELEASE_DIR,
         AGENT_UPDATE_PUBLIC_KEY_FILE,
     )
+
+
+def signed_release_binding(expected_version: str) -> dict:
+    try:
+        release = signed_agent_release()
+    except AgentReleaseError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"signed agent release is unavailable: {str(exc)[:300]}",
+        ) from exc
+
+    manifest = release["manifest"]
+    if manifest["version"] != expected_version:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "approved version does not match the currently published signed release "
+                f"(published={manifest['version']})"
+            ),
+        )
+
+    return {
+        "version": manifest["version"],
+        "artifact_sha256": manifest["artifact"]["sha256"],
+        "source_commit": manifest["source_commit"],
+        "signing_key_id": manifest["signing_key_id"],
+    }
+
+
+def staged_release_binding_matches(agent: Agent, binding: dict) -> tuple[bool, str]:
+    inventory = load(agent.inventory_json, {})
+    update_state = inventory.get("update") if isinstance(inventory.get("update"), dict) else {}
+
+    if update_state.get("status") != "staged":
+        return False, "not_staged"
+    if str(update_state.get("staged_version") or "") != str(binding.get("version") or ""):
+        return False, "staged_version_mismatch"
+    if str(update_state.get("artifact_sha256") or "").lower() != str(binding.get("artifact_sha256") or "").lower():
+        return False, "artifact_sha256_mismatch"
+    if str(update_state.get("source_commit") or "").lower() != str(binding.get("source_commit") or "").lower():
+        return False, "source_commit_mismatch"
+    if str(update_state.get("signing_key_id") or "").lower() != str(binding.get("signing_key_id") or "").lower():
+        return False, "signing_key_id_mismatch"
+    return True, "binding_match"
 
 
 @app.get("/api/agent/{agent_id}/updates/latest")
