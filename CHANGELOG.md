@@ -15,6 +15,10 @@
 - adicionada priorização contextual com score 0–100 e razões explicáveis;
 - score combina CVSS, EPSS/KEV quando presentes, idade do finding e tags de criticidade/exposição do endpoint;
 - dashboard mostra risco contextual e total de findings urgentes;
+- adicionada integração opcional de threat intel com FIRST EPSS e CISA KEV;
+- sync enriquece findings abertos sem sobrescrever evidência original do scanner;
+- falha de uma fonte mantém a outra ativa e sinaliza estado degradado;
+- worker opcional executa sync periódico e o operador pode solicitar sync manual;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
 
