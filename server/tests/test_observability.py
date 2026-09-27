@@ -151,7 +151,13 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
     assert 'patch_manager_agents{os_family="linux"} 1.0' in body
     assert 'patch_manager_jobs{status="stalled"} 1.0' in body
     assert 'patch_manager_campaigns{status="deployed"} 1.0' in body
-    assert 'patch_manager_vulnerabilities{status="open",severity="high"} 1.0' in body
+    vuln_line = next(
+        line for line in body.splitlines()
+        if line.startswith("patch_manager_vulnerabilities{")
+    )
+    assert 'status="open"' in vuln_line
+    assert 'severity="high"' in vuln_line
+    assert vuln_line.endswith(" 1.0")
     assert "patch_manager_backup_status 1.0" in body
     assert "patch_manager_backup_size_bytes 123456.0" in body
     assert "patch_manager_greenbone_sync_ok 1.0" in body
