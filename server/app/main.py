@@ -2599,6 +2599,21 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             1 for a in agents
             if (load(a.inventory_json, {}).get("update") or {}).get("status") == "quarantined"
         ),
+        "agent_update_approvals_pending": db.query(PatchJob).filter(
+            PatchJob.action == "activate_agent_update",
+            PatchJob.status == "pending",
+        ).count(),
+        "agent_update_approvals_expired": sum(
+            1
+            for job in db.query(PatchJob).filter(
+                PatchJob.action == "activate_agent_update",
+                PatchJob.status == "pending",
+            ).all()
+            if (
+                _approval_expiry(load(job.payload_json, {})) is None
+                or _approval_expiry(load(job.payload_json, {})) <= now()
+            )
+        ),
     }
 
 

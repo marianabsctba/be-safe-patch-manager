@@ -14,7 +14,7 @@ from .database import SessionLocal
 from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
 
 
-APP_VERSION = "0.16.0"
+APP_VERSION = "0.17.0"
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -320,6 +320,73 @@ class PatchManagerCollector:
                 ("patch_manager_health_services_unhealthy", "Critical service checks currently unhealthy.", unhealthy_services),
                 ("patch_manager_health_applications_unhealthy", "Application health checks currently unhealthy.", unhealthy_applications),
                 ("patch_manager_health_collection_errors", "Current health telemetry collection errors reported by agents.", health_collection_errors),
+            ]:
+                metric = GaugeMetricFamily(name, description)
+                metric.add_metric([], value)
+                yield metric
+
+            approval_pending = 0
+            approval_expiring = 0
+            approval_expired = 0
+            approval_invalidated = 0
+            current_time = utcnow()
+
+            activation_jobs = db.query(PatchJob).filter(
+                PatchJob.action == "activate_agent_update"
+            ).all()
+            for job in activation_jobs:
+                if job.status == "skipped" and str(job.error or "").startswith(
+                    "agent update authorization invalidated:"
+                ):
+                    approval_invalidated += 1
+                    continue
+                if job.status != "pending":
+                    continue
+
+                approval_pending += 1
+                try:
+                    payload = json.loads(job.payload_json or "{}")
+                except Exception:
+                    payload = {}
+                expiry_text = str(payload.get("approval_expires_at") or "")
+                if not expiry_text:
+                    approval_expired += 1
+                    continue
+                try:
+                    expiry = datetime.fromisoformat(expiry_text.replace("Z", "+00:00"))
+                    if expiry.tzinfo is None:
+                        expiry = expiry.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    approval_expired += 1
+                    continue
+
+                seconds_left = (expiry - current_time).total_seconds()
+                if seconds_left <= 0:
+                    approval_expired += 1
+                elif seconds_left <= 300:
+                    approval_expiring += 1
+
+            for name, description, value in [
+                (
+                    "patch_manager_agent_update_approvals_pending",
+                    "Pending agent-update activation approvals.",
+                    approval_pending,
+                ),
+                (
+                    "patch_manager_agent_update_approvals_expiring",
+                    "Pending agent-update approvals expiring within five minutes.",
+                    approval_expiring,
+                ),
+                (
+                    "patch_manager_agent_update_approvals_expired",
+                    "Pending agent-update approvals that are already expired.",
+                    approval_expired,
+                ),
+                (
+                    "patch_manager_agent_update_authorizations_invalidated",
+                    "Agent-update activation jobs invalidated before claim.",
+                    approval_invalidated,
+                ),
             ]:
                 metric = GaugeMetricFamily(name, description)
                 metric.add_metric([], value)

@@ -170,3 +170,22 @@ groups:
         annotations:
           summary: Release do agente em quarentena
           description: Pelo menos um endpoint bloqueou uma release após rollback do watchdog.
+
+
+      - alert: PatchManagerAgentUpdateApprovalExpired
+        expr: patch_manager_agent_update_approvals_expired > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Aprovação de update do agente expirou
+          description: Existe job de ativação pendente cuja autorização curta já expirou e não poderá mais receber claim.
+
+      - alert: PatchManagerAgentUpdateApprovalExpiring
+        expr: patch_manager_agent_update_approvals_expiring > 0
+        for: 2m
+        labels:
+          severity: info
+        annotations:
+          summary: Aprovação de update do agente perto de expirar
+          description: Existe ativação pendente com menos de cinco minutos restantes na janela de autorização.
