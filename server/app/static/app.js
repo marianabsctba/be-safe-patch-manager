@@ -303,6 +303,8 @@ function renderSummary(summary) {
     { label: 'Update staged', value: summary.agent_update_staged || 0, hint: 'assinado e aguardando ativação', cls: summary.agent_update_staged ? 'accent' : 'ok' },
     { label: 'Erro update agente', value: summary.agent_update_errors || 0, hint: summary.agent_update_distribution_enabled ? 'distribuição habilitada' : 'distribuição desligada', cls: summary.agent_update_errors ? 'danger' : 'ok' },
     { label: 'Release assinada', value: release.ready ? 'v' + release.version : '-', hint: release.enabled ? (release.ready ? 'commit ' + String(release.source_commit || '').slice(0, 8) + ' · chave ' + String(release.signing_key_id || '').slice(0, 8) : 'release indisponível') : 'distribuição desligada', cls: release.ready ? 'ok' : release.enabled ? 'danger' : 'neutral' },
+    { label: 'Aprovações update', value: summary.agent_update_approvals_pending || 0, hint: 'ativação com TTL curto', cls: summary.agent_update_approvals_pending ? 'warn' : 'ok' },
+    { label: 'Aprovações expiradas', value: summary.agent_update_approvals_expired || 0, hint: 'não podem mais receber claim', cls: summary.agent_update_approvals_expired ? 'danger' : 'ok' },
     { label: 'Ativação pendente', value: summary.agent_activation_pending || 0, hint: 'aguardando restart/heartbeat', cls: summary.agent_activation_pending ? 'warn' : 'ok' },
     { label: 'Rollback do agente', value: summary.agent_activation_rollbacks || 0, hint: 'watchdog voltou à versão anterior', cls: summary.agent_activation_rollbacks ? 'danger' : 'ok' },
     { label: 'Release em quarentena', value: summary.agent_update_quarantined || 0, hint: 'exige liberação administrativa', cls: summary.agent_update_quarantined ? 'danger' : 'ok' },
