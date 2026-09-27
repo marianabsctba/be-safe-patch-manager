@@ -314,3 +314,139 @@ def test_admin_clear_path_revalidates_quarantine_and_returns_to_staged(tmp_path)
     activation_state = patch_agent.read_activation_state(cfg)
     assert activation_state["status"] == "quarantine_cleared"
     assert activation_state["quarantine_clear_job_id"] == "clear-job"
+
+
+
+def _add_managed_release(base, version, marker="old"):
+    release = base / "releases" / version
+    release.mkdir(parents=True, exist_ok=True)
+    release.joinpath("patch_agent.py").write_text(
+        f"# {marker} {version}\n",
+        encoding="utf-8",
+    )
+    release.joinpath("requirements.txt").write_text(
+        "requests==2.32.3\n",
+        encoding="utf-8",
+    )
+    return release
+
+
+def test_release_gc_keeps_current_previous_and_retention(tmp_path):
+    base, current = managed_layout(tmp_path)
+    _add_managed_release(base, "0.13.0")
+    release_014 = _add_managed_release(base, "0.14.0")
+    previous = _add_managed_release(base, "0.15.0")
+
+    staging = tmp_path / "updates"
+    staging.mkdir()
+    public = tmp_path / "unused.pem"
+    cfg = config(tmp_path, base, staging, public)
+    cfg["agent_release_retention"] = 3
+
+    patch_agent.write_activation_state(cfg, {
+        "status": "committed",
+        "previous_version": "0.15.0",
+        "target_version": "0.16.0",
+        "confirmed_version": "0.16.0",
+    })
+
+    result = patch_agent.cleanup_managed_agent_releases(cfg)
+
+    assert result["status"] == "ok"
+    assert result["retention"] == 3
+    assert set(result["kept"]) == {"0.14.0", "0.15.0", "0.16.0"}
+    assert result["removed"] == ["0.13.0"]
+    assert current.is_dir()
+    assert previous.is_dir()
+    assert release_014.is_dir()
+    assert not (base / "releases" / "0.13.0").exists()
+
+
+def test_release_gc_never_follows_release_symlink(tmp_path):
+    base, _ = managed_layout(tmp_path)
+    previous = _add_managed_release(base, "0.15.0")
+    external = tmp_path / "external-release"
+    external.mkdir()
+    marker = external / "must-survive.txt"
+    marker.write_text("do not delete", encoding="utf-8")
+    os.symlink(external, base / "releases" / "0.14.0")
+
+    staging = tmp_path / "updates"
+    staging.mkdir()
+    cfg = config(tmp_path, base, staging, tmp_path / "unused.pem")
+    cfg["agent_release_retention"] = 2
+    patch_agent.write_activation_state(cfg, {
+        "status": "committed",
+        "previous_version": "0.15.0",
+        "target_version": "0.16.0",
+        "confirmed_version": "0.16.0",
+    })
+
+    result = patch_agent.cleanup_managed_agent_releases(cfg)
+
+    assert result["status"] == "ok"
+    assert previous.is_dir()
+    assert (base / "releases" / "0.14.0").is_symlink()
+    assert marker.read_text(encoding="utf-8") == "do not delete"
+
+
+def test_release_gc_does_nothing_before_activation_commit(tmp_path):
+    base, _ = managed_layout(tmp_path)
+    old = _add_managed_release(base, "0.14.0")
+
+    staging = tmp_path / "updates"
+    staging.mkdir()
+    cfg = config(tmp_path, base, staging, tmp_path / "unused.pem")
+    cfg["agent_release_retention"] = 2
+    patch_agent.write_activation_state(cfg, {
+        "status": "pending",
+        "previous_version": "0.15.0",
+        "target_version": "0.16.0",
+    })
+
+    result = patch_agent.cleanup_managed_agent_releases(cfg)
+
+    assert result["status"] == "skipped"
+    assert old.is_dir()
+
+
+def test_staging_gc_refuses_symlink_and_preserves_external_target(tmp_path):
+    base, _ = managed_layout(tmp_path)
+    staging = tmp_path / "updates"
+    staging.mkdir()
+    external = tmp_path / "external-staging"
+    external.mkdir()
+    marker = external / "artifact.bin"
+    marker.write_bytes(b"keep")
+    os.symlink(external, staging / "0.16.0")
+
+    cfg = config(tmp_path, base, staging, tmp_path / "unused.pem")
+    result = patch_agent.cleanup_activated_staging(cfg, "0.16.0")
+
+    assert result["status"] == "skipped"
+    assert marker.read_bytes() == b"keep"
+    assert (staging / "0.16.0").is_symlink()
+
+
+def test_successful_activation_records_cleanup_and_removes_staging(tmp_path, monkeypatch):
+    base, _ = managed_layout(tmp_path)
+    _add_managed_release(base, "0.14.0")
+    _add_managed_release(base, "0.15.0")
+    staging, public, _, _ = create_signed_stage(tmp_path, version="0.17.0")
+    cfg = config(tmp_path, base, staging, public)
+    cfg["agent_release_retention"] = 2
+    mark_staged(cfg, "0.17.0")
+
+    patch_agent.activate_staged_update(cfg, "0.17.0", "job-cleanup")
+    monkeypatch.setattr(patch_agent, "AGENT_VERSION", "0.17.0")
+
+    assert patch_agent.confirm_pending_activation(cfg) is True
+
+    state = patch_agent.read_activation_state(cfg)
+    assert state["status"] == "committed"
+    assert state["cleanup"]["release_gc"]["status"] == "ok"
+    assert state["cleanup"]["staging_gc"]["status"] == "removed"
+    assert not (staging / "0.17.0").exists()
+    assert (base / "releases" / "0.17.0").is_dir()
+    assert (base / "releases" / "0.16.0").is_dir()
+    assert not (base / "releases" / "0.15.0").exists()
