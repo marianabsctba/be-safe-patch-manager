@@ -187,6 +187,35 @@
           </section>
 
           <div id="vulnerabilitySummary" class="cards vuln-summary"></div>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="section-kicker">REMEDIAÇÃO ORIENTADA A RISCO</p>
+                <h2>Fila recomendada</h2>
+              </div>
+            </div>
+            <div id="remediationQueueStats" class="integration-details"></div>
+            <div class="vuln-note">
+              A fila combina risco contextual e SLA. Ela recomenda a próxima ação, mas não implanta patch automaticamente.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Finding</th>
+                    <th>Ação</th>
+                    <th>Prioridade</th>
+                    <th>Risco</th>
+                    <th>SLA</th>
+                    <th>Por quê</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="remediationQueue"></tbody>
+              </table>
+            </div>
+          </section>
+
 
           <section class="panel">
             <div class="panel-head endpoint-head">
