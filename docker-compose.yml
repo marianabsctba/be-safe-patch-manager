@@ -1,10 +1,33 @@
 services:
+  db:
+    image: postgres:17-alpine
+    container_name: patch-manager-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-patchmgr}
+      POSTGRES_USER: ${POSTGRES_USER:-patchmgr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?configure POSTGRES_PASSWORD in .env}
+    volumes:
+      - patch_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-patchmgr} -d ${POSTGRES_DB:-patchmgr}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   patch-manager:
     build: ./server
     container_name: patch-manager
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
-      DATABASE_URL: sqlite:////data/patchmgr.db
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-patchmgr}
+      DB_USER: ${POSTGRES_USER:-patchmgr}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?configure POSTGRES_PASSWORD in .env}
       ADMIN_TOKEN: ${ADMIN_TOKEN:?configure ADMIN_TOKEN in .env}
       ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN:?configure ENROLLMENT_TOKEN in .env}
       GREENBONE_ENABLED: ${GREENBONE_ENABLED:-false}
@@ -26,8 +49,6 @@ services:
       GREENBONE_RECONCILE_ABSENT: ${GREENBONE_RECONCILE_ABSENT:-false}
     ports:
       - "8080:8080"
-    volumes:
-      - patch_data:/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
       interval: 30s
@@ -35,4 +56,4 @@ services:
       retries: 3
 
 volumes:
-  patch_data:
+  patch_db_data:

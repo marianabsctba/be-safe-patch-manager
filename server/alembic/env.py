@@ -1,10 +1,9 @@
-import os
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from app.database import Base
+from app.database import Base, database_url_string
 from app import models  # noqa: F401
 
 
@@ -12,7 +11,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-database_url = os.getenv("DATABASE_URL", "sqlite:///./patchmgr.db")
+database_url = database_url_string()
 config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
