@@ -17,6 +17,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - SLA de vulnerabilidades configurável por severidade, com estados `within_sla`, `due_soon` e `breached`;
 - relatório consolidado de SLA em `GET /api/admin/reports/vulnerability-sla`;
 - exceções temporárias de SLA com aprovação administrativa, motivo, expiração e revogação auditada;
+- priorização contextual de vulnerabilidades com score explicável de 0–100 usando CVSS, EPSS/KEV quando disponíveis, idade e criticidade/exposição por tags do ativo;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
 - rescan Greenbone automático após patch validado;
