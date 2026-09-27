@@ -23,10 +23,33 @@ from app.models import Agent, Campaign, PatchJob
 from app.schemas import AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest
 
 
+def fake_release():
+    return {
+        "manifest": {
+            "schema": 2,
+            "product": "be-safe-patch-agent",
+            "version": "0.17.0",
+            "protocol": 2,
+            "capabilities": ["signed_update_activation_v1"],
+            "generated_at": "2026-09-27T19:00:00+00:00",
+            "source_commit": "c" * 40,
+            "signing_key_id": "d" * 64,
+            "artifact": {
+                "filename": "be-safe-patch-agent-0.17.0.zip",
+                "sha256": "e" * 64,
+                "size_bytes": 1234,
+            },
+        },
+        "signature": b"x" * 64,
+        "artifact_path": Path("/tmp/fake-agent-release.zip"),
+    }
+
+
 @pytest.fixture(autouse=True)
-def clean_database():
+def clean_database(monkeypatch):
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    monkeypatch.setattr(main, "signed_agent_release", fake_release)
     yield
     Base.metadata.drop_all(bind=engine)
 
@@ -60,6 +83,9 @@ def seed_agent(db, *, os_family="linux", staged_version="0.17.0", capability=Tru
             "update": {
                 "status": "staged",
                 "staged_version": staged_version,
+                "artifact_sha256": "e" * 64,
+                "source_commit": "c" * 40,
+                "signing_key_id": "d" * 64,
             },
             "activation": {
                 "status": "idle",
