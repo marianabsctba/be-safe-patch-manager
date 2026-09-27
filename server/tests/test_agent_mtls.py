@@ -22,7 +22,7 @@ os.environ["GREENBONE_ENABLED"] = "false"
 from app.database import Base, SessionLocal, engine
 from app import main
 from app.models import Agent
-from app.schemas import RegisterRequest
+from app.schemas import AgentMtlsBindRequest, RegisterRequest
 
 
 spec = importlib.util.spec_from_file_location(
@@ -162,3 +162,30 @@ def test_agent_tls_options_require_https_and_do_not_allow_verify_false(tmp_path)
             "GET",
             "/health",
         )
+
+
+def test_admin_can_rotate_agent_certificate_binding(db, monkeypatch):
+    monkeypatch.setattr(main, "AGENT_MTLS_REQUIRED", False)
+
+    response = main.register_agent(
+        registration_body("rotate-host"),
+        _=True,
+        x_client_cert_fingerprint=fingerprint("e"),
+        db=db,
+    )
+
+    updated = main.bind_agent_mtls(
+        response.agent_id,
+        AgentMtlsBindRequest(
+            fingerprint=colon_fingerprint("f"),
+            reason="scheduled certificate rotation",
+        ),
+        principal={"actor": "user:test-admin", "role": "admin", "user_id": "test-admin"},
+        db=db,
+    )
+
+    assert updated["mtls"]["bound"] is True
+    assert updated["mtls"]["fingerprint"] == fingerprint("f")
+
+    agent = db.get(Agent, response.agent_id)
+    assert agent.client_cert_fingerprint == fingerprint("f")

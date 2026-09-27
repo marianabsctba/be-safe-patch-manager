@@ -52,6 +52,51 @@ jobs:
           alembic upgrade head
           alembic current
 
+      - name: PostgreSQL backup and restore drill
+        run: |
+          python - <<'PY'
+          import psycopg
+          conn = psycopg.connect(
+              "host=127.0.0.1 port=5432 dbname=patchmgr user=patchmgr password=ci-postgres-password"
+          )
+          with conn:
+              with conn.cursor() as cur:
+                  cur.execute("CREATE TABLE IF NOT EXISTS backup_probe (id integer primary key, value text not null)")
+                  cur.execute("INSERT INTO backup_probe (id, value) VALUES (1, 'ok') ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value")
+          conn.close()
+          PY
+
+          docker run --rm --network host             -e PGPASSWORD=ci-postgres-password             -v "$PWD:/work"             postgres:17-alpine             pg_dump -h 127.0.0.1 -U patchmgr -d patchmgr               --format=custom --no-owner --no-privileges               -f /work/ci-patchmgr.dump
+
+          python - <<'PY'
+          import psycopg
+          conn = psycopg.connect(
+              "host=127.0.0.1 port=5432 dbname=postgres user=patchmgr password=ci-postgres-password",
+              autocommit=True,
+          )
+          with conn.cursor() as cur:
+              cur.execute("DROP DATABASE IF EXISTS patchmgr_restore")
+              cur.execute("CREATE DATABASE patchmgr_restore")
+          conn.close()
+          PY
+
+          docker run --rm --network host             -e PGPASSWORD=ci-postgres-password             -v "$PWD:/work"             postgres:17-alpine             pg_restore -h 127.0.0.1 -U patchmgr -d patchmgr_restore               --no-owner --no-privileges /work/ci-patchmgr.dump
+
+          python - <<'PY'
+          import psycopg
+          conn = psycopg.connect(
+              "host=127.0.0.1 port=5432 dbname=patchmgr_restore user=patchmgr password=ci-postgres-password"
+          )
+          with conn.cursor() as cur:
+              cur.execute("SELECT value FROM backup_probe WHERE id = 1")
+              value = cur.fetchone()[0]
+          conn.close()
+          assert value == "ok", value
+          PY
+
+          rm -f ci-patchmgr.dump
+
+
       - name: Unit tests
         env:
           ENROLLMENT_TOKEN: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
