@@ -14,7 +14,7 @@ from .database import SessionLocal
 from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
 
 
-APP_VERSION = "0.17.0"
+APP_VERSION = "0.18.0"
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -454,6 +454,24 @@ class PatchManagerCollector:
                     "patch_manager_greenbone_last_success_timestamp_seconds",
                     "Unix timestamp of the latest successful Greenbone sync.",
                     last_success.timestamp() if last_success else 0,
+                ),
+            ]:
+                metric = GaugeMetricFamily(name, description)
+                metric.add_metric([], value)
+                yield metric
+
+            threat_intel = db.get(IntegrationState, "threat_intel")
+            threat_enabled = 1 if threat_intel and threat_intel.enabled else 0
+            threat_healthy = 1 if threat_intel and threat_intel.status in {"ok", "degraded"} else 0
+            threat_last_success = _as_utc(threat_intel.last_success_at) if threat_intel else None
+
+            for name, description, value in [
+                ("patch_manager_threat_intel_enabled", "Whether EPSS/KEV enrichment is enabled.", threat_enabled),
+                ("patch_manager_threat_intel_sync_healthy", "Whether the latest threat-intel sync is usable.", threat_healthy),
+                (
+                    "patch_manager_threat_intel_last_success_timestamp_seconds",
+                    "Unix timestamp of the latest usable threat-intel sync.",
+                    threat_last_success.timestamp() if threat_last_success else 0,
                 ),
             ]:
                 metric = GaugeMetricFamily(name, description)
