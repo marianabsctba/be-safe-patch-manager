@@ -120,5 +120,10 @@ class RollbackRequest(BaseModel):
     acknowledge_risk: bool = False
 
 
+class AgentMtlsBindRequest(BaseModel):
+    fingerprint: str = Field(min_length=40, max_length=95)
+    reason: str = Field(min_length=5, max_length=500)
+
+
 class TagUpdate(BaseModel):
     tags: List[str]

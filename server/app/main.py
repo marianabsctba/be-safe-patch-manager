@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
 from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, VulnerabilityFinding
-from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
+from .schemas import AgentMtlsBindRequest, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -1387,6 +1387,48 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
 @app.get("/api/admin/agents")
 def list_agents(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return [serialize_agent(a) for a in db.query(Agent).order_by(Agent.hostname.asc()).all()]
+
+
+@app.put("/api/admin/agents/{agent_id}/mtls")
+def bind_agent_mtls(
+    agent_id: str,
+    body: AgentMtlsBindRequest,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    fingerprint = normalize_client_cert_fingerprint(body.fingerprint)
+    if not fingerprint:
+        raise HTTPException(status_code=400, detail="client certificate fingerprint is required")
+
+    existing = db.query(Agent).filter(
+        Agent.client_cert_fingerprint == fingerprint,
+        Agent.id != agent.id,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="client certificate is already bound to another agent")
+
+    previous = agent.client_cert_fingerprint or ""
+    agent.client_cert_fingerprint = fingerprint
+    db.commit()
+
+    audit(
+        db,
+        principal["actor"],
+        "agent.mtls.bound",
+        "agent",
+        agent.id,
+        {
+            "hostname": agent.hostname,
+            "previous_fingerprint": previous,
+            "fingerprint": fingerprint,
+            "reason": body.reason,
+        },
+    )
+    return serialize_agent(agent)
 
 
 @app.put("/api/admin/agents/{agent_id}/tags")
