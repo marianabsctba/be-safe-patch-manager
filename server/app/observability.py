@@ -11,7 +11,7 @@ from prometheus_client.core import GaugeMetricFamily
 from sqlalchemy import func, text
 
 from .database import SessionLocal
-from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, VulnerabilityFinding
+from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
 
 
 APP_VERSION = "0.10.0"
@@ -265,6 +265,18 @@ class PatchManagerCollector:
                     count,
                 )
             yield vulnerabilities
+
+            remediation = GaugeMetricFamily(
+                "patch_manager_remediation_evidence",
+                "Remediation evidence records by lifecycle status.",
+                labels=["status"],
+            )
+            for status, count in db.query(
+                RemediationEvidence.status,
+                func.count(RemediationEvidence.id),
+            ).group_by(RemediationEvidence.status).all():
+                remediation.add_metric([str(status or "unknown")], count)
+            yield remediation
 
             greenbone = db.get(IntegrationState, "greenbone")
             enabled = 1 if greenbone and greenbone.enabled else 0

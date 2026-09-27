@@ -93,3 +93,22 @@ groups:
         annotations:
           summary: Erros persistentes na coleta de telemetria
           description: Um ou mais agentes não conseguem coletar alguma métrica de saúde esperada.
+
+
+      - alert: PatchManagerRemediationEvidenceErrors
+        expr: patch_manager_remediation_evidence{status="error"} > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Evidência de remediação com erro
+          description: Há pelo menos um ciclo de remediação que não conseguiu iniciar ou concluir o rescan Greenbone.
+
+      - alert: PatchManagerRemediationStillDetected
+        expr: patch_manager_remediation_evidence{status="still_detected"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Vulnerabilidade ainda detectada após patch
+          description: Um rescan pós-patch confirmou que a vulnerabilidade continua presente.
