@@ -1,4 +1,5 @@
 import hashlib
+import math
 import json
 import os
 import uuid
@@ -13,11 +14,11 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
 from .models import Agent, AuditEvent, Campaign, PatchJob
-from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, RegisterRequest, RegisterResponse, TagUpdate
+from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, RegisterRequest, RegisterResponse, RingAdvance, TagUpdate
 from .security import hash_token, new_token, require_admin, require_enrollment
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="Be Safe Patch Manager", version="0.1.1")
+app = FastAPI(title="Be Safe Patch Manager", version="0.2.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -77,6 +78,52 @@ def serialize_agent(a: Agent):
     }
 
 
+
+def ring_bucket(agent_id: str) -> int:
+    return int(hashlib.sha256(agent_id.encode()).hexdigest()[:8], 16) % 10000
+
+
+def campaign_ring_jobs(c: Campaign):
+    marked = [
+        job for job in c.jobs
+        if int(load(job.payload_json, {}).get("_ring_percent", -1)) == int(c.ring_percent)
+    ]
+    return marked if marked else list(c.jobs)
+
+
+def campaign_health(c: Campaign):
+    jobs = campaign_ring_jobs(c)
+    counts = {"pending": 0, "claimed": 0, "running": 0, "success": 0, "failed": 0, "skipped": 0}
+    for job in jobs:
+        counts[job.status] = counts.get(job.status, 0) + 1
+
+    active = counts["pending"] + counts["claimed"] + counts["running"]
+    terminal = counts["success"] + counts["failed"] + counts["skipped"]
+    success_rate = round((counts["success"] / terminal * 100), 1) if terminal else 0.0
+    ready = bool(jobs) and active == 0 and terminal == len(jobs) and success_rate >= 90.0
+
+    if not jobs:
+        reason = "no jobs in current ring"
+    elif active:
+        reason = "current ring still has active jobs"
+    elif terminal != len(jobs):
+        reason = "current ring has non-terminal jobs"
+    elif success_rate < 90.0:
+        reason = "success rate below 90%"
+    else:
+        reason = "healthy"
+
+    return {
+        "ring_percent": c.ring_percent,
+        "jobs": len(jobs),
+        "counts": counts,
+        "active": active,
+        "terminal": terminal,
+        "success_rate": success_rate,
+        "ready": ready,
+        "reason": reason,
+    }
+
 def serialize_campaign(c: Campaign):
     counts = {"pending": 0, "claimed": 0, "running": 0, "success": 0, "failed": 0, "skipped": 0}
     for j in c.jobs:
@@ -96,6 +143,8 @@ def serialize_campaign(c: Campaign):
         "created_at": c.created_at.isoformat(),
         "job_counts": counts,
         "jobs_total": len(c.jobs),
+        "health": campaign_health(c),
+        "rollout_complete": c.ring_percent >= 100,
     }
 
 
@@ -280,9 +329,44 @@ def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session 
     return serialize_campaign(campaign)
 
 
-def in_ring(agent_id: str, percent: int) -> bool:
-    bucket = int(hashlib.sha256(agent_id.encode()).hexdigest()[:8], 16) % 100
-    return bucket < percent
+
+def campaign_candidates(db: Session, campaign: Campaign):
+    candidates = []
+    for agent in db.query(Agent).all():
+        if campaign.target_os != "all" and agent.os_family != campaign.target_os:
+            continue
+        tags = load(agent.tags, [])
+        if campaign.target_tag and campaign.target_tag not in tags:
+            continue
+        candidates.append(agent)
+    return sorted(candidates, key=lambda agent: ring_bucket(agent.id))
+
+
+def agents_for_ring(db: Session, campaign: Campaign, percent: int):
+    candidates = campaign_candidates(db, campaign)
+    if not candidates:
+        return []
+    target_count = max(1, math.ceil(len(candidates) * percent / 100))
+    return candidates[:min(len(candidates), target_count)]
+
+
+def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
+    base_payload = load(campaign.payload_json, {})
+    created = []
+    for agent in agents:
+        payload = {**base_payload, "_ring_percent": ring_percent}
+        job = PatchJob(
+            id=str(uuid.uuid4()),
+            campaign_id=campaign.id,
+            agent_id=agent.id,
+            action=campaign.action,
+            payload_json=dump(payload),
+            not_before=campaign.not_before,
+            status="pending",
+        )
+        db.add(job)
+        created.append(job)
+    return created
 
 
 @app.post("/api/admin/campaigns/{campaign_id}/deploy")
@@ -290,35 +374,87 @@ def deploy_campaign(campaign_id: str, _=Depends(require_admin), db: Session = De
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="campaign not found")
-    if campaign.status == "deployed":
+    if campaign.status != "draft":
         raise HTTPException(status_code=409, detail="campaign already deployed")
 
-    agents = db.query(Agent).all()
-    selected = []
-    for agent in agents:
-        if campaign.target_os != "all" and agent.os_family != campaign.target_os:
-            continue
-        tags = load(agent.tags, [])
-        if campaign.target_tag and campaign.target_tag not in tags:
-            continue
-        if not in_ring(agent.id, campaign.ring_percent):
-            continue
-        selected.append(agent)
+    selected = agents_for_ring(db, campaign, campaign.ring_percent)
+    if not selected:
+        raise HTTPException(status_code=409, detail="no agents matched campaign target")
 
-    for agent in selected:
-        db.add(PatchJob(
-            id=str(uuid.uuid4()),
-            campaign_id=campaign.id,
-            agent_id=agent.id,
-            action=campaign.action,
-            payload_json=campaign.payload_json,
-            not_before=campaign.not_before,
-            status="pending",
-        ))
+    add_ring_jobs(db, campaign, selected, campaign.ring_percent)
     campaign.status = "deployed"
     db.commit()
-    audit(db, "admin", "campaign.deployed", "campaign", campaign.id, {"agents": len(selected)})
-    return {"ok": True, "agents_selected": len(selected), "campaign": serialize_campaign(campaign)}
+    audit(
+        db,
+        "admin",
+        "campaign.deployed",
+        "campaign",
+        campaign.id,
+        {"agents": len(selected), "ring_percent": campaign.ring_percent},
+    )
+    return {
+        "ok": True,
+        "agents_selected": len(selected),
+        "ring_percent": campaign.ring_percent,
+        "campaign": serialize_campaign(campaign),
+    }
+
+
+@app.post("/api/admin/campaigns/{campaign_id}/advance")
+def advance_campaign(
+    campaign_id: str,
+    body: RingAdvance,
+    _=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    if campaign.status != "deployed":
+        raise HTTPException(status_code=409, detail="campaign must be deployed before advancing")
+    if body.target_percent <= campaign.ring_percent:
+        raise HTTPException(status_code=400, detail="target ring must be greater than current ring")
+
+    health = campaign_health(campaign)
+    if not health["ready"] and not body.override_health_gate:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "health gate blocked ring advance", "health": health},
+        )
+
+    target_agents = agents_for_ring(db, campaign, body.target_percent)
+    existing_agent_ids = {job.agent_id for job in campaign.jobs}
+    new_agents = [agent for agent in target_agents if agent.id not in existing_agent_ids]
+
+    previous_ring = campaign.ring_percent
+    add_ring_jobs(db, campaign, new_agents, body.target_percent)
+    campaign.ring_percent = body.target_percent
+    db.commit()
+
+    audit(
+        db,
+        "admin",
+        "campaign.advanced",
+        "campaign",
+        campaign.id,
+        {
+            "from_ring": previous_ring,
+            "to_ring": body.target_percent,
+            "new_agents": len(new_agents),
+            "target_agents": len(target_agents),
+            "health_gate_overridden": body.override_health_gate,
+            "previous_health": health,
+        },
+    )
+
+    return {
+        "ok": True,
+        "from_ring": previous_ring,
+        "to_ring": body.target_percent,
+        "new_agents": len(new_agents),
+        "target_agents": len(target_agents),
+        "campaign": serialize_campaign(campaign),
+    }
 
 
 @app.get("/api/admin/jobs")

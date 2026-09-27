@@ -44,5 +44,10 @@ class CampaignCreate(BaseModel):
     allow_reboot: bool = False
 
 
+class RingAdvance(BaseModel):
+    target_percent: int = Field(ge=1, le=100)
+    override_health_gate: bool = False
+
+
 class TagUpdate(BaseModel):
     tags: List[str]

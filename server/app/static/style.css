@@ -1277,3 +1277,24 @@ body.drawer-open { overflow:hidden; }
     width:100%;
   }
 }
+
+
+/* Progressive rollout / health gate */
+button:disabled {
+  cursor:not-allowed;
+  opacity:.45;
+  filter:none;
+}
+
+button:disabled:hover {
+  filter:none;
+  transform:none;
+}
+
+.campaign-actions {
+  flex-wrap:wrap;
+}
+
+.campaign-meta strong {
+  color:#ededf0;
+}

@@ -474,6 +474,12 @@ async function saveAgentTags() {
   }
 }
 
+
+function nextRingPercent(current) {
+  const presets = [10, 30, 100];
+  return presets.find((value) => value > Number(current || 0)) || null;
+}
+
 function campaignCard(campaign, compact = false) {
   const counts = campaign.job_counts || {};
   const total = Number(campaign.jobs_total || 0);
@@ -481,6 +487,19 @@ function campaignCard(campaign, compact = false) {
   const failed = Number(counts.failed || 0);
   const finished = success + failed + Number(counts.skipped || 0);
   const progress = total ? Math.round((finished / total) * 100) : 0;
+  const health = campaign.health || {};
+  const nextRing = nextRingPercent(campaign.ring_percent);
+  const ringReady = Boolean(health.ready);
+  const healthRate = Number(health.success_rate || 0);
+
+  let action = '';
+  if (campaign.status === 'draft') {
+    action = '<button onclick="deploy(\'' + campaign.id + '\')">Implantar ' + esc(campaign.ring_percent) + '%</button>';
+  } else if (campaign.status === 'deployed' && nextRing) {
+    action = ringReady
+      ? '<button onclick="advanceCampaign(\'' + campaign.id + '\',' + nextRing + ')">Avançar para ' + nextRing + '%</button>'
+      : '<button disabled title="' + esc(health.reason || 'Health gate aguardando') + '">Gate aguardando</button>';
+  }
 
   return `
     <article class="campaign ${compact ? 'compact-card' : ''}">
@@ -488,6 +507,7 @@ function campaignCard(campaign, compact = false) {
         <div class="campaign-title-row">
           <h3>${esc(campaign.name)}</h3>
           ${badge(statusLabel(campaign.status), campaign.status === 'deployed' ? 'ok' : 'info')}
+          ${campaign.rollout_complete ? badge('100% liberado', 'ok') : ''}
         </div>
 
         ${compact ? '' : `<p>${esc(campaign.description || 'Sem descrição')}</p>`}
@@ -495,9 +515,18 @@ function campaignCard(campaign, compact = false) {
         <div class="campaign-meta">
           ${badge((campaign.target_os || 'all').toUpperCase())}
           ${campaign.target_tag ? badge(campaign.target_tag, 'info') : ''}
-          <span>Ring ${esc(campaign.ring_percent)}%</span>
+          <span>Ring atual <strong>${esc(campaign.ring_percent)}%</strong></span>
           <span>${esc(actionLabel(campaign.action))}</span>
           ${campaign.not_before ? `<span>Após ${esc(shortWhen(campaign.not_before))}</span>` : ''}
+        </div>
+
+        <div class="campaign-meta">
+          ${campaign.status === 'deployed'
+            ? badge(ringReady ? 'health gate OK' : 'health gate bloqueado', ringReady ? 'ok' : 'warn')
+            : ''}
+          ${campaign.status === 'deployed' ? `<span>Ring: ${Number(health.jobs || 0)} job(s)</span>` : ''}
+          ${campaign.status === 'deployed' ? `<span>Sucesso: ${healthRate}%</span>` : ''}
+          ${campaign.status === 'deployed' && Number(health.active || 0) ? `<span>Ativos: ${health.active}</span>` : ''}
         </div>
 
         <div class="progress">
@@ -511,9 +540,7 @@ function campaignCard(campaign, compact = false) {
         </div>
       </div>
 
-      ${campaign.status === 'draft'
-        ? `<div class="campaign-actions"><button onclick="deploy('${campaign.id}')">Implantar</button></div>`
-        : ''}
+      ${action ? `<div class="campaign-actions">${action}</div>` : ''}
     </article>
   `;
 }
@@ -594,6 +621,21 @@ window.deploy = async (id) => {
     await load();
   } catch (error) {
     toast(error.message, 'fail');
+  }
+};
+
+window.advanceCampaign = async (id, targetPercent) => {
+  if (!confirm('Avançar esta campanha para o ring de ' + targetPercent + '%?')) return;
+
+  try {
+    const result = await api('/api/admin/campaigns/' + id + '/advance', {
+      method: 'POST',
+      body: JSON.stringify({ target_percent: targetPercent, override_health_gate: false }),
+    });
+    toast('Ring avançado para ' + result.to_ring + '%. ' + result.new_agents + ' novo(s) endpoint(s).');
+    await load();
+  } catch (error) {
+    toast('Health gate: ' + error.message, 'fail');
   }
 };
 
@@ -689,7 +731,7 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     });
 
     event.target.reset();
-    event.target.elements.ring_percent.value = 100;
+    event.target.elements.ring_percent.value = 10;
     toast('Campanha criada.');
     await load();
   } catch (error) {
