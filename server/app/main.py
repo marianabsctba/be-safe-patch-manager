@@ -20,8 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -721,6 +721,51 @@ ASSET_RISK_SEVERITY_WEIGHTS = {
 }
 
 
+def serialize_asset_risk_acceptance(
+    acceptance: AssetRiskAcceptance,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    expires_at = acceptance.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    revoked_at = acceptance.revoked_at
+    if revoked_at and revoked_at.tzinfo is None:
+        revoked_at = revoked_at.replace(tzinfo=timezone.utc)
+    active = acceptance.revoked_at is None and expires_at > reference
+    return {
+        "id": acceptance.id,
+        "agent_id": acceptance.agent_id,
+        "reason": acceptance.reason,
+        "approved_by": acceptance.approved_by,
+        "expires_at": expires_at.isoformat(),
+        "revoked_at": revoked_at.isoformat() if revoked_at else None,
+        "revoked_by": acceptance.revoked_by,
+        "revoke_reason": acceptance.revoke_reason,
+        "created_at": acceptance.created_at.isoformat() if acceptance.created_at else None,
+        "active": active,
+        "expired": acceptance.revoked_at is None and expires_at <= reference,
+    }
+
+
+def active_asset_risk_acceptance(
+    agent: Agent,
+    reference: datetime | None = None,
+) -> AssetRiskAcceptance | None:
+    reference = reference or now()
+    active = []
+    for acceptance in agent.risk_acceptances or []:
+        expires_at = acceptance.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if acceptance.revoked_at is None and expires_at > reference:
+            active.append(acceptance)
+    if not active:
+        return None
+    active.sort(key=lambda item: item.expires_at)
+    return active[0]
+
+
 def serialize_asset_risk_policy(policy: AssetRiskPolicy) -> dict:
     return {
         "id": policy.id,
@@ -1123,8 +1168,16 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
         findings = list(agent.vulnerabilities or [])
         risk = asset_risk_score(agent, findings, reference)
         policy = effective_asset_risk_policy(db, agent)
+        acceptance = active_asset_risk_acceptance(agent, reference)
         risk["risk_appetite"] = policy["risk_appetite"]
         risk["above_risk_appetite"] = risk["score"] >= policy["risk_appetite"]
+        risk["governance_status"] = (
+            "accepted"
+            if risk["above_risk_appetite"] and acceptance
+            else "above_appetite"
+            if risk["above_risk_appetite"]
+            else "within_appetite"
+        )
         rows.append({
             "agent_id": agent.id,
             "hostname": agent.hostname,
@@ -1133,6 +1186,7 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
             "tags": load(agent.tags, []),
             "risk_profile": serialize_asset_risk_profile(agent.risk_profile),
             "risk_policy": policy,
+            "risk_acceptance": serialize_asset_risk_acceptance(acceptance, reference) if acceptance else None,
             "risk": risk,
         })
 
@@ -1190,6 +1244,14 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
         "above_risk_appetite": sum(
             1 for row in rows
             if row["risk"]["above_risk_appetite"]
+        ),
+        "accepted_above_appetite": sum(
+            1 for row in rows
+            if row["risk"]["governance_status"] == "accepted"
+        ),
+        "unaccepted_above_appetite": sum(
+            1 for row in rows
+            if row["risk"]["governance_status"] == "above_appetite"
         ),
         "average_score": round(
             sum(row["risk"]["score"] for row in rows) / len(rows), 1
@@ -3731,6 +3793,110 @@ def remediation_queue(
 @app.get("/api/admin/reports/vulnerability-sla")
 def admin_vulnerability_sla_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return vulnerability_sla_report(db)
+
+
+@app.get("/api/admin/agents/{agent_id}/risk-acceptances")
+def list_asset_risk_acceptances(
+    agent_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return [
+        serialize_asset_risk_acceptance(item)
+        for item in sorted(
+            agent.risk_acceptances or [],
+            key=lambda acceptance: acceptance.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+    ]
+
+
+@app.post("/api/admin/agents/{agent_id}/risk-acceptances")
+def create_asset_risk_acceptance(
+    agent_id: str,
+    body: AssetRiskAcceptanceCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    expires_at = body.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    current = now()
+    if expires_at <= current:
+        raise HTTPException(status_code=400, detail="risk acceptance must expire in the future")
+    if expires_at > current + timedelta(days=365):
+        raise HTTPException(status_code=400, detail="risk acceptance cannot exceed 365 days")
+
+    existing = active_asset_risk_acceptance(agent, current)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "asset already has an active risk acceptance", "id": existing.id},
+        )
+
+    acceptance = AssetRiskAcceptance(
+        id=str(uuid.uuid4()),
+        agent=agent,
+        reason=body.reason.strip(),
+        approved_by=principal["actor"],
+        expires_at=expires_at,
+    )
+    db.add(acceptance)
+    db.commit()
+    db.refresh(acceptance)
+
+    result = serialize_asset_risk_acceptance(acceptance)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.acceptance.created",
+        "agent",
+        agent.id,
+        result,
+    )
+    return {"ok": True, "acceptance": result}
+
+
+@app.post("/api/admin/agents/{agent_id}/risk-acceptances/{acceptance_id}/revoke")
+def revoke_asset_risk_acceptance(
+    agent_id: str,
+    acceptance_id: str,
+    body: AssetRiskAcceptanceRevoke,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    acceptance = db.get(AssetRiskAcceptance, acceptance_id)
+    if not acceptance or acceptance.agent_id != agent.id:
+        raise HTTPException(status_code=404, detail="risk acceptance not found")
+    if acceptance.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="risk acceptance already revoked")
+
+    acceptance.revoked_at = now()
+    acceptance.revoked_by = principal["actor"]
+    acceptance.revoke_reason = body.reason.strip()
+    db.commit()
+    db.refresh(acceptance)
+
+    result = serialize_asset_risk_acceptance(acceptance)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.acceptance.revoked",
+        "agent",
+        agent.id,
+        result,
+    )
+    return {"ok": True, "acceptance": result}
 
 
 @app.get("/api/admin/risk-policies")
