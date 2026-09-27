@@ -157,6 +157,22 @@ class RemediationEvidence(Base):
     agent = relationship("Agent", back_populates="remediation_evidence")
 
 
+class AssetRiskPolicy(Base):
+    __tablename__ = "asset_risk_policies"
+
+    id = Column(String(36), primary_key=True)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    target_tag = Column(String(128), nullable=False, index=True)
+    risk_appetite = Column(Integer, nullable=False)
+    priority = Column(Integer, nullable=False, default=100)
+    enabled = Column(Boolean, nullable=False, default=True)
+    reason = Column(Text, nullable=False, default="")
+    created_by = Column(String(255), nullable=False, default="")
+    updated_by = Column(String(255), nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class AssetRiskProfile(Base):
     __tablename__ = "asset_risk_profiles"
 
