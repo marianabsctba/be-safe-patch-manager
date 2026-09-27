@@ -708,6 +708,8 @@ function renderAssetRisk() {
     ['Apetite global', summary.risk_appetite == null ? 700 : summary.risk_appetite],
     ['Políticas', summary.risk_policies || 0],
     ['Acima', summary.above_risk_appetite || 0],
+    ['Aceitos', summary.accepted_above_appetite || 0],
+    ['Sem aceite', summary.unaccepted_above_appetite || 0],
   ].map(([label, value]) =>
     '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
   ).join('');
@@ -737,13 +739,18 @@ function renderAssetRisk() {
     const compensating = risk.compensating || {};
     const policy = item.risk_policy || {};
     const policyData = policy.policy || {};
+    const acceptance = item.risk_acceptance || null;
     const factors = Array.isArray(risk.top_factors) ? risk.top_factors : [];
     return '<tr>' +
       '<td><strong>' + esc(item.hostname || item.agent_id) + '</strong><br><small class="muted">' + esc(item.ip_address || '') + '</small></td>' +
       '<td>' + assetRiskBadge(risk) +
         '<br><small class="muted">apetite ' + esc(risk.risk_appetite == null ? '-' : risk.risk_appetite) +
         ' · ' + esc(policy.source === 'policy' ? (policyData.name || 'policy') : 'global') + '</small>' +
-        (risk.above_risk_appetite ? '<br>' + badge('acima do apetite', 'fail') : '') +
+        (risk.governance_status === 'accepted'
+          ? '<br>' + badge('RISCO ACEITO', 'info') + '<br><small class="muted">até ' + esc(when(acceptance && acceptance.expires_at)) + '</small>'
+          : risk.above_risk_appetite
+            ? '<br>' + badge('acima do apetite', 'fail')
+            : '') +
       '</td>' +
       '<td>' + assetRiskTrend(risk) + '</td>' +
       '<td><strong>' + esc(crit.score == null ? '-' : crit.score) + '/5</strong></td>' +
@@ -765,7 +772,12 @@ function renderAssetRisk() {
       ) + '<br><span class="muted">fonte: ' + esc(compensating.source || 'tags') + '</span></small></td>' +
       '<td>' + (
         roleAtLeast('admin')
-          ? '<button class="row-action" onclick="editAssetRiskProfile(\'' + item.agent_id + '\')">Perfil de risco</button>'
+          ? '<button class="row-action" onclick="editAssetRiskProfile(\'' + item.agent_id + '\')">Perfil de risco</button>' +
+            (acceptance && acceptance.active
+              ? ' <button class="row-action" onclick="revokeAssetRiskAcceptance(\'' + item.agent_id + '\', \'' + acceptance.id + '\')">Revogar aceite</button>'
+              : risk.above_risk_appetite
+                ? ' <button class="row-action" onclick="createAssetRiskAcceptance(\'' + item.agent_id + '\')">Aceitar risco</button>'
+                : '')
           : ''
       ) + '</td>' +
     '</tr>';
@@ -875,6 +887,59 @@ window.editRiskPolicy = async (policyId) => {
     await load();
   } catch (error) {
     toast('Política de risco: ' + error.message, 'fail');
+  }
+};
+
+
+window.createAssetRiskAcceptance = async (agentId) => {
+  if (!requireRole('admin', 'Somente admin pode aceitar risco.')) return;
+
+  const reason = prompt('Motivo da aceitação de risco:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+  const daysRaw = prompt('Validade da aceitação em dias (1–365):', '30');
+  const days = Number(daysRaw);
+  if (!Number.isInteger(days) || days < 1 || days > 365) {
+    toast('Validade deve ficar entre 1 e 365 dias.', 'fail');
+    return;
+  }
+
+  const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  try {
+    await api('/api/admin/agents/' + agentId + '/risk-acceptances', {
+      method: 'POST',
+      body: JSON.stringify({
+        reason: reason.trim(),
+        expires_at: expiresAt,
+      }),
+    });
+    toast('Risco aceito temporariamente. O score não foi alterado.');
+    await load();
+  } catch (error) {
+    toast('Aceitação de risco: ' + error.message, 'fail');
+  }
+};
+
+window.revokeAssetRiskAcceptance = async (agentId, acceptanceId) => {
+  if (!requireRole('admin', 'Somente admin pode revogar aceitação de risco.')) return;
+
+  const reason = prompt('Motivo da revogação da aceitação:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+
+  try {
+    await api('/api/admin/agents/' + agentId + '/risk-acceptances/' + acceptanceId + '/revoke', {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    toast('Aceitação de risco revogada.');
+    await load();
+  } catch (error) {
+    toast('Revogação de risco: ' + error.message, 'fail');
   }
 };
 
