@@ -126,7 +126,7 @@ def test_server_release_verifier_rejects_artifact_tamper(tmp_path):
 
 
 def test_agent_stages_verified_update_without_activating_live_agent(tmp_path, monkeypatch):
-    manifest, signature, public, artifact = signed_release(tmp_path, version="0.15.0")
+    manifest, signature, public, artifact = signed_release(tmp_path, version="0.16.0")
     staging = tmp_path / "staging"
     cfg = {
         "server_url": "https://patch.example.invalid",
@@ -159,10 +159,10 @@ def test_agent_stages_verified_update_without_activating_live_agent(tmp_path, mo
     live_agent_after = (REPO_ROOT / "agent" / "patch_agent.py").read_bytes()
 
     assert state["status"] == "staged"
-    assert state["staged_version"] == "0.15.0"
+    assert state["staged_version"] == "0.16.0"
     assert state["activation"] == "manual"
-    assert (staging / "0.15.0" / "payload" / "patch_agent.py").is_file()
-    assert (staging / "0.15.0" / "payload" / "requirements.txt").is_file()
+    assert (staging / "0.16.0" / "payload" / "patch_agent.py").is_file()
+    assert (staging / "0.16.0" / "payload" / "requirements.txt").is_file()
     assert live_agent_after == live_agent_before
 
 
@@ -194,7 +194,7 @@ def test_agent_rejects_signed_downgrade(tmp_path, monkeypatch):
 def test_agent_rejects_archive_with_unexpected_path(tmp_path, monkeypatch):
     manifest, signature, public, artifact = signed_release(
         tmp_path,
-        version="0.15.0",
+        version="0.16.0",
         files={
             "patch_agent.py": b"safe",
             "requirements.txt": b"safe",
@@ -231,7 +231,7 @@ def test_agent_rejects_archive_with_unexpected_path(tmp_path, monkeypatch):
 
 
 def test_agent_rejects_tampered_signature_before_download(tmp_path, monkeypatch):
-    manifest, signature, public, artifact = signed_release(tmp_path, version="0.15.0")
+    manifest, signature, public, artifact = signed_release(tmp_path, version="0.16.0")
     bad_signature = bytearray(signature)
     bad_signature[0] ^= 0x01
     cfg = {
