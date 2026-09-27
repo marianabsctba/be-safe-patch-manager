@@ -101,6 +101,16 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
             critical_updates=2,
             reboot_required=True,
             inventory_json=json.dumps({
+                "agent": {
+                    "version": "0.13.0",
+                    "protocol": 2,
+                    "capabilities": [
+                        "scan_updates",
+                        "install_updates",
+                        "job_leases_v1",
+                        "health_telemetry_v1",
+                    ],
+                },
                 "health": {
                     "collected_at": now().isoformat(),
                     "cpu_percent": 25.0,
@@ -192,11 +202,14 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
     assert "patch_manager_health_applications_unhealthy 0.0" in body
     assert "patch_manager_health_collection_errors 0.0" in body
     assert 'patch_manager_remediation_evidence{status="verified"} 1.0' in body
+    assert 'patch_manager_agent_compatibility{status="supported"} 1.0' in body
+    assert "patch_manager_agent_compatibility_enforced" in body
 
     assert "sensitive-hostname-should-not-leak" not in body
     assert "10.123.45.67" not in body
     assert "CVE-2026-99999" not in body
     assert ("a" * 40) not in body
+    assert "health_telemetry_v1" not in body
 
 
 def test_backup_state_reports_age_without_exposing_filename(tmp_path, monkeypatch):
