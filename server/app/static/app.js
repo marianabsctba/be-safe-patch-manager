@@ -9,6 +9,7 @@ const state = {
   agents: [],
   vulnerabilities: [],
   greenbone: null,
+  agentRelease: null,
   campaigns: [],
   jobs: [],
   audit: [],
@@ -228,11 +229,12 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
       api('/api/admin/integrations/greenbone'),
+      api('/api/admin/agent-release'),
       api('/api/admin/campaigns'),
       api('/api/admin/jobs'),
       api('/api/admin/audit'),
@@ -243,6 +245,7 @@ async function load() {
     state.agents = agents;
     state.vulnerabilities = vulnerabilities;
     state.greenbone = greenbone;
+    state.agentRelease = agentRelease;
     state.campaigns = campaigns;
     state.jobs = jobs;
     state.audit = audit;
@@ -284,6 +287,7 @@ function renderAll() {
 }
 
 function renderSummary(summary) {
+  const release = state.agentRelease || {};
   const entries = [
     { label: 'Endpoints', value: summary.agents || 0, hint: `${summary.online || 0} online`, cls: 'neutral' },
     { label: 'Compliance', value: `${summary.compliance_percent || 0}%`, hint: `${summary.compliant || 0} compliant`, cls: 'accent' },
@@ -295,6 +299,7 @@ function renderSummary(summary) {
     { label: 'Jobs bloqueados', value: summary.blocked_jobs || 0, hint: 'aguardando upgrade do agente', cls: summary.blocked_jobs ? 'danger' : 'ok' },
     { label: 'Update staged', value: summary.agent_update_staged || 0, hint: 'assinado e aguardando ativação', cls: summary.agent_update_staged ? 'accent' : 'ok' },
     { label: 'Erro update agente', value: summary.agent_update_errors || 0, hint: summary.agent_update_distribution_enabled ? 'distribuição habilitada' : 'distribuição desligada', cls: summary.agent_update_errors ? 'danger' : 'ok' },
+    { label: 'Release assinada', value: release.ready ? 'v' + release.version : '-', hint: release.enabled ? (release.ready ? 'assinatura e artefato válidos' : 'release indisponível') : 'distribuição desligada', cls: release.ready ? 'ok' : release.enabled ? 'danger' : 'neutral' },
   ];
 
   $('#summary').innerHTML = entries.map((item) => `

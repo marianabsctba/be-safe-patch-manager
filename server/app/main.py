@@ -2217,6 +2217,42 @@ def job_result(
     return {"ok": True, "idempotent": False}
 
 
+@app.get("/api/admin/agent-release")
+def admin_agent_release(_=Depends(require_viewer)):
+    if not AGENT_UPDATE_ENABLED:
+        return {
+            "enabled": False,
+            "ready": False,
+            "status": "disabled",
+        }
+
+    try:
+        release = signed_agent_release()
+    except AgentReleaseError as exc:
+        return {
+            "enabled": True,
+            "ready": False,
+            "status": "unavailable",
+            "error": str(exc)[:500],
+        }
+
+    manifest = release["manifest"]
+    return {
+        "enabled": True,
+        "ready": True,
+        "status": "ready",
+        "version": manifest["version"],
+        "protocol": manifest["protocol"],
+        "capabilities": manifest["capabilities"],
+        "generated_at": manifest["generated_at"],
+        "artifact": {
+            "filename": manifest["artifact"]["filename"],
+            "sha256": manifest["artifact"]["sha256"],
+            "size_bytes": manifest["artifact"]["size_bytes"],
+        },
+    }
+
+
 @app.get("/api/admin/summary")
 def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
     sweep_expired_job_leases(db)

@@ -111,6 +111,11 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
                         "health_telemetry_v1",
                     ],
                 },
+                "update": {
+                    "status": "staged",
+                    "current_version": "0.14.0",
+                    "staged_version": "0.15.0"
+                },
                 "health": {
                     "collected_at": now().isoformat(),
                     "cpu_percent": 25.0,
@@ -204,6 +209,8 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
     assert 'patch_manager_remediation_evidence{status="verified"} 1.0' in body
     assert 'patch_manager_agent_compatibility{status="supported"} 1.0' in body
     assert "patch_manager_agent_compatibility_enforced" in body
+    assert 'patch_manager_agent_update_state{status="staged"} 1.0' in body
+    assert "patch_manager_agent_update_distribution_enabled" in body
 
     assert "sensitive-hostname-should-not-leak" not in body
     assert "10.123.45.67" not in body
