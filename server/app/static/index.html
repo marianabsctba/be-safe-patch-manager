@@ -270,9 +270,12 @@
                 </label>
 
                 <p class="form-hint wide">
-                  Entram somente endpoints Linux que já reportam exatamente essa versão como staged. A população elegível é congelada no início. O gate do rollout do agente não pode ser ignorado.
+                  Entram somente endpoints Linux recentes que já reportam exatamente essa release assinada como staged. A população elegível é congelada no início. O gate do rollout do agente não pode ser ignorado.
                 </p>
 
+                <div id="agentRolloutPreview" class="campaign-source-context wide" hidden></div>
+
+                <button id="agentRolloutPreviewButton" type="button" class="wide">Pré-visualizar rollout</button>
                 <button type="submit" class="primary wide">Criar e iniciar rollout</button>
               </form>
             </section>

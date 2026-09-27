@@ -1589,45 +1589,151 @@ function parseApplicationHealthChecks(value) {
     });
 }
 
+function agentRolloutRequestBody(form, acknowledgeRisk = false) {
+  return {
+    name: String(form.get('name') || '').trim(),
+    description: String(form.get('description') || '').trim(),
+    target_tag: String(form.get('target_tag') || '').trim(),
+    ring_percent: Number(form.get('ring_percent') || 10),
+    expected_version: String(form.get('expected_version') || '').trim(),
+    reason: String(form.get('reason') || '').trim(),
+    acknowledge_risk: Boolean(acknowledgeRisk),
+  };
+}
+
+function agentRolloutSkipLabel(reason) {
+  const labels = {
+    not_linux: 'não Linux',
+    tag_mismatch: 'fora da tag',
+    stale_heartbeat: 'heartbeat antigo',
+    activation_capability_missing: 'sem capability de ativação',
+    version_not_upgrade: 'versão não é upgrade',
+    not_staged: 'sem release staged',
+    staged_version_mismatch: 'versão staged divergente',
+    artifact_sha256_mismatch: 'SHA256 divergente',
+    source_commit_mismatch: 'source commit divergente',
+    signing_key_id_mismatch: 'chave de assinatura divergente',
+    activation_not_eligible: 'ativação/quarentena pendente',
+    active_execution: 'execução ativa',
+  };
+  return labels[reason] || reason;
+}
+
+function renderAgentRolloutPreview(data) {
+  const target = $('#agentRolloutPreview');
+  if (!target) return;
+
+  const skipped = data.skipped || {};
+  const skippedRows = Object.entries(skipped)
+    .filter(([, count]) => Number(count || 0) > 0)
+    .map(([reason, count]) => '<span>' + esc(agentRolloutSkipLabel(reason)) + ': <strong>' + esc(count) + '</strong></span>')
+    .join('');
+
+  const binding = data.release_binding || {};
+  const selected = Array.isArray(data.agents)
+    ? data.agents.filter((item) => item.selected).slice(0, 12)
+    : [];
+
+  target.hidden = false;
+  target.innerHTML =
+    '<strong>Preview do rollout</strong>' +
+    '<div class="campaign-meta">' +
+      '<span>Elegíveis: <strong>' + esc(data.eligible_agents || 0) + '</strong></span>' +
+      '<span>Entram no ring: <strong>' + esc(data.selected_agents || 0) + '</strong></span>' +
+      '<span>Ring: <strong>' + esc(data.ring_percent || 0) + '%</strong></span>' +
+      '<span>TTL da aprovação: <strong>' + esc(Math.round(Number(data.approval_ttl_seconds || 0) / 60)) + ' min</strong></span>' +
+    '</div>' +
+    '<div class="campaign-meta">' +
+      '<span>Release: <strong>v' + esc(data.expected_version || '-') + '</strong></span>' +
+      '<span>SHA: <strong>' + esc(String(binding.artifact_sha256 || '').slice(0, 12)) + '…</strong></span>' +
+      '<span>Commit: <strong>' + esc(String(binding.source_commit || '').slice(0, 12)) + '…</strong></span>' +
+      '<span>Key ID: <strong>' + esc(String(binding.signing_key_id || '').slice(0, 12)) + '…</strong></span>' +
+    '</div>' +
+    (skippedRows ? '<div class="campaign-meta"><span>Fora do snapshot:</span>' + skippedRows + '</div>' : '') +
+    (selected.length
+      ? '<div class="campaign-meta"><span>Primeiro ring:</span>' +
+        selected.map((item) => '<span><strong>' + esc(item.hostname || item.agent_id) + '</strong></span>').join('') +
+        '</div>'
+      : '<div class="form-hint">Nenhum endpoint entraria neste ring.</div>');
+}
+
+async function previewAgentRollout(formData) {
+  const body = agentRolloutRequestBody(formData, false);
+  const result = await api('/api/admin/agent-update-rollouts/preview', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  renderAgentRolloutPreview(result);
+  return result;
+}
+
+$('#agentRolloutPreviewButton').addEventListener('click', async () => {
+  if (!requireRole('admin', 'Somente admin pode visualizar rollout do agente.')) return;
+  const formElement = $('#agentRolloutForm');
+  try {
+    const result = await previewAgentRollout(new FormData(formElement));
+    const skippedTotal = Object.values(result.skipped || {}).reduce(
+      (sum, value) => sum + Number(value || 0),
+      0
+    );
+    toast(
+      'Preview: ' + result.selected_agents + ' no ring, ' +
+      result.eligible_agents + ' elegíveis' +
+      (skippedTotal ? ', ' + skippedTotal + ' fora do snapshot' : '') + '.'
+    );
+  } catch (error) {
+    toast('Preview do rollout: ' + error.message, 'fail');
+  }
+});
+
+
 $('#agentRolloutForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!requireRole('admin', 'Somente admin pode iniciar rollout do agente.')) return;
 
   const form = new FormData(event.target);
-  const expectedVersion = String(form.get('expected_version') || '').trim();
-  const name = String(form.get('name') || '').trim();
-  const reason = String(form.get('reason') || '').trim();
-  const acknowledged = form.get('acknowledge_risk') === 'on';
+  const body = agentRolloutRequestBody(form, true);
 
-  if (!acknowledged) {
+  if (form.get('acknowledge_risk') !== 'on') {
     toast('Confirme o risco do restart e rollback do agente.', 'fail');
     return;
   }
 
-  if (!confirm('Iniciar rollout do agente v' + expectedVersion + ' no ring de ' + form.get('ring_percent') + '%?')) return;
-
   try {
+    const preview = await previewAgentRollout(form);
+    if (!Number(preview.selected_agents || 0)) {
+      toast('Nenhum endpoint entraria no ring atual.', 'fail');
+      return;
+    }
+
+    const skippedTotal = Object.values(preview.skipped || {}).reduce(
+      (sum, value) => sum + Number(value || 0),
+      0
+    );
+    const confirmation =
+      'Iniciar rollout v' + body.expected_version + ' no ring de ' + body.ring_percent + '%?\n\n' +
+      preview.selected_agents + ' endpoint(s) entram agora.\n' +
+      preview.eligible_agents + ' endpoint(s) estão no snapshot elegível.\n' +
+      skippedTotal + ' endpoint(s) ficaram fora.\n' +
+      'A autorização expira em ' + Math.round(Number(preview.approval_ttl_seconds || 0) / 60) + ' min.';
+
+    if (!confirm(confirmation)) return;
+
     const result = await api('/api/admin/agent-update-rollouts', {
       method: 'POST',
-      body: JSON.stringify({
-        name,
-        description: String(form.get('description') || '').trim(),
-        target_tag: String(form.get('target_tag') || '').trim(),
-        ring_percent: Number(form.get('ring_percent') || 10),
-        expected_version: expectedVersion,
-        reason,
-        acknowledge_risk: true,
-      }),
+      body: JSON.stringify(body),
     });
 
     const skipped = result.skipped || {};
-    const skippedTotal = Object.values(skipped).reduce((sum, value) => sum + Number(value || 0), 0);
+    const finalSkippedTotal = Object.values(skipped).reduce((sum, value) => sum + Number(value || 0), 0);
     toast(
       'Rollout iniciado: ' + result.initial_agents + ' no primeiro ring, ' +
       result.eligible_agents + ' elegíveis' +
-      (skippedTotal ? ', ' + skippedTotal + ' fora do snapshot' : '') + '.'
+      (finalSkippedTotal ? ', ' + finalSkippedTotal + ' fora do snapshot' : '') + '.'
     );
     event.target.reset();
+    $('#agentRolloutPreview').hidden = true;
+    $('#agentRolloutPreview').innerHTML = '';
     renderAgentRolloutForm();
     await load();
   } catch (error) {
