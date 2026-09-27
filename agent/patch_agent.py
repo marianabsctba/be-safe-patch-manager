@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,7 +47,7 @@ def save_config(path: Path, cfg):
 
 def api(cfg, method, path, *, json_body=None, headers=None, timeout=60):
     url = cfg["server_url"].rstrip("/") + path
-    h = {"User-Agent": "PatchManagerAgent/0.4.0"}
+    h = {"User-Agent": "PatchManagerAgent/0.7.0"}
     if headers:
         h.update(headers)
     r = requests.request(method, url, json=json_body, headers=h, timeout=timeout, verify=cfg.get("tls_verify", True))
@@ -404,13 +405,61 @@ def heartbeat(cfg, patches):
     return api(cfg, "POST", f"/api/agent/{cfg['agent_id']}/heartbeat", json_body={"inventory":inventory(),"patch_scan":patches,"reboot_required":reboot_required()}, headers={"X-Agent-Token":cfg["agent_token"]})
 
 
-def send_job_result(cfg, job_id, status, result=None, error="", started_at=None, finished_at=None):
-    return api(cfg, "POST", f"/api/agent/{cfg['agent_id']}/jobs/{job_id}/result", json_body={"status":status,"result":result or {},"error":error,"started_at":started_at,"finished_at":finished_at}, headers={"X-Agent-Token":cfg["agent_token"]})
+def send_job_result(cfg, job_id, status, claim_token, result=None, error="", started_at=None, finished_at=None):
+    return api(
+        cfg,
+        "POST",
+        f"/api/agent/{cfg['agent_id']}/jobs/{job_id}/result",
+        json_body={
+            "status":status,
+            "claim_token":claim_token,
+            "result":result or {},
+            "error":error,
+            "started_at":started_at,
+            "finished_at":finished_at,
+        },
+        headers={"X-Agent-Token":cfg["agent_token"]},
+    )
+
+
+def renew_job_lease(cfg, job_id, claim_token):
+    return api(
+        cfg,
+        "POST",
+        f"/api/agent/{cfg['agent_id']}/jobs/{job_id}/lease",
+        json_body={"claim_token":claim_token},
+        headers={"X-Agent-Token":cfg["agent_token"]},
+    )
+
+
+def lease_keeper(cfg, job_id, claim_token, stop_event, interval):
+    while not stop_event.wait(interval):
+        try:
+            renew_job_lease(cfg, job_id, claim_token)
+        except Exception as exc:
+            print(f"job lease renewal failed for {job_id}: {exc}", file=sys.stderr)
 
 
 def execute_job(cfg, job):
-    jid=job["id"]; started=utcnow()
-    send_job_result(cfg,jid,"running",started_at=started)
+    jid=job["id"]
+    claim_token=str(job.get("claim_token") or "")
+    if not claim_token:
+        raise RuntimeError("job claim token is missing")
+
+    started=utcnow()
+    send_job_result(cfg,jid,"running",claim_token,started_at=started)
+
+    lease_seconds=max(60,int(job.get("lease_seconds") or 300))
+    renew_interval=max(15,min(60,lease_seconds // 3))
+    lease_stop=threading.Event()
+    lease_thread=threading.Thread(
+        target=lease_keeper,
+        args=(cfg,jid,claim_token,lease_stop,renew_interval),
+        name=f"patch-lease-{jid[:8]}",
+        daemon=True,
+    )
+    lease_thread.start()
+
     try:
         action=job["action"]
         if action == "scan_updates":
@@ -429,9 +478,12 @@ def execute_job(cfg, job):
             result=rollback_checkpoint(job.get("payload") or {})
         else:
             raise RuntimeError(f"Ação não permitida: {action}")
-        send_job_result(cfg,jid,"success",result=result,started_at=started,finished_at=utcnow())
+        send_job_result(cfg,jid,"success",claim_token,result=result,started_at=started,finished_at=utcnow())
     except Exception as e:
-        send_job_result(cfg,jid,"failed",error=str(e)[:10000],started_at=started,finished_at=utcnow())
+        send_job_result(cfg,jid,"failed",claim_token,error=str(e)[:10000],started_at=started,finished_at=utcnow())
+    finally:
+        lease_stop.set()
+        lease_thread.join(timeout=5)
 
 
 def loop(cfg, cfg_path):
