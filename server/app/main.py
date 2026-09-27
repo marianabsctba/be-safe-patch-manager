@@ -2733,6 +2733,7 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
         ).count(),
         "sla_breached_vulnerabilities": sla_report["summary"]["breached"],
         "sla_due_soon_vulnerabilities": sla_report["summary"]["due_soon"],
+        "sla_exception_vulnerabilities": sla_report["summary"]["exception"],
         "agent_supported": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "supported"),
         "agent_outdated": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "outdated"),
         "agent_unknown": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "unknown"),
