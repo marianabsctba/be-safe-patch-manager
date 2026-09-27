@@ -797,6 +797,97 @@ def activate_staged_update(cfg, expected_version, job_id):
     }
 
 
+def agent_release_retention(cfg):
+    try:
+        value = int(cfg.get("agent_release_retention", 3))
+    except (TypeError, ValueError):
+        value = 3
+    return min(10, max(2, value))
+
+
+def cleanup_managed_agent_releases(cfg):
+    if os.name == "nt":
+        return {"status": "unsupported", "removed": [], "kept": []}
+
+    activation = read_activation_state(cfg)
+    if activation.get("status") != "committed":
+        return {
+            "status": "skipped",
+            "reason": "activation is not committed",
+            "removed": [],
+            "kept": [],
+        }
+
+    base, releases, _, live_release = _safe_live_release(cfg)
+    current_version = live_release.name
+    previous_version = str(activation.get("previous_version") or "")
+    retention = agent_release_retention(cfg)
+
+    candidates = []
+    for entry in releases.iterdir():
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        if not UPDATE_VERSION_RE.fullmatch(entry.name):
+            continue
+        try:
+            entry.resolve().relative_to(releases)
+        except ValueError:
+            continue
+        candidates.append(entry)
+
+    candidates.sort(
+        key=lambda path: _version_tuple(path.name) or (0, 0, 0),
+        reverse=True,
+    )
+
+    keep = {current_version}
+    if UPDATE_VERSION_RE.fullmatch(previous_version):
+        keep.add(previous_version)
+
+    for entry in candidates:
+        if len(keep) >= retention:
+            break
+        keep.add(entry.name)
+
+    removed = []
+    for entry in candidates:
+        if entry.name in keep:
+            continue
+        shutil.rmtree(entry)
+        removed.append(entry.name)
+
+    return {
+        "status": "ok",
+        "retention": retention,
+        "current_version": current_version,
+        "previous_version": previous_version,
+        "removed": sorted(removed),
+        "kept": sorted(keep),
+    }
+
+
+def cleanup_activated_staging(cfg, version):
+    version = str(version or "")
+    if not UPDATE_VERSION_RE.fullmatch(version):
+        return {"status": "skipped", "reason": "invalid version"}
+
+    root = update_staging_dir(cfg).resolve()
+    target = root / version
+    if not target.exists():
+        return {"status": "missing"}
+    if target.is_symlink() or not target.is_dir():
+        return {"status": "skipped", "reason": "unsafe staging entry"}
+
+    resolved = target.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return {"status": "skipped", "reason": "staging path escapes root"}
+
+    shutil.rmtree(resolved)
+    return {"status": "removed", "version": version}
+
+
 def confirm_pending_activation(cfg):
     if os.name == "nt":
         return False
@@ -823,6 +914,22 @@ def confirm_pending_activation(cfg):
         "active_version": AGENT_VERSION,
         "activated_at": committed["committed_at"],
     })
+
+    cleanup = {"release_gc": {"status": "not_run"}, "staging_gc": {"status": "not_run"}}
+    try:
+        cleanup["release_gc"] = cleanup_managed_agent_releases(cfg)
+    except Exception as exc:
+        cleanup["release_gc"] = {"status": "error", "error": str(exc)[:500]}
+    try:
+        cleanup["staging_gc"] = cleanup_activated_staging(cfg, AGENT_VERSION)
+    except Exception as exc:
+        cleanup["staging_gc"] = {"status": "error", "error": str(exc)[:500]}
+
+    committed = {
+        **read_activation_state(cfg),
+        "cleanup": cleanup,
+    }
+    write_activation_state(cfg, committed)
     return True
 
 

@@ -113,6 +113,7 @@ data = {
     "update_staging_dir": update_staging_dir,
     "agent_base_dir": agent_base_dir,
     "activation_state_file": activation_state_file,
+    "agent_release_retention": 3,
 }
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(data, handle, ensure_ascii=False, indent=2)
