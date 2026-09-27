@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.17; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.18; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -14,6 +14,8 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - ingestão normalizada de findings de scanners, começando por OpenVAS/Greenbone;
 - correlação de finding por hostname/IP com endpoint gerenciado;
 - CVE, severidade, CVSS, solução e referências de patch por finding;
+- SLA de vulnerabilidades configurável por severidade, com estados `within_sla`, `due_soon` e `breached`;
+- relatório consolidado de SLA em `GET /api/admin/reports/vulnerability-sla`;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
 - rescan Greenbone automático após patch validado;
@@ -134,6 +136,8 @@ A v0.15 adiciona ativação segura do agente Linux com launcher estável, releas
 A v0.16 endurece o lifecycle do agente. Releases que sofrem rollback entram em quarentena, a liberação exige admin, rollouts do agente usam snapshot congelado e rings 10%, 30% e 100% com gate obrigatório, 100% de sucesso e sem override. O manifest assinado passa a carregar `source_commit` e `signing_key_id`, e o agente faz limpeza segura de releases antigas somente após ativação confirmada.
 
 A v0.17 endurece o control plane sem alterar o agente. Aprovações de ativação têm TTL, exigem heartbeat recente e ficam vinculadas à identidade completa da release assinada. Antes de qualquer claim, o servidor revalida expiração, SHA-256, source commit, signing key e release publicada. A console também permite pré-visualizar o snapshot elegível antes de aprovar o rollout.
+
+A v0.18 adiciona governança de SLA sem alterar o agente nem o schema. Findings com status `open` recebem prazo calculado por severidade, idade, horas restantes e classificação operacional. O endpoint consolidado prioriza breaches e itens próximos do vencimento; estados como `accepted_risk`, `false_positive`, `not_detected` e `remediated` continuam visíveis, mas ficam fora dos contadores de breach.
 
 ## Fluxo seguro de implantação
 
@@ -863,7 +867,8 @@ Próximas evoluções planejadas:
 - ingestão de CVEs do Wazuh;
 - patching de aplicações de terceiros;
 - integração ITSM/SOAR;
-- SLA, exceções e relatórios consolidados;
+- exceções formais com justificativa, aprovador e expiração;
+- relatórios consolidados exportáveis;
 - testes de integração reais em endpoints Windows/Linux;
 - ativação segura equivalente do agente no Windows;
 - HA, retenção off-host e testes periódicos de recuperação completa.
