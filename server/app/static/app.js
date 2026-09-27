@@ -708,9 +708,19 @@ function renderAssetRisk() {
     '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
   ).join('');
 
+  const topContributors = Array.isArray(report.top_contributors) ? report.top_contributors : [];
+  $('#assetRiskContributors').innerHTML = topContributors.length
+    ? topContributors.map((item, index) =>
+        '<div class="risk-contributor">' +
+          '<span>' + esc(String(index + 1) + '. ' + item.name) + '</span>' +
+          '<strong>' + esc(Number(item.raw || 0).toFixed(1)) + '</strong>' +
+        '</div>'
+      ).join('')
+    : '<div class="empty-state">Sem contributors calculados.</div>';
+
   if (!assets.length) {
     $('#assetRiskTable').innerHTML =
-      '<tr><td colspan="8"><div class="empty-state">Nenhum ativo calculado.</div></td></tr>';
+      '<tr><td colspan="9"><div class="empty-state">Nenhum ativo calculado.</div></td></tr>';
     return;
   }
 
@@ -728,6 +738,14 @@ function renderAssetRisk() {
       '<td>' + (exposure.external ? badge('externo', 'fail') : badge('interno', 'ok')) + '</td>' +
       '<td><strong>' + esc(risk.open_findings == null ? 0 : risk.open_findings) + '</strong></td>' +
       '<td><small>' + esc(factors.join(' · ') || '-') + '</small></td>' +
+      '<td><small>' + esc(
+        Array.isArray(risk.decomposition) && risk.decomposition.length
+          ? risk.decomposition
+              .slice(0, 4)
+              .map((item) => item.name + ' ' + (item.raw >= 0 ? '+' : '') + Number(item.raw || 0).toFixed(1))
+              .join(' · ')
+          : '-'
+      ) + '</small></td>' +
       '<td><small>' + esc(
         Array.isArray(compensating.controls) && compensating.controls.length
           ? compensating.controls.map((control) => control.tag).join(', ')
