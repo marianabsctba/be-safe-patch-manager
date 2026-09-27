@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0
+
+- adicionada integração opcional Greenbone/OpenVAS via GMP;
+- adicionada dependência oficial `python-gvm`;
+- suporte a transporte TLS e Unix socket;
+- sync automático periódico e sync manual pela dashboard;
+- leitura do último relatório das tasks do Greenbone;
+- normalização de resultados GMP para findings do Patch Manager;
+- status da integração sem exposição de credenciais;
+- estado da integração persistido em tabela própria;
+- reconciliação opcional de findings ausentes como `not_detected`, nunca automaticamente `remediated`;
+- configuração Greenbone documentada em `.env.example`.
 ## 0.5.0
 
 - adicionada tabela normalizada de vulnerabilidades;

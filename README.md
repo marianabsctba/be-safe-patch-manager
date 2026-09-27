@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.5. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.6. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -50,7 +50,7 @@ A tela de execuções consolida status do job, validação pós-patch e estado d
 
 A implementação atual é centralizada em FastAPI e usa SQLite no MVP. Os agentes Windows e Linux fazem polling de jobs, enviam heartbeat, inventário, patch scan e evidências de execução.
 
-A v0.5 já possui a camada de ingestão e normalização para findings de scanners e a correlação com endpoints. O sync automático via GMP ainda é a próxima etapa; a remediação só deve ser considerada confirmada após rescan ou atualização explícita do finding.
+A v0.6 possui ingestão normalizada, correlação com endpoints e sync opcional automático ou manual via GMP. A plataforma continua sem declarar remediação automaticamente: o status remediado deve representar evidência explícita do scanner/processo.
 
 ## Fluxo seguro de implantação
 
@@ -111,6 +111,39 @@ O servidor tenta correlacionar o finding com um agente por IP ou hostname. Findi
 A interface permite preparar uma campanha diretamente a partir de um finding correlacionado. A campanha fica vinculada ao `agent_id` no payload, sem criar tags temporárias.
 
 **Importante:** instalar um patch não altera automaticamente o finding para remediado. A confirmação deve vir de rescan ou de atualização explícita do status.
+
+### Sync automático via GMP
+
+A v0.6 adiciona integração opcional com o `gvmd` usando a biblioteca oficial `python-gvm`.
+
+No `.env` real:
+
+```dotenv
+GREENBONE_ENABLED=true
+GREENBONE_TRANSPORT=tls
+GREENBONE_HOST=greenbone.interno.local
+GREENBONE_PORT=9390
+GREENBONE_USERNAME=
+GREENBONE_PASSWORD=
+GREENBONE_SYNC_INTERVAL=900
+GREENBONE_RECONCILE_ABSENT=false
+```
+
+Também é suportado `GREENBONE_TRANSPORT=unix` com `GREENBONE_SOCKET=/run/gvmd/gvmd.sock`. Nesse caso, o socket precisa estar disponível dentro do container.
+
+As credenciais são lidas somente de variáveis de ambiente. O endpoint de status e a dashboard não devolvem usuário, senha ou chave privada.
+
+Quando o sync automático está habilitado, o serviço autentica no `gvmd`, consulta o último relatório das tasks, busca resultados via GMP, normaliza os findings, correlaciona endpoints e registra evidências em auditoria.
+
+Sync manual:
+
+`POST /api/admin/integrations/greenbone/sync`
+
+Estado da integração:
+
+`GET /api/admin/integrations/greenbone`
+
+Por segurança, `GREENBONE_RECONCILE_ABSENT=false` é o padrão. Quando habilitado, um finding que desaparece do último relatório da mesma task vira `not_detected`, nunca `remediated` automaticamente.
 
 ## Rollback
 
@@ -274,6 +307,7 @@ be-safe-patch-manager/
 │   ├── requirements.txt
 │   └── app/
 │       ├── main.py
+│       ├── greenbone.py
 │       ├── database.py
 │       ├── models.py
 │       ├── schemas.py
@@ -296,8 +330,8 @@ be-safe-patch-manager/
 
 Próximas evoluções planejadas:
 
-- sync automático OpenVAS / Greenbone via GMP;
-- rescan automático e reconciliação CVE → endpoint → patch → rescan;
+- disparo controlado de rescan após patching;
+- reconciliação completa CVE → endpoint → patch → rescan → evidência;
 - ingestão de CVEs do Wazuh;
 - patching de aplicações de terceiros;
 - integração ITSM/SOAR;

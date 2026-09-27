@@ -31,7 +31,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.5</small>
+          <small>dashboard v0.6</small>
         </div>
       </div>
     </aside>
@@ -151,6 +151,20 @@
         </section>
 
         <section class="view" data-view-panel="vulnerabilities">
+          <section class="panel integration-panel">
+            <div class="panel-head">
+              <div>
+                <p class="section-kicker">INTEGRAÇÃO</p>
+                <h2>Greenbone / OpenVAS</h2>
+              </div>
+              <div class="integration-actions">
+                <span id="greenboneStatusBadge" class="metric-pill">desativado</span>
+                <button id="greenboneSync" class="row-action">Sincronizar agora</button>
+              </div>
+            </div>
+            <div id="greenboneDetails" class="integration-details"></div>
+          </section>
+
           <div id="vulnerabilitySummary" class="cards vuln-summary"></div>
 
           <section class="panel">

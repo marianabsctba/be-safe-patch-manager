@@ -6,6 +6,7 @@ const state = {
   summary: null,
   agents: [],
   vulnerabilities: [],
+  greenbone: null,
   campaigns: [],
   jobs: [],
   audit: [],
@@ -166,10 +167,11 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, campaigns, jobs, audit] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, campaigns, jobs, audit] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
+      api('/api/admin/integrations/greenbone'),
       api('/api/admin/campaigns'),
       api('/api/admin/jobs'),
       api('/api/admin/audit'),
@@ -178,6 +180,7 @@ async function load() {
     state.summary = summary;
     state.agents = agents;
     state.vulnerabilities = vulnerabilities;
+    state.greenbone = greenbone;
     state.campaigns = campaigns;
     state.jobs = jobs;
     state.audit = audit;
@@ -208,6 +211,7 @@ function renderAll() {
   renderCompliance(state.summary || {});
   renderAgents();
   renderRiskEndpoints();
+  renderGreenboneIntegration();
   renderVulnerabilities();
   renderCampaigns();
   renderOverviewCampaigns();
@@ -358,6 +362,7 @@ function vulnerabilitySeverityClass(severity) {
 function vulnerabilityStatusLabel(status) {
   const labels = {
     open: 'aberta',
+    not_detected: 'não detectada',
     remediated: 'remediada',
     accepted_risk: 'risco aceito',
     false_positive: 'falso positivo',
@@ -388,6 +393,53 @@ function filteredVulnerabilities() {
     if (filter === 'remediated' && item.status !== 'remediated') return false;
     return true;
   });
+}
+
+
+function renderGreenboneIntegration() {
+  const data = state.greenbone || {};
+  const config = data.config || {};
+  const details = data.details || {};
+  const status = data.status || (config.enabled ? 'idle' : 'disabled');
+  const labels = {
+    disabled: 'desativado',
+    idle: config.configured ? 'pronto' : 'não configurado',
+    running: 'sincronizando',
+    ok: 'OK',
+    error: 'erro',
+  };
+  const cls = status === 'ok' ? 'ok' : status === 'error' ? 'fail' : status === 'running' ? 'warn' : 'info';
+
+  $('#greenboneStatusBadge').className = 'metric-pill ' + cls;
+  $('#greenboneStatusBadge').textContent = labels[status] || status;
+
+  const endpoint = config.transport === 'unix'
+    ? (config.socket_path || '-')
+    : ((config.hostname || '-') + ':' + (config.port || '-'));
+
+  const rows = [
+    ['Modo', config.enabled ? 'automático' : 'manual / desativado'],
+    ['Transporte', String(config.transport || '-').toUpperCase()],
+    ['Endpoint', endpoint],
+    ['Último sucesso', data.last_success_at ? when(data.last_success_at) : 'nunca'],
+    ['Findings no último sync', details.findings == null ? '-' : details.findings],
+    ['Correlacionados', details.matched == null ? '-' : details.matched],
+    ['Relatórios', details.reports == null ? '-' : details.reports],
+    ['Ausentes', config.reconcile_absent ? 'marcar not_detected' : 'não reconciliar'],
+  ];
+
+  $('#greenboneDetails').innerHTML = rows.map((row) =>
+    '<div><span>' + esc(row[0]) + '</span><strong>' + esc(row[1]) + '</strong></div>'
+  ).join('');
+
+  if (data.last_error) {
+    $('#greenboneDetails').insertAdjacentHTML(
+      'beforeend',
+      '<div class="integration-error"><span>Último erro</span><strong>' + esc(data.last_error) + '</strong></div>'
+    );
+  }
+
+  $('#greenboneSync').disabled = !config.configured || status === 'running';
 }
 
 function renderVulnerabilities() {
@@ -930,6 +982,29 @@ $('#endpointSearch').addEventListener('input', renderAgents);
 $('#endpointFilter').addEventListener('change', renderAgents);
 $('#vulnerabilitySearch').addEventListener('input', renderVulnerabilities);
 $('#vulnerabilityFilter').addEventListener('change', renderVulnerabilities);
+
+$('#greenboneSync').addEventListener('click', async () => {
+  if (!state.token) {
+    toast('Conecte com o token administrativo primeiro.', 'fail');
+    return;
+  }
+
+  $('#greenboneSync').disabled = true;
+  $('#greenboneSync').textContent = 'Sincronizando...';
+
+  try {
+    const result = await api('/api/admin/integrations/greenbone/sync', { method: 'POST' });
+    const stats = result.result || {};
+    toast('Greenbone: ' + Number(stats.findings || 0) + ' finding(s) sincronizado(s).');
+    await load();
+  } catch (error) {
+    toast('Greenbone: ' + error.message, 'fail');
+    await load();
+  } finally {
+    $('#greenboneSync').textContent = 'Sincronizar agora';
+  }
+});
+
 
 
 document.addEventListener('click', (event) => {

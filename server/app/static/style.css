@@ -1400,3 +1400,85 @@ button:disabled:hover {
     text-align:left;
   }
 }
+
+
+/* Greenbone / OpenVAS integration */
+.integration-panel {
+  margin-bottom:16px;
+}
+
+.integration-actions {
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+.metric-pill.ok {
+  border-color:rgba(74,222,128,.24);
+  background:var(--green-soft);
+  color:#86efac;
+}
+
+.metric-pill.warn {
+  border-color:rgba(251,191,36,.24);
+  background:var(--yellow-soft);
+  color:#fcd34d;
+}
+
+.metric-pill.fail {
+  border-color:rgba(251,113,133,.24);
+  background:var(--red-soft);
+  color:#fda4af;
+}
+
+.metric-pill.info {
+  border-color:rgba(96,165,250,.24);
+  background:var(--blue-soft);
+  color:#93c5fd;
+}
+
+.integration-details {
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:8px;
+}
+
+.integration-details > div {
+  min-width:0;
+  padding:10px 11px;
+  border:1px solid #28282f;
+  border-radius:8px;
+  background:#141418;
+}
+
+.integration-details span,
+.integration-details strong {
+  display:block;
+}
+
+.integration-details span {
+  color:var(--muted-2);
+  font-size:9px;
+}
+
+.integration-details strong {
+  margin-top:5px;
+  color:#d8d8dd;
+  font-size:10px;
+  word-break:break-word;
+}
+
+.integration-details .integration-error {
+  grid-column:1/-1;
+  border-color:rgba(251,113,133,.22);
+  background:var(--red-soft);
+}
+
+@media (max-width:980px) {
+  .integration-details { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+
+@media (max-width:560px) {
+  .integration-actions { align-items:flex-end; flex-direction:column; }
+  .integration-details { grid-template-columns:1fr; }
+}
