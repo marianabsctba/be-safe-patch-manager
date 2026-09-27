@@ -34,6 +34,7 @@ class Agent(Base):
     risk_snapshots = relationship("AssetRiskSnapshot", back_populates="agent", cascade="all, delete-orphan")
     risk_profile = relationship("AssetRiskProfile", back_populates="agent", cascade="all, delete-orphan", uselist=False)
     risk_acceptances = relationship("AssetRiskAcceptance", back_populates="agent", cascade="all, delete-orphan")
+    risk_treatments = relationship("AssetRiskTreatment", back_populates="agent", cascade="all, delete-orphan")
 
 
 class Campaign(Base):
@@ -172,6 +173,25 @@ class AssetRiskPolicy(Base):
     updated_by = Column(String(255), nullable=False, default="")
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AssetRiskTreatment(Base):
+    __tablename__ = "asset_risk_treatments"
+
+    id = Column(String(36), primary_key=True)
+    agent_id = Column(String(36), ForeignKey("agents.id"), nullable=False, index=True)
+    owner = Column(String(255), nullable=False)
+    action = Column(Text, nullable=False)
+    due_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="planned", index=True)
+    created_by = Column(String(255), nullable=False)
+    updated_by = Column(String(255), nullable=False)
+    completion_evidence = Column(Text, nullable=False, default="")
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    agent = relationship("Agent", back_populates="risk_treatments")
 
 
 class AssetRiskAcceptance(Base):
