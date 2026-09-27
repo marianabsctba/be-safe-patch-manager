@@ -189,5 +189,7 @@ def test_admin_release_status_is_sanitized(tmp_path, monkeypatch):
     assert result["ready"] is True
     assert result["version"] == manifest["version"]
     assert result["artifact"]["sha256"] == manifest["artifact"]["sha256"]
+    assert result["source_commit"] == manifest["source_commit"]
+    assert result["signing_key_id"] == manifest["signing_key_id"]
     assert "signature" not in result
     assert "path" not in json.dumps(result).lower()

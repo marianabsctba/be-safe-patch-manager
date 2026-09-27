@@ -2383,6 +2383,8 @@ def admin_agent_release(_=Depends(require_viewer)):
         "protocol": manifest["protocol"],
         "capabilities": manifest["capabilities"],
         "generated_at": manifest["generated_at"],
+        "source_commit": manifest["source_commit"],
+        "signing_key_id": manifest["signing_key_id"],
         "artifact": {
             "filename": manifest["artifact"]["filename"],
             "sha256": manifest["artifact"]["sha256"],
