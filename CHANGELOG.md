@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.15.0
+
+- backend e agente passam para versão 0.15.0;
+- adicionado launcher estável separado da release ativa;
+- instalador Linux passa a usar releases versionadas e symlink `current`;
+- adicionada capability `signed_update_activation_v1`;
+- ativação exige aprovação administrativa, motivo e confirmação de risco;
+- ativação automática fica limitada ao Linux nesta versão;
+- agente revalida assinatura, tamanho e SHA-256 antes da promoção;
+- ativação automática recusa mudança em `requirements.txt`;
+- nova release passa por compile check e startup preflight;
+- confirmação da nova release exige heartbeat aceito pelo servidor;
+- após três tentativas sem confirmação, o launcher restaura a versão anterior;
+- servidor audita resultado da ativação informado por heartbeat;
+- console, Prometheus e Grafana exibem estado da ativação;
+- adicionados testes de troca atômica, confirmação por heartbeat, retorno à versão anterior, dependência alterada e API de aprovação;
+- Windows permanece somente com staging assinado.
+
+
 ## 0.14.0
 
 - backend e agente passam para versão 0.14.0;
