@@ -23,6 +23,18 @@ PKG_RE = re.compile(r"^[A-Za-z0-9._+:-]{1,128}$")
 KB_RE = re.compile(r"^KB\d{4,10}$", re.I)
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@:-]{1,128}$")
 
+AGENT_VERSION = "0.13.0"
+AGENT_PROTOCOL = 2
+AGENT_CAPABILITIES = (
+    "scan_updates",
+    "install_updates",
+    "job_leases_v1",
+    "health_telemetry_v1",
+    "rollback_checkpoint_v1",
+    "rollback_restore_v1",
+    "mtls_client_v1",
+)
+
 
 def utcnow():
     return datetime.now(timezone.utc).isoformat()
@@ -82,7 +94,7 @@ def api(cfg, method, path, *, json_body=None, headers=None, timeout=60):
     if not url.lower().startswith("https://"):
         raise RuntimeError("server_url must use https://")
 
-    h = {"User-Agent": "PatchManagerAgent/0.11.0"}
+    h = {"User-Agent": f"PatchManagerAgent/{AGENT_VERSION}"}
     if headers:
         h.update(headers)
 
@@ -336,6 +348,11 @@ def inventory():
         "python": sys.version.split()[0],
         "cpu_count": os.cpu_count(),
         "boot_time_hint": None,
+        "agent": {
+            "version": AGENT_VERSION,
+            "protocol": AGENT_PROTOCOL,
+            "capabilities": list(AGENT_CAPABILITIES),
+        },
         "rollback": rollback_capability(),
     })
     if os.name == "nt":
