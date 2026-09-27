@@ -1,50 +1,113 @@
 # Be Safe Patch Manager
 
-MVP centralizado de Patch Management para Windows e Linux.
+Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** experimental / MVP. Teste primeiro em laboratório e use rings de implantação antes de produção.
+> **Status:** MVP / laboratório — v0.4. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
-## Recursos
+![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
-- inventário de endpoints;
+## O que já funciona
+
+- inventário e heartbeat de endpoints;
 - scan de updates pendentes;
-- dashboard de compliance;
-- campanhas por SO, tag e percentual de ring;
-- agendamento (`not_before`);
-- instalação de patches;
-- reboot opcional e adiado;
-- logs de execução e auditoria;
+- dashboard de compliance, risco, endpoints, campanhas, execuções e auditoria;
+- Windows Update Agent via COM no Windows;
+- `apt`, `dnf` e `yum` no Linux;
+- campanhas por SO, tag, pacote/KB e percentual;
+- rollout progressivo determinístico em **10% → 30% → 100%**;
+- health gate antes de promover o próximo ring;
+- janela de manutenção opcional por horário, dias e timezone;
+- política de reboot;
+- validação pós-patch com heartbeat novo;
+- checkpoint de rollback antes do patch, quando suportado;
+- aprovação manual de rollback;
+- evidências e trilha de auditoria;
 - autenticação separada para administrador, enrollment e agentes;
-- token individual por endpoint após enrollment;
-- agente sem execução de shell arbitrário remoto.
+- token individual por endpoint;
+- nenhuma ação de shell remoto arbitrário.
+
+## Dashboard
+
+### Visão geral
+
+![Dashboard — Visão geral](docs/images/dashboard-overview.webp)
+
+> A captura acima usa a interface real da `main`; somente os dados foram simulados para mostrar a dashboard populada.
+
+### Execuções, validação e rollback
+
+![Dashboard — Execuções e rollback](docs/images/dashboard-executions.webp)
+
+A tela de execuções consolida status do job, validação pós-patch e estado de rollback. Quando um checkpoint Windows elegível existe, a aprovação de rollback é explícita, exige motivo e gera um novo job auditável.
 
 ## Arquitetura
 
-```text
-                +----------------------+
-                |   Dashboard / API    |
-                | FastAPI + SQLite     |
-                +----------+-----------+
-                           |
-              HTTPS + token por agente
-                           |
-        +------------------+------------------+
-        |                                     |
-+-------+--------+                    +-------+--------+
-| Windows Agent |                    |  Linux Agent   |
-| WUA COM API   |                    | apt/dnf/yum    |
-+----------------+                    +----------------+
-```
+![Be Safe Patch Manager — Arquitetura geral](docs/images/architecture-overview.webp)
 
-## 1. Subir o servidor
+A implementação atual é centralizada em FastAPI e usa SQLite no MVP. Os agentes Windows e Linux fazem polling de jobs, enviam heartbeat, inventário, patch scan e evidências de execução.
 
-Pré-requisitos: Docker + Docker Compose.
+O desenho mostra **OpenVAS / Greenbone como integração opcional/futura**. Essa integração ainda não faz parte da v0.4; a intenção é evoluir para correlação CVE → endpoint → patch → rescan.
+
+## Fluxo seguro de implantação
+
+![Be Safe Patch Manager — Fluxo seguro de implantação](docs/images/secure-rollout-flow.webp)
+
+O fluxo atual é:
+
+1. criar a campanha com alvo, ring, pacotes/KBs, janela e política de reboot;
+2. preparar checkpoint de rollback quando habilitado e suportado;
+3. distribuir o primeiro ring;
+4. aguardar o health gate;
+5. promover para 30%;
+6. promover para 100%;
+7. usar rollback somente com aprovação manual quando necessário.
+
+O health gate exige, no ring atual:
+
+- nenhum job ativo;
+- jobs em estado terminal;
+- taxa de sucesso de pelo menos 90%;
+- validação pós-patch sem falha ou espera;
+- heartbeat novo após a instalação;
+- ausência de reboot ainda pendente;
+- ausência de regressão no número de updates pendentes/críticos em relação ao baseline.
+
+## Rollback
+
+Rollback não é tratado como uma operação genérica ou automática.
+
+### Windows
+
+Quando o endpoint suporta System Restore, o agente pode criar um restore point antes da instalação. A evidência do checkpoint fica associada ao job.
+
+A restauração só é colocada na fila após:
+
+- aprovação explícita do administrador;
+- motivo obrigatório;
+- confirmação de risco.
+
+O job de rollback usa somente o restore point registrado e agenda o reboot necessário para concluir a restauração.
+
+### Linux
+
+O agente detecta Snapper configurado e pode criar snapshot quando disponível. Na v0.4, a recuperação Linux permanece **manual**; o Patch Manager registra a evidência do snapshot, mas não executa rollback automático de filesystem.
+
+A campanha pode usar dois modos:
+
+- **best effort:** tenta criar checkpoint e continua se ele não estiver disponível;
+- **checkpoint obrigatório:** a instalação é bloqueada se a proteção de rollback não puder ser criada.
+
+## Quick start
+
+### Servidor
+
+Pré-requisitos: Docker e Docker Compose.
 
 ```bash
 cp .env.example .env
 ```
 
-Gere dois tokens fortes, aleatórios e diferentes. Exemplo:
+Gere dois tokens fortes, aleatórios e diferentes:
 
 ```bash
 python3 - <<'PY'
@@ -54,14 +117,12 @@ print("ENROLLMENT_TOKEN=" + secrets.token_urlsafe(48))
 PY
 ```
 
-Copie os valores para `.env` e então:
+Copie os valores para `.env` e suba o serviço:
 
 ```bash
 docker compose up -d --build
 docker compose ps
 ```
-
-O servidor **recusa iniciar** se os tokens estiverem ausentes, tiverem menos de 32 caracteres, ainda parecerem placeholders ou forem iguais.
 
 Dashboard local:
 
@@ -71,169 +132,103 @@ http://IP-DO-SERVIDOR:8080
 
 Em produção, use reverse proxy com HTTPS e não exponha a API administrativa diretamente à Internet.
 
-## 2. Instalar agente Linux
-
-O agente precisa rodar como root porque o gerenciador de pacotes exige privilégio.
-
-No diretório raiz do projeto:
+### Agente Linux
 
 ```bash
 sudo ./deploy/install-linux.sh https://patch.seudominio.local piloto
 ```
 
-O instalador solicitará o `ENROLLMENT_TOKEN` sem ecoar o valor no terminal. Para provisionamento automatizado, também é possível fornecer `PATCH_ENROLLMENT_TOKEN` por um mecanismo seguro de secrets do ambiente de automação.
+O instalador solicita o `ENROLLMENT_TOKEN` sem ecoar o valor. Após o primeiro enrollment, o token compartilhado é removido da configuração local e fica somente a credencial individual do agente.
 
-Após o primeiro enrollment bem-sucedido, o agente remove o token compartilhado de enrollment do arquivo `/etc/patch-manager/agent.json` e mantém somente sua credencial individual.
+### Agente Windows
 
-Status:
-
-```bash
-systemctl status patch-manager-agent
-journalctl -u patch-manager-agent -f
-```
-
-## 3. Instalar agente Windows
-
-Pré-requisitos: Python 3 instalado e PowerShell executado como Administrador.
-
-A partir da pasta do projeto:
+Execute PowerShell como Administrador:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
+
 .\deploy\windows\install-agent.ps1 `
   -ServerUrl "https://patch.seudominio.local" `
   -Tags @("piloto")
 ```
 
-O instalador solicitará o token de enrollment como `SecureString`. O `agent.json` recebe ACL restritiva para `SYSTEM` e o grupo interno de Administradores. Após o enrollment, o token compartilhado é removido do arquivo.
+O instalador solicita o enrollment token como `SecureString`, aplica ACL restritiva ao `agent.json` e cria a tarefa agendada do agente.
 
-O instalador cria a tarefa agendada `PatchManagerAgent` executada como `SYSTEM`.
+## Como os agentes operam
 
-## 4. Operação
+Cada agente:
 
-Abra o dashboard, informe o `ADMIN_TOKEN` e clique em **Entrar**. O token fica somente em memória na página e não é persistido em `localStorage` ou `sessionStorage`; recarregar a página exige autenticação novamente.
+1. faz enrollment inicial;
+2. remove o enrollment token compartilhado;
+3. executa scan periódico;
+4. envia heartbeat com inventário, patches e capacidade de rollback;
+5. faz polling de jobs;
+6. executa somente ações permitidas;
+7. envia resultado e evidências;
+8. faz novo scan/heartbeat após patching.
 
-Cada agente fará:
+As ações aceitas são restritas a:
 
-1. enrollment inicial;
-2. remoção local do token compartilhado de enrollment;
-3. scan periódico;
-4. heartbeat com inventário e updates;
-5. polling de jobs;
-6. execução apenas de `scan_updates` ou `install_updates`;
-7. envio de resultado e novo scan pós-patch.
+- `scan_updates`;
+- `install_updates`;
+- `rollback_checkpoint` — criado pelo servidor somente após aprovação administrativa válida.
 
-### Rings
+Não existe endpoint de shell remoto arbitrário.
 
-O campo `ring_percent` seleciona uma parcela determinística dos endpoints que também atendam aos filtros de SO/tag.
+## Segurança já implementada
 
-Exemplo recomendado:
-
-- campanha 1: tag `lab`, 100%;
-- campanha 2: tag `piloto`, 100%;
-- campanha 3: tag `prod`, 10%;
-- campanha 4: tag `prod`, 30%;
-- campanha 5: tag `prod`, 100%.
-
-No MVP cada campanha é independente. Promoção automática entre rings pode ser adicionada posteriormente com health gates.
-
-## 5. Pacotes específicos
-
-Se o campo **Pacotes/KBs** ficar vazio, o agente instala os updates disponíveis do SO.
-
-Windows aceita somente identificadores no formato `KB1234567`. Linux aceita somente nomes de pacote que passem pela whitelist de caracteres do agente.
-
-Isso é proposital: a API não aceita comandos remotos arbitrários.
-
-## 6. Windows
-
-O agente usa a API nativa Windows Update Agent via COM (`Microsoft.Update.Session`). Ele procura software não instalado e não oculto, baixa e instala as atualizações selecionadas.
-
-O reboot nunca acontece antes de o resultado ser produzido. Quando permitido e necessário, ele é agendado para aproximadamente dois minutos depois.
-
-## 7. Linux
-
-Suportado no MVP:
-
-- Debian/Ubuntu: `apt-get`;
-- Fedora/RHEL e derivados: `dnf`;
-- sistemas legados compatíveis: `yum`.
-
-Sem lista de pacotes, a campanha atualiza os pacotes disponíveis. Com lista, limita a atualização aos pacotes indicados.
-
-## 8. API administrativa
-
-Todas as rotas `/api/admin/*` exigem:
-
-```text
-X-Admin-Token: <ADMIN_TOKEN>
-```
-
-Exemplo:
-
-```bash
-curl -H "X-Admin-Token: $ADMIN_TOKEN" http://localhost:8080/api/admin/summary
-```
-
-## 9. Segurança
-
-Controles já presentes no MVP:
-
-- ausência de endpoint de shell remoto arbitrário;
-- tokens administrativos/enrollment obrigatórios e distintos;
+- `ADMIN_TOKEN` e `ENROLLMENT_TOKEN` obrigatórios, fortes e distintos;
 - credencial individual por agente;
-- token de enrollment descartado após o primeiro registro;
-- lista restrita de ações aceitas pelo agente;
-- validação de nomes de pacotes/KBs;
-- configuração do agente Linux com modo `0600`;
-- ACL restritiva do `agent.json` no Windows;
-- token administrativo não persistido pelo dashboard;
-- `.gitignore` cobrindo secrets, chaves, certificados, bancos e logs.
+- enrollment token descartado após registro;
+- token administrativo somente em memória no navegador;
+- ações do agente em allowlist;
+- validação de nomes de pacotes e KBs;
+- arquivo de configuração Linux com modo `0600`;
+- ACL restritiva no Windows;
+- rollout em rings e health gate;
+- janela de manutenção;
+- validação pós-patch;
+- aprovação manual de rollback;
+- auditoria de operações;
+- `.gitignore` para secrets, chaves, certificados, bancos e logs;
+- SECURITY.md;
+- pre-publish security check;
+- CI com validação de Python, Shell e JavaScript.
 
 Para produção, ainda são recomendados:
 
 - TLS obrigatório;
-- firewall/ACL limitando a API administrativa;
-- rotação e revogação de tokens;
-- PostgreSQL;
-- SSO/RBAC para operadores;
-- assinatura dos binários/agentes;
-- assinatura de políticas/campanhas;
-- rate limiting;
+- SSO/RBAC;
+- rotação e revogação de credenciais;
 - mTLS para agentes;
-- backup e recuperação do banco;
-- integração com SIEM/ITSM;
-- code signing no agente Windows;
-- health gates antes de promover rings.
+- PostgreSQL;
+- backup e HA;
+- rate limiting;
+- code signing do agente;
+- assinatura de políticas/campanhas;
+- hardening do host e do reverse proxy;
+- testes de integração Windows/Linux.
 
-Leia também [`SECURITY.md`](SECURITY.md).
+Leia também [SECURITY.md](SECURITY.md).
 
-## 10. Antes de publicar no GitHub
-
-Execute o check incluído no repositório e confirme o status do Git:
-
-```bash
-python3 scripts/pre-publish-check.py
-git status --short
-```
-
-O workflow de CI executa esse check novamente em pushes e pull requests.
-
-Nunca publique um `.env` real nem o `agent.json` de um endpoint já registrado.
-
-## 11. Estrutura
+## Estrutura
 
 ```text
 be-safe-patch-manager/
 ├── docker-compose.yml
 ├── .env.example
-├── .gitignore
 ├── LICENSE
+├── README.md
 ├── SECURITY.md
 ├── CHANGELOG.md
+├── docs/
+│   └── images/
+│       ├── dashboard-overview.webp
+│       ├── dashboard-executions.webp
+│       ├── architecture-overview.webp
+│       └── secure-rollout-flow.webp
 ├── .github/workflows/ci.yml
 ├── scripts/pre-publish-check.py
-├── README.md
 ├── server/
 │   ├── Dockerfile
 │   ├── requirements.txt
@@ -257,10 +252,20 @@ be-safe-patch-manager/
     └── windows/install-agent.ps1
 ```
 
-## 12. Próximas evoluções
+## Roadmap
 
-A arquitetura separa backend e agente para permitir integrações futuras com scanners de vulnerabilidade, SIEM, monitoramento, SOAR e ITSM, além de CVE → patch, health checks, aprovação, SLA, exceções com validade e relatórios de evidência por campanha.
+Próximas evoluções planejadas:
+
+- integração OpenVAS / Greenbone;
+- correlação CVE → endpoint → patch → rescan;
+- ingestão de CVEs do Wazuh;
+- patching de aplicações de terceiros;
+- integração ITSM/SOAR;
+- SLA, exceções e relatórios consolidados;
+- testes automatizados Windows/Linux;
+- assinatura e distribuição endurecida do agente;
+- PostgreSQL e HA.
 
 ## Licença
 
-Apache License 2.0. Veja [`LICENSE`](LICENSE).
+Apache License 2.0. Veja [LICENSE](LICENSE).
