@@ -28,6 +28,10 @@
 - console mostra tendência de risco (`up`, `down`, `flat`, `new`) e permite snapshot manual auditado;
 - adicionada decomposição explicável do Asset Risk e ranking global de `top_contributors`;
 - adicionada documentação técnica completa em `docs/risk-model.md` com fórmula, escalas, APIs, exemplos e princípios de segurança;
+- adicionado `AssetRiskProfile` persistente com migration `0008_risk_profiles`;
+- admin pode sobrescrever criticidade, exposição e controles por ativo, com precedência `profile > tags > default`;
+- alterações de perfil exigem motivo, ficam auditadas e geram novo snapshot de risco;
+- console permite editar o perfil de risco diretamente no ranking de ativos;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
