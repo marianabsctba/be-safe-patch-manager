@@ -20,8 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -29,8 +29,9 @@ from .greenbone import public_config as public_greenbone_config
 from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 from .agent_updates import AgentReleaseError, load_signed_release
+from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.17.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.18.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -74,6 +75,7 @@ AGENT_MIN_VERSION = os.getenv("AGENT_MIN_VERSION", "0.13.0").strip() or "0.13.0"
 AGENT_MIN_PROTOCOL = _seconds_setting("AGENT_MIN_PROTOCOL", 2, 1)
 AGENT_ENFORCE_COMPATIBILITY = _bool_setting("AGENT_ENFORCE_COMPATIBILITY", False)
 AGENT_UPDATE_ENABLED = _bool_setting("AGENT_UPDATE_ENABLED", False)
+ASSET_RISK_APPETITE = _seconds_setting("ASSET_RISK_APPETITE", 700, 1)
 AGENT_RELEASE_DIR = Path(os.getenv("AGENT_RELEASE_DIR", "/agent-releases"))
 AGENT_UPDATE_PUBLIC_KEY_FILE = Path(
     os.getenv("AGENT_UPDATE_PUBLIC_KEY_FILE", "/update-trust/agent-update-public.pem")
@@ -404,6 +406,950 @@ def severity_from_cvss(cvss: float, explicit: str = "") -> str:
     return "unknown"
 
 
+VULNERABILITY_SLA_HOURS = {
+    "critical": _seconds_setting("VULNERABILITY_SLA_CRITICAL_HOURS", 72, 1),
+    "high": _seconds_setting("VULNERABILITY_SLA_HIGH_HOURS", 168, 1),
+    "medium": _seconds_setting("VULNERABILITY_SLA_MEDIUM_HOURS", 720, 1),
+    "low": _seconds_setting("VULNERABILITY_SLA_LOW_HOURS", 2160, 1),
+    "info": _seconds_setting("VULNERABILITY_SLA_INFO_HOURS", 4320, 1),
+    "unknown": _seconds_setting("VULNERABILITY_SLA_UNKNOWN_HOURS", 720, 1),
+}
+VULNERABILITY_SLA_DUE_SOON_HOURS = _seconds_setting(
+    "VULNERABILITY_SLA_DUE_SOON_HOURS",
+    24,
+    1,
+)
+
+
+def serialize_sla_exception(item: VulnerabilitySlaException, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    expires_at = item.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    revoked_at = item.revoked_at
+    if revoked_at and revoked_at.tzinfo is None:
+        revoked_at = revoked_at.replace(tzinfo=timezone.utc)
+    active = revoked_at is None and expires_at > reference
+    return {
+        "id": item.id,
+        "finding_id": item.finding_id,
+        "reason": item.reason,
+        "approved_by": item.approved_by,
+        "expires_at": expires_at.isoformat(),
+        "revoked_at": revoked_at.isoformat() if revoked_at else None,
+        "revoked_by": item.revoked_by,
+        "revoke_reason": item.revoke_reason,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "active": active,
+        "expired": revoked_at is None and expires_at <= reference,
+    }
+
+
+def active_sla_exception(finding: VulnerabilityFinding, reference: datetime | None = None):
+    reference = reference or now()
+    candidates = sorted(
+        list(finding.sla_exceptions or []),
+        key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    for item in candidates:
+        data = serialize_sla_exception(item, reference)
+        if data["active"]:
+            return item
+    return None
+
+
+def vulnerability_sla(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+
+    severity = str(finding.severity or "unknown").strip().lower()
+    target_hours = int(VULNERABILITY_SLA_HOURS.get(severity, VULNERABILITY_SLA_HOURS["unknown"]))
+    first_seen = finding.first_seen or finding.created_at or reference
+    if first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=timezone.utc)
+
+    due_at = first_seen + timedelta(hours=target_hours)
+    age_hours = max(0.0, (reference - first_seen).total_seconds() / 3600.0)
+    remaining_hours = (due_at - reference).total_seconds() / 3600.0
+    exception = active_sla_exception(finding, reference)
+    open_finding = finding.status == "open"
+    active = open_finding and exception is None
+
+    if exception is not None:
+        state = "exception"
+    elif not open_finding:
+        state = "excluded"
+    elif remaining_hours < 0:
+        state = "breached"
+    elif remaining_hours <= VULNERABILITY_SLA_DUE_SOON_HOURS:
+        state = "due_soon"
+    else:
+        state = "within_sla"
+
+    return {
+        "state": state,
+        "active": active,
+        "open": open_finding,
+        "target_hours": target_hours,
+        "age_hours": round(age_hours, 1),
+        "remaining_hours": round(remaining_hours, 1),
+        "due_at": due_at.isoformat(),
+        "breached": state == "breached",
+        "due_soon": state == "due_soon",
+        "exception": serialize_sla_exception(exception, reference) if exception else None,
+    }
+
+
+def remediation_recommendation(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    risk = vulnerability_risk(finding, reference)
+    sla = vulnerability_sla(finding, reference)
+    matched = bool(finding.agent_id and finding.agent)
+    patch_refs = load(finding.patch_refs_json, [])
+    patchable = bool(patch_refs)
+    reasons = []
+
+    priority = float(risk["score"])
+    if sla["state"] == "breached":
+        priority += 20
+        reasons.append("SLA vencido")
+    elif sla["state"] == "due_soon":
+        priority += 10
+        reasons.append("SLA próximo do vencimento")
+    elif sla["state"] == "exception":
+        reasons.append("exceção de SLA ativa")
+
+    if risk["kev"]:
+        priority += 10
+        reasons.append("CVE presente no CISA KEV")
+    if risk["epss"] is not None and risk["epss"] >= 0.5:
+        reasons.append(f"EPSS {round(risk['epss'] * 100)}%")
+    if not matched:
+        reasons.append("finding sem endpoint gerenciado correlacionado")
+    if matched and not patchable:
+        reasons.append("sem referência de patch/KB normalizada")
+
+    priority = round(min(100.0, priority), 1)
+
+    if finding.status != "open":
+        action = "none"
+        eligible = False
+        reasons.append("finding não está aberto")
+    elif sla["state"] == "exception":
+        action = "exception_active"
+        eligible = False
+    elif not matched:
+        action = "correlate_asset"
+        eligible = False
+    elif not patchable:
+        action = "scan_or_manual_triage"
+        eligible = True
+    elif risk["level"] == "urgent" or sla["state"] == "breached":
+        action = "patch_now"
+        eligible = True
+    elif risk["level"] == "high" or sla["state"] == "due_soon":
+        action = "schedule_patch"
+        eligible = True
+    else:
+        action = "plan_patch"
+        eligible = True
+
+    return {
+        "priority_score": priority,
+        "action": action,
+        "eligible_for_campaign": eligible,
+        "matched": matched,
+        "patchable": patchable,
+        "patch_refs": patch_refs,
+        "risk": risk,
+        "sla": sla,
+        "reasons": reasons,
+    }
+
+
+def remediation_queue_report(db: Session, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    findings = db.query(VulnerabilityFinding).filter(
+        VulnerabilityFinding.status == "open"
+    ).all()
+
+    items = []
+    summary = {
+        "total_open": len(findings),
+        "patch_now": 0,
+        "schedule_patch": 0,
+        "plan_patch": 0,
+        "scan_or_manual_triage": 0,
+        "correlate_asset": 0,
+        "exception_active": 0,
+        "eligible_for_campaign": 0,
+    }
+
+    for finding in findings:
+        recommendation = remediation_recommendation(finding, reference)
+        action = recommendation["action"]
+        summary[action] = summary.get(action, 0) + 1
+        if recommendation["eligible_for_campaign"]:
+            summary["eligible_for_campaign"] += 1
+
+        items.append({
+            "id": finding.id,
+            "cve": finding.cve,
+            "title": finding.title,
+            "severity": finding.severity,
+            "cvss": finding.cvss,
+            "agent_id": finding.agent_id,
+            "hostname": finding.agent.hostname if finding.agent else "",
+            "source": finding.source,
+            "last_seen": finding.last_seen.isoformat() if finding.last_seen else None,
+            "recommendation": recommendation,
+        })
+
+    action_rank = {
+        "patch_now": 0,
+        "schedule_patch": 1,
+        "scan_or_manual_triage": 2,
+        "plan_patch": 3,
+        "correlate_asset": 4,
+        "exception_active": 5,
+        "none": 9,
+    }
+    items.sort(key=lambda item: (
+        action_rank.get(item["recommendation"]["action"], 8),
+        -item["recommendation"]["priority_score"],
+        -float(item.get("cvss") or 0),
+    ))
+
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": summary,
+        "items": items,
+    }
+
+
+def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    findings = db.query(VulnerabilityFinding).all()
+    summary = {
+        "active": 0,
+        "within_sla": 0,
+        "due_soon": 0,
+        "breached": 0,
+        "excluded": 0,
+        "exception": 0,
+    }
+    by_severity = {}
+    items = []
+
+    for finding in findings:
+        sla = vulnerability_sla(finding, reference)
+        state = sla["state"]
+        summary[state] = summary.get(state, 0) + 1
+        if sla["active"]:
+            summary["active"] += 1
+
+        severity = str(finding.severity or "unknown").strip().lower()
+        bucket = by_severity.setdefault(
+            severity,
+            {"active": 0, "within_sla": 0, "due_soon": 0, "breached": 0, "exception": 0},
+        )
+        if sla["active"]:
+            bucket["active"] += 1
+        if sla["open"]:
+            bucket[state] = bucket.get(state, 0) + 1
+
+        items.append({
+            "id": finding.id,
+            "cve": finding.cve,
+            "title": finding.title,
+            "severity": severity,
+            "status": finding.status,
+            "agent_id": finding.agent_id,
+            "hostname": finding.agent.hostname if finding.agent else "",
+            "first_seen": finding.first_seen.isoformat() if finding.first_seen else None,
+            "last_seen": finding.last_seen.isoformat() if finding.last_seen else None,
+            "sla": sla,
+        })
+
+    state_rank = {"breached": 0, "due_soon": 1, "within_sla": 2, "exception": 3, "excluded": 4}
+    items.sort(key=lambda item: (
+        state_rank.get(item["sla"]["state"], 9),
+        item["sla"]["remaining_hours"],
+        item["severity"],
+        item["cve"],
+    ))
+
+    return {
+        "generated_at": reference.isoformat(),
+        "policy": {
+            "hours_by_severity": VULNERABILITY_SLA_HOURS,
+            "due_soon_hours": VULNERABILITY_SLA_DUE_SOON_HOURS,
+            "active_statuses": ["open"],
+        },
+        "summary": summary,
+        "by_severity": by_severity,
+        "items": items,
+    }
+
+
+ASSET_CRITICALITY_TAGS = {
+    "tier0": 5,
+    "mission-critical": 5,
+    "critical": 5,
+    "prod": 4,
+    "production": 4,
+    "database": 4,
+    "domain-controller": 5,
+    "identity": 5,
+    "internet-facing": 4,
+    "public": 4,
+    "dmz": 4,
+    "staging": 2,
+    "dev": 1,
+    "development": 1,
+    "lab": 1,
+}
+
+ASSET_RISK_SEVERITY_WEIGHTS = {
+    "critical": 2.0,
+    "high": 1.5,
+    "medium": 1.0,
+    "low": 0.5,
+    "unknown": 0.5,
+}
+
+
+def serialize_asset_risk_acceptance(
+    acceptance: AssetRiskAcceptance,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    expires_at = acceptance.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    revoked_at = acceptance.revoked_at
+    if revoked_at and revoked_at.tzinfo is None:
+        revoked_at = revoked_at.replace(tzinfo=timezone.utc)
+    active = acceptance.revoked_at is None and expires_at > reference
+    return {
+        "id": acceptance.id,
+        "agent_id": acceptance.agent_id,
+        "reason": acceptance.reason,
+        "approved_by": acceptance.approved_by,
+        "expires_at": expires_at.isoformat(),
+        "revoked_at": revoked_at.isoformat() if revoked_at else None,
+        "revoked_by": acceptance.revoked_by,
+        "revoke_reason": acceptance.revoke_reason,
+        "created_at": acceptance.created_at.isoformat() if acceptance.created_at else None,
+        "active": active,
+        "expired": acceptance.revoked_at is None and expires_at <= reference,
+    }
+
+
+def active_asset_risk_acceptance(
+    agent: Agent,
+    reference: datetime | None = None,
+) -> AssetRiskAcceptance | None:
+    reference = reference or now()
+    active = []
+    for acceptance in agent.risk_acceptances or []:
+        expires_at = acceptance.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if acceptance.revoked_at is None and expires_at > reference:
+            active.append(acceptance)
+    if not active:
+        return None
+    active.sort(key=lambda item: item.expires_at)
+    return active[0]
+
+
+def serialize_asset_risk_policy(policy: AssetRiskPolicy) -> dict:
+    return {
+        "id": policy.id,
+        "name": policy.name,
+        "target_tag": policy.target_tag,
+        "risk_appetite": policy.risk_appetite,
+        "priority": policy.priority,
+        "enabled": policy.enabled,
+        "reason": policy.reason,
+        "created_by": policy.created_by,
+        "updated_by": policy.updated_by,
+        "created_at": policy.created_at.isoformat() if policy.created_at else None,
+        "updated_at": policy.updated_at.isoformat() if policy.updated_at else None,
+    }
+
+
+def effective_asset_risk_policy(db: Session, agent: Agent) -> dict:
+    tags = {
+        str(tag).strip().lower()
+        for tag in load(agent.tags, [])
+        if str(tag).strip()
+    }
+    policies = db.query(AssetRiskPolicy).filter(
+        AssetRiskPolicy.enabled.is_(True)
+    ).order_by(
+        AssetRiskPolicy.priority.desc(),
+        AssetRiskPolicy.name.asc(),
+    ).all()
+
+    for policy in policies:
+        if str(policy.target_tag or "").strip().lower() in tags:
+            return {
+                "source": "policy",
+                "policy": serialize_asset_risk_policy(policy),
+                "risk_appetite": policy.risk_appetite,
+            }
+
+    return {
+        "source": "global",
+        "policy": None,
+        "risk_appetite": min(1000, ASSET_RISK_APPETITE),
+    }
+
+
+def serialize_asset_risk_profile(profile: AssetRiskProfile | None) -> dict | None:
+    if not profile:
+        return None
+    return {
+        "agent_id": profile.agent_id,
+        "criticality": profile.criticality_override,
+        "external": profile.external_override,
+        "compensating_controls": (
+            load(profile.controls_json, [])
+            if profile.controls_json is not None
+            else None
+        ),
+        "reason": profile.reason,
+        "updated_by": profile.updated_by,
+        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
+    }
+
+
+def asset_criticality(agent: Agent | None) -> dict:
+    tags = []
+    if agent:
+        tags = [str(tag).strip().lower() for tag in load(agent.tags, []) if str(tag).strip()]
+
+    if agent and agent.risk_profile and agent.risk_profile.criticality_override is not None:
+        score = max(1, min(5, int(agent.risk_profile.criticality_override)))
+        return {
+            "score": score,
+            "source": "profile",
+            "contributors": [{"profile": True, "score": score}],
+            "tags": tags,
+        }
+
+    contributors = [
+        {"tag": tag, "score": ASSET_CRITICALITY_TAGS[tag]}
+        for tag in tags
+        if tag in ASSET_CRITICALITY_TAGS
+    ]
+    score = max([item["score"] for item in contributors], default=2)
+    return {
+        "score": score,
+        "source": "tags" if contributors else "default",
+        "contributors": sorted(contributors, key=lambda item: -item["score"]),
+        "tags": tags,
+    }
+
+
+def finding_detection_risk(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    raw = load(finding.raw_json, {})
+    threat = raw.get("threat_intel") if isinstance(raw.get("threat_intel"), dict) else raw
+    factors = []
+
+    cvss = max(0.0, min(10.0, float(finding.cvss or 0.0)))
+    cvss_points = cvss * 6.0
+    score = cvss_points
+    factors.append({"factor": "cvss", "points": round(cvss_points, 1), "value": cvss})
+
+    try:
+        epss = float(threat.get("epss")) if threat.get("epss") is not None else None
+    except (TypeError, ValueError):
+        epss = None
+    if epss is not None:
+        epss = max(0.0, min(1.0, epss))
+        points = epss * 20.0
+        score += points
+        factors.append({"factor": "epss", "points": round(points, 1), "value": epss})
+
+    kev = bool(threat.get("kev") or raw.get("known_exploited") or raw.get("cisa_kev"))
+    if kev:
+        score += 15
+        factors.append({"factor": "known_exploited", "points": 15, "value": True})
+
+    ransomware = str(threat.get("kev_ransomware_use") or "").strip().lower()
+    ransomware_known = ransomware in {"known", "yes", "true"} or bool(raw.get("ransomware"))
+    if ransomware_known:
+        score += 10
+        factors.append({"factor": "ransomware", "points": 10, "value": True})
+
+    first_seen = finding.first_seen or finding.created_at or reference
+    if first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (reference - first_seen).total_seconds() / 86400.0)
+    age_points = min(10.0, age_days / 9.0)
+    if age_points:
+        score += age_points
+        factors.append({"factor": "age", "points": round(age_points, 1), "value_days": round(age_days, 1)})
+
+    score = round(max(1.0, min(100.0, score)), 1)
+    if score >= 90:
+        level = "critical"
+    elif score >= 70:
+        level = "high"
+    elif score >= 40:
+        level = "medium"
+    else:
+        level = "low"
+
+    return {
+        "score": score,
+        "level": level,
+        "cvss": cvss,
+        "epss": epss,
+        "kev": kev,
+        "ransomware": ransomware_known,
+        "age_days": round(age_days, 1),
+        "factors": factors,
+    }
+
+
+def asset_exposure(agent: Agent | None) -> dict:
+    criticality = asset_criticality(agent)
+    tags = set(criticality["tags"])
+
+    if agent and agent.risk_profile and agent.risk_profile.external_override is not None:
+        external = bool(agent.risk_profile.external_override)
+        return {
+            "external": external,
+            "multiplier": 1.2 if external else 1.0,
+            "contributors": ["risk_profile"],
+            "source": "profile",
+        }
+
+    external_tags = sorted(tags.intersection({"internet-facing", "public", "dmz", "external"}))
+    external = bool(external_tags)
+    return {
+        "external": external,
+        "multiplier": 1.2 if external else 1.0,
+        "contributors": external_tags,
+        "source": "tags" if external_tags else "default",
+    }
+
+
+def asset_compensating_factor(agent: Agent | None) -> dict:
+    tags = set(asset_criticality(agent)["tags"])
+    source = "tags"
+
+    if agent and agent.risk_profile and agent.risk_profile.controls_json is not None:
+        tags = {
+            str(value).strip().lower()
+            for value in load(agent.risk_profile.controls_json, [])
+            if str(value).strip()
+        }
+        source = "profile"
+
+    controls = []
+    multiplier = 1.0
+    if "segmented" in tags:
+        multiplier *= 0.9
+        controls.append({"tag": "segmented", "multiplier": 0.9})
+    if "edr-protected" in tags:
+        multiplier *= 0.9
+        controls.append({"tag": "edr-protected", "multiplier": 0.9})
+    if "restricted-egress" in tags:
+        multiplier *= 0.95
+        controls.append({"tag": "restricted-egress", "multiplier": 0.95})
+    multiplier = max(0.6, round(multiplier, 4))
+    return {
+        "multiplier": multiplier,
+        "controls": controls,
+        "source": source,
+    }
+
+
+def asset_risk_score(agent: Agent, findings: list[VulnerabilityFinding], reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    open_findings = [finding for finding in findings if finding.status == "open"]
+    criticality = asset_criticality(agent)
+    exposure = asset_exposure(agent)
+    compensating = asset_compensating_factor(agent)
+
+    buckets = {}
+    top_factors = []
+    for finding in open_findings:
+        detection = finding_detection_risk(finding, reference)
+        severity = str(finding.severity or "unknown").lower()
+        bucket = buckets.setdefault(severity, [])
+        bucket.append(detection["score"])
+        if detection["kev"]:
+            top_factors.append("CISA KEV")
+        if detection["ransomware"]:
+            top_factors.append("ransomware")
+        if detection["epss"] is not None and detection["epss"] >= 0.5:
+            top_factors.append("EPSS alto")
+
+    weighted = 0.0
+    bucket_breakdown = {}
+    for severity, scores in buckets.items():
+        avg_score = sum(scores) / len(scores)
+        count_factor = math.pow(max(1, len(scores)), 0.01)
+        weight = ASSET_RISK_SEVERITY_WEIGHTS.get(severity, 0.5)
+        contribution = avg_score * count_factor * weight
+        weighted += contribution
+        bucket_breakdown[severity] = {
+            "count": len(scores),
+            "average_detection_risk": round(avg_score, 1),
+            "weight": weight,
+            "contribution": round(contribution, 1),
+        }
+
+    base_weighted = weighted
+    criticality_effect = base_weighted * max(0.0, criticality["score"] - 1)
+    exposure_effect = base_weighted * criticality["score"] * max(0.0, exposure["multiplier"] - 1.0)
+    pre_compensation = base_weighted * criticality["score"] * exposure["multiplier"]
+    compensation_reduction = pre_compensation * max(0.0, 1.0 - compensating["multiplier"])
+
+    raw_score = pre_compensation * compensating["multiplier"]
+    score = round(min(1000.0, raw_score), 1)
+
+    contributor_values = []
+    for severity, data in bucket_breakdown.items():
+        contributor_values.append({
+            "name": f"findings:{severity}",
+            "category": "vulnerabilities",
+            "raw": round(data["contribution"], 1),
+        })
+    if criticality_effect > 0:
+        contributor_values.append({
+            "name": "asset_criticality",
+            "category": "asset_context",
+            "raw": round(criticality_effect, 1),
+        })
+    if exposure_effect > 0:
+        contributor_values.append({
+            "name": "external_exposure",
+            "category": "asset_context",
+            "raw": round(exposure_effect, 1),
+        })
+    if compensation_reduction > 0:
+        contributor_values.append({
+            "name": "compensating_controls",
+            "category": "risk_reduction",
+            "raw": round(-compensation_reduction, 1),
+        })
+
+    positive_total = sum(max(0.0, item["raw"]) for item in contributor_values)
+    decomposition = []
+    for item in contributor_values:
+        contribution_percent = (
+            round(max(0.0, item["raw"]) / positive_total * 100, 1)
+            if positive_total and item["raw"] > 0
+            else 0.0
+        )
+        decomposition.append({
+            **item,
+            "percent": contribution_percent,
+        })
+    decomposition.sort(key=lambda item: abs(item["raw"]), reverse=True)
+
+    if score >= 850:
+        level = "critical"
+    elif score >= 700:
+        level = "high"
+    elif score >= 500:
+        level = "medium"
+    else:
+        level = "low"
+
+    if exposure["external"]:
+        top_factors.append("exposição externa")
+    if criticality["score"] >= 4:
+        top_factors.append("ativo crítico")
+
+    return {
+        "score": score,
+        "level": level,
+        "asset_criticality": criticality,
+        "exposure": exposure,
+        "compensating": compensating,
+        "open_findings": len(open_findings),
+        "buckets": bucket_breakdown,
+        "decomposition": decomposition,
+        "top_factors": sorted(set(top_factors)),
+    }
+
+
+def capture_asset_risk_snapshots(
+    db: Session,
+    source: str = "manual",
+    reference: datetime | None = None,
+    minimum_interval_seconds: int = 3600,
+) -> dict:
+    reference = reference or now()
+    report = asset_risk_report(db, reference)
+    created = 0
+    skipped = 0
+
+    for item in report["assets"]:
+        latest = db.query(AssetRiskSnapshot).filter(
+            AssetRiskSnapshot.agent_id == item["agent_id"]
+        ).order_by(AssetRiskSnapshot.captured_at.desc()).first()
+
+        if latest:
+            captured = latest.captured_at
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=timezone.utc)
+            if (reference - captured).total_seconds() < minimum_interval_seconds:
+                skipped += 1
+                continue
+
+        risk = item["risk"]
+        db.add(AssetRiskSnapshot(
+            agent_id=item["agent_id"],
+            score=risk["score"],
+            level=risk["level"],
+            criticality=risk["asset_criticality"]["score"],
+            external=risk["exposure"]["external"],
+            open_findings=risk["open_findings"],
+            factors_json=dump(risk["top_factors"]),
+            source=source,
+            captured_at=reference,
+        ))
+        created += 1
+
+    db.commit()
+    return {
+        "created": created,
+        "skipped": skipped,
+        "source": source,
+        "captured_at": reference.isoformat(),
+    }
+
+
+def asset_risk_history(db: Session, agent_id: str | None = None, limit: int = 500) -> dict:
+    q = db.query(AssetRiskSnapshot)
+    if agent_id:
+        q = q.filter(AssetRiskSnapshot.agent_id == agent_id)
+    rows = q.order_by(AssetRiskSnapshot.captured_at.desc()).limit(max(1, min(limit, 5000))).all()
+
+    items = []
+    for row in rows:
+        items.append({
+            "id": row.id,
+            "agent_id": row.agent_id,
+            "hostname": row.agent.hostname if row.agent else "",
+            "score": row.score,
+            "level": row.level,
+            "criticality": row.criticality,
+            "external": row.external,
+            "open_findings": row.open_findings,
+            "top_factors": load(row.factors_json, []),
+            "source": row.source,
+            "captured_at": row.captured_at.isoformat() if row.captured_at else None,
+        })
+
+    return {
+        "agent_id": agent_id,
+        "items": items,
+    }
+
+
+def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    agents = db.query(Agent).order_by(Agent.hostname.asc()).all()
+    rows = []
+    for agent in agents:
+        findings = list(agent.vulnerabilities or [])
+        risk = asset_risk_score(agent, findings, reference)
+        policy = effective_asset_risk_policy(db, agent)
+        acceptance = active_asset_risk_acceptance(agent, reference)
+        risk["risk_appetite"] = policy["risk_appetite"]
+        risk["above_risk_appetite"] = risk["score"] >= policy["risk_appetite"]
+        risk["governance_status"] = (
+            "accepted"
+            if risk["above_risk_appetite"] and acceptance
+            else "above_appetite"
+            if risk["above_risk_appetite"]
+            else "within_appetite"
+        )
+        rows.append({
+            "agent_id": agent.id,
+            "hostname": agent.hostname,
+            "ip_address": agent.ip_address,
+            "os_family": agent.os_family,
+            "tags": load(agent.tags, []),
+            "risk_profile": serialize_asset_risk_profile(agent.risk_profile),
+            "risk_policy": policy,
+            "risk_acceptance": serialize_asset_risk_acceptance(acceptance, reference) if acceptance else None,
+            "risk": risk,
+        })
+
+    rows.sort(key=lambda row: (-row["risk"]["score"], row["hostname"].lower()))
+
+    for row in rows:
+        snapshots = db.query(AssetRiskSnapshot).filter(
+            AssetRiskSnapshot.agent_id == row["agent_id"]
+        ).order_by(AssetRiskSnapshot.captured_at.desc()).limit(2).all()
+        current = row["risk"]["score"]
+        if not snapshots:
+            trend = {"delta": 0.0, "direction": "new", "previous_score": None}
+        else:
+            previous = float(snapshots[0].score)
+            delta = round(current - previous, 1)
+            if delta > 0:
+                direction = "up"
+            elif delta < 0:
+                direction = "down"
+            else:
+                direction = "flat"
+            trend = {
+                "delta": delta,
+                "direction": direction,
+                "previous_score": previous,
+                "last_snapshot_at": snapshots[0].captured_at.isoformat() if snapshots[0].captured_at else None,
+            }
+        row["risk"]["trend"] = trend
+
+    contributor_totals = {}
+    for row in rows:
+        for item in row["risk"].get("decomposition", []):
+            if item["raw"] <= 0:
+                continue
+            contributor_totals[item["name"]] = contributor_totals.get(item["name"], 0.0) + item["raw"]
+
+    top_contributors = [
+        {"name": name, "raw": round(value, 1)}
+        for name, value in sorted(
+            contributor_totals.items(),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )[:10]
+    ]
+
+    summary = {
+        "assets": len(rows),
+        "critical": sum(1 for row in rows if row["risk"]["level"] == "critical"),
+        "high": sum(1 for row in rows if row["risk"]["level"] == "high"),
+        "medium": sum(1 for row in rows if row["risk"]["level"] == "medium"),
+        "low": sum(1 for row in rows if row["risk"]["level"] == "low"),
+        "external": sum(1 for row in rows if row["risk"]["exposure"]["external"]),
+        "risk_appetite": min(1000, ASSET_RISK_APPETITE),
+        "risk_policies": db.query(AssetRiskPolicy).filter(AssetRiskPolicy.enabled.is_(True)).count(),
+        "above_risk_appetite": sum(
+            1 for row in rows
+            if row["risk"]["above_risk_appetite"]
+        ),
+        "accepted_above_appetite": sum(
+            1 for row in rows
+            if row["risk"]["governance_status"] == "accepted"
+        ),
+        "unaccepted_above_appetite": sum(
+            1 for row in rows
+            if row["risk"]["governance_status"] == "above_appetite"
+        ),
+        "average_score": round(
+            sum(row["risk"]["score"] for row in rows) / len(rows), 1
+        ) if rows else 0.0,
+    }
+    return {
+        "generated_at": reference.isoformat(),
+        "model": "be_safe_asset_risk_v1",
+        "scale": {"min": 0, "max": 1000},
+        "summary": summary,
+        "top_contributors": top_contributors,
+        "assets": rows,
+    }
+
+
+RISK_ASSET_TAG_WEIGHTS = {
+    "critical": 15,
+    "mission-critical": 15,
+    "tier0": 15,
+    "prod": 10,
+    "production": 10,
+    "internet-facing": 15,
+    "public": 10,
+    "dmz": 10,
+}
+
+
+def vulnerability_risk(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    raw = load(finding.raw_json, {})
+    threat = raw.get("threat_intel") if isinstance(raw.get("threat_intel"), dict) else raw
+    reasons = []
+
+    cvss = max(0.0, min(10.0, float(finding.cvss or 0.0)))
+    cvss_points = round(cvss * 4.0, 1)
+    score = cvss_points
+    reasons.append({"factor": "cvss", "points": cvss_points, "value": cvss})
+
+    epss_value = threat.get("epss")
+    try:
+        epss = float(epss_value) if epss_value is not None else None
+    except (TypeError, ValueError):
+        epss = None
+    if epss is not None:
+        epss = max(0.0, min(1.0, epss))
+        epss_points = round(epss * 20.0, 1)
+        score += epss_points
+        reasons.append({"factor": "epss", "points": epss_points, "value": epss})
+
+    kev = bool(threat.get("kev") or raw.get("known_exploited") or raw.get("cisa_kev"))
+    if kev:
+        score += 20
+        reasons.append({"factor": "known_exploited", "points": 20, "value": True})
+
+    first_seen = finding.first_seen or finding.created_at or reference
+    if first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (reference - first_seen).total_seconds() / 86400.0)
+    age_points = min(10.0, age_days / 9.0)
+    if age_points > 0:
+        score += age_points
+        reasons.append({"factor": "age", "points": round(age_points, 1), "value_days": round(age_days, 1)})
+
+    asset_points = 0
+    tags = []
+    if finding.agent:
+        tags = [str(tag).strip().lower() for tag in load(finding.agent.tags, []) if str(tag).strip()]
+        for tag in tags:
+            asset_points = max(asset_points, RISK_ASSET_TAG_WEIGHTS.get(tag, 0))
+    if asset_points:
+        score += asset_points
+        reasons.append({"factor": "asset_criticality", "points": asset_points, "tags": tags})
+
+    if finding.agent is None:
+        score += 5
+        reasons.append({"factor": "unmanaged_or_unmatched", "points": 5, "value": True})
+
+    score = round(min(100.0, score), 1)
+    if score >= 80:
+        level = "urgent"
+    elif score >= 60:
+        level = "high"
+    elif score >= 40:
+        level = "medium"
+    else:
+        level = "low"
+
+    return {
+        "score": score,
+        "level": level,
+        "epss": epss,
+        "kev": kev,
+        "age_days": round(age_days, 1),
+        "asset_tags": tags,
+        "reasons": reasons,
+    }
+
+
 def match_agent_for_vulnerability(db: Session, host: str, ip_address: str):
     host_key = str(host or "").strip().lower().rstrip(".")
     short_host = host_key.split(".", 1)[0] if host_key else ""
@@ -474,6 +1420,8 @@ def serialize_vulnerability(v: VulnerabilityFinding):
         "patch_refs": load(v.patch_refs_json, []),
         "status": v.status,
         "matched": bool(v.agent_id),
+        "sla": vulnerability_sla(v),
+        "risk": vulnerability_risk(v),
         "first_seen": v.first_seen.isoformat() if v.first_seen else None,
         "last_seen": v.last_seen.isoformat() if v.last_seen else None,
         "resolved_at": v.resolved_at.isoformat() if v.resolved_at else None,
@@ -488,6 +1436,8 @@ def serialize_vulnerability(v: VulnerabilityFinding):
 
 GREENBONE_SYNC_LOCK = threading.Lock()
 GREENBONE_STOP = threading.Event()
+THREAT_INTEL_SYNC_LOCK = threading.Lock()
+THREAT_INTEL_STOP = threading.Event()
 
 
 def integration_state(db: Session, name: str) -> IntegrationState:
@@ -553,6 +1503,12 @@ def upsert_vulnerability_findings(db: Session, source: str, scan_id: str, findin
                 updated += 1
 
             raw = value.get("raw") or {}
+            previous_raw = load(item.raw_json, {}) if item.raw_json else {}
+            if (
+                isinstance(previous_raw.get("threat_intel"), dict)
+                and "threat_intel" not in raw
+            ):
+                raw["threat_intel"] = previous_raw["threat_intel"]
             item.scan_id = str(raw.get("greenbone_report_id") or scan_id or "")
             item.agent_id = agent.id if agent else None
             item.host = str(value.get("host") or "")
@@ -903,6 +1859,7 @@ def run_greenbone_sync():
         state.last_error = ""
         state.details_json = dump(details)
         db.commit()
+        capture_asset_risk_snapshots(db, source="greenbone_sync")
         audit(db, "integration:greenbone", "greenbone.sync.success", "integration", "greenbone", details)
         return details
     except Exception as exc:
@@ -921,6 +1878,162 @@ def run_greenbone_sync():
     finally:
         db.close()
         GREENBONE_SYNC_LOCK.release()
+
+
+def run_threat_intel_sync():
+    if not THREAT_INTEL_SYNC_LOCK.acquire(blocking=False):
+        raise RuntimeError("threat intel sync is already running")
+
+    db = SessionLocal()
+    state = integration_state(db, "threat_intel")
+    config = get_threat_intel_config()
+    public = public_threat_intel_config(config)
+    try:
+        state.enabled = public["enabled"]
+        state.status = "running"
+        state.last_attempt_at = now()
+        state.last_error = ""
+        db.commit()
+
+        findings = db.query(VulnerabilityFinding).filter(
+            VulnerabilityFinding.status == "open",
+            VulnerabilityFinding.cve != "",
+        ).all()
+        cves = sorted({finding.cve.upper() for finding in findings if finding.cve})
+        epss_data = {}
+        kev_data = {}
+        errors = {}
+
+        try:
+            epss_data = fetch_epss(cves, config)
+        except Exception as exc:
+            errors["epss"] = str(exc)[:1000]
+
+        try:
+            kev_data = fetch_kev(config)
+        except Exception as exc:
+            errors["kev"] = str(exc)[:1000]
+
+        if len(errors) == 2:
+            raise RuntimeError(
+                "threat intel sources failed: "
+                + "; ".join(f"{name}: {message}" for name, message in sorted(errors.items()))
+            )
+
+        updated = 0
+        epss_enriched = 0
+        kev_enriched = 0
+        timestamp = now().isoformat()
+
+        for finding in findings:
+            cve = finding.cve.upper()
+            raw = load(finding.raw_json, {})
+            threat = raw.get("threat_intel") if isinstance(raw.get("threat_intel"), dict) else {}
+
+            if "epss" not in errors:
+                epss_row = epss_data.get(cve)
+                if epss_row:
+                    threat.update(epss_row)
+                    epss_enriched += 1
+                else:
+                    for key in ("epss", "epss_percentile", "epss_date"):
+                        threat.pop(key, None)
+
+            if "kev" not in errors:
+                kev_row = kev_data.get(cve)
+                if kev_row:
+                    threat.update(kev_row)
+                    kev_enriched += 1
+                else:
+                    threat["kev"] = False
+                    for key in (
+                        "kev_date_added",
+                        "kev_due_date",
+                        "kev_vendor_project",
+                        "kev_product",
+                        "kev_required_action",
+                        "kev_ransomware_use",
+                    ):
+                        threat.pop(key, None)
+
+            threat["updated_at"] = timestamp
+            threat["sources"] = {
+                "epss": "FIRST EPSS",
+                "kev": "CISA KEV",
+            }
+            raw["threat_intel"] = threat
+            finding.raw_json = dump(raw)
+            updated += 1
+
+        details = {
+            "findings_considered": len(findings),
+            "unique_cves": len(cves),
+            "updated": updated,
+            "epss_enriched": epss_enriched,
+            "kev_enriched": kev_enriched,
+            "source_errors": errors,
+        }
+        state.status = "degraded" if errors else "ok"
+        state.last_success_at = now()
+        state.last_error = "; ".join(
+            f"{name}: {message}" for name, message in sorted(errors.items())
+        )
+        state.details_json = dump(details)
+        db.commit()
+        capture_asset_risk_snapshots(db, source="threat_intel_sync")
+        audit(
+            db,
+            "integration:threat_intel",
+            "threat_intel.sync.success",
+            "integration",
+            "threat_intel",
+            details,
+        )
+        return details
+    except Exception as exc:
+        state.status = "error"
+        state.last_error = str(exc)[:2000]
+        db.commit()
+        audit(
+            db,
+            "integration:threat_intel",
+            "threat_intel.sync.failed",
+            "integration",
+            "threat_intel",
+            {"error": str(exc)[:1000]},
+        )
+        raise
+    finally:
+        db.close()
+        THREAT_INTEL_SYNC_LOCK.release()
+
+
+def threat_intel_worker():
+    config = get_threat_intel_config()
+    if not config.enabled:
+        return
+    next_sync_at = now()
+    while not THREAT_INTEL_STOP.wait(30):
+        current = now()
+        if current < next_sync_at:
+            continue
+        try:
+            run_threat_intel_sync()
+        except Exception:
+            pass
+        next_sync_at = now() + timedelta(seconds=get_threat_intel_config().interval_seconds)
+
+
+@app.on_event("startup")
+def start_threat_intel_worker():
+    if get_threat_intel_config().enabled:
+        thread = threading.Thread(target=threat_intel_worker, name="threat-intel-sync", daemon=True)
+        thread.start()
+
+
+@app.on_event("shutdown")
+def stop_threat_intel_worker():
+    THREAT_INTEL_STOP.set()
 
 
 def greenbone_worker():
@@ -2550,6 +3663,9 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
         return (now() - ls).total_seconds() < 900
     online = sum(1 for a in agents if is_online(a))
     compliant = sum(1 for a in agents if a.pending_updates == 0)
+    sla_report = vulnerability_sla_report(db)
+    remediation_report = remediation_queue_report(db)
+    asset_report = asset_risk_report(db)
     return {
         "agents": total,
         "online": online,
@@ -2568,6 +3684,20 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             VulnerabilityFinding.status == "open",
             VulnerabilityFinding.agent_id.is_(None),
         ).count(),
+        "sla_breached_vulnerabilities": sla_report["summary"]["breached"],
+        "sla_due_soon_vulnerabilities": sla_report["summary"]["due_soon"],
+        "sla_exception_vulnerabilities": sla_report["summary"]["exception"],
+        "urgent_risk_vulnerabilities": sum(
+            1
+            for finding in db.query(VulnerabilityFinding).filter(VulnerabilityFinding.status == "open").all()
+            if vulnerability_risk(finding)["level"] == "urgent"
+        ),
+        "remediation_ready_vulnerabilities": remediation_report["summary"]["eligible_for_campaign"],
+        "critical_risk_assets": asset_report["summary"]["critical"],
+        "high_risk_assets": asset_report["summary"]["high"],
+        "average_asset_risk": asset_report["summary"]["average_score"],
+        "assets_above_risk_appetite": asset_report["summary"]["above_risk_appetite"],
+        "asset_risk_appetite": asset_report["summary"]["risk_appetite"],
         "agent_supported": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "supported"),
         "agent_outdated": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "outdated"),
         "agent_unknown": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "unknown"),
@@ -2614,6 +3744,355 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
                 or _approval_expiry(load(job.payload_json, {})) <= now()
             )
         ),
+    }
+
+
+@app.post("/api/admin/reports/asset-risk/snapshot")
+def snapshot_asset_risk(
+    principal=Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    result = capture_asset_risk_snapshots(db, source=f"manual:{principal['actor']}", minimum_interval_seconds=0)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.snapshot.created",
+        "asset_risk",
+        "",
+        result,
+    )
+    return {"ok": True, "result": result}
+
+
+@app.get("/api/admin/reports/asset-risk/history")
+def admin_asset_risk_history(
+    agent_id: str | None = None,
+    limit: int = 500,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return asset_risk_history(db, agent_id=agent_id, limit=limit)
+
+
+@app.get("/api/admin/reports/asset-risk")
+def admin_asset_risk_report(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return asset_risk_report(db)
+
+
+@app.get("/api/admin/reports/remediation-queue")
+def remediation_queue(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return remediation_queue_report(db)
+
+
+@app.get("/api/admin/reports/vulnerability-sla")
+def admin_vulnerability_sla_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    return vulnerability_sla_report(db)
+
+
+@app.get("/api/admin/agents/{agent_id}/risk-acceptances")
+def list_asset_risk_acceptances(
+    agent_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return [
+        serialize_asset_risk_acceptance(item)
+        for item in sorted(
+            agent.risk_acceptances or [],
+            key=lambda acceptance: acceptance.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+    ]
+
+
+@app.post("/api/admin/agents/{agent_id}/risk-acceptances")
+def create_asset_risk_acceptance(
+    agent_id: str,
+    body: AssetRiskAcceptanceCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    expires_at = body.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    current = now()
+    if expires_at <= current:
+        raise HTTPException(status_code=400, detail="risk acceptance must expire in the future")
+    if expires_at > current + timedelta(days=365):
+        raise HTTPException(status_code=400, detail="risk acceptance cannot exceed 365 days")
+
+    existing = active_asset_risk_acceptance(agent, current)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "asset already has an active risk acceptance", "id": existing.id},
+        )
+
+    acceptance = AssetRiskAcceptance(
+        id=str(uuid.uuid4()),
+        agent=agent,
+        reason=body.reason.strip(),
+        approved_by=principal["actor"],
+        expires_at=expires_at,
+    )
+    db.add(acceptance)
+    db.commit()
+    db.refresh(acceptance)
+
+    result = serialize_asset_risk_acceptance(acceptance)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.acceptance.created",
+        "agent",
+        agent.id,
+        result,
+    )
+    return {"ok": True, "acceptance": result}
+
+
+@app.post("/api/admin/agents/{agent_id}/risk-acceptances/{acceptance_id}/revoke")
+def revoke_asset_risk_acceptance(
+    agent_id: str,
+    acceptance_id: str,
+    body: AssetRiskAcceptanceRevoke,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    acceptance = db.get(AssetRiskAcceptance, acceptance_id)
+    if not acceptance or acceptance.agent_id != agent.id:
+        raise HTTPException(status_code=404, detail="risk acceptance not found")
+    if acceptance.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="risk acceptance already revoked")
+
+    acceptance.revoked_at = now()
+    acceptance.revoked_by = principal["actor"]
+    acceptance.revoke_reason = body.reason.strip()
+    db.commit()
+    db.refresh(acceptance)
+
+    result = serialize_asset_risk_acceptance(acceptance)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.acceptance.revoked",
+        "agent",
+        agent.id,
+        result,
+    )
+    return {"ok": True, "acceptance": result}
+
+
+@app.get("/api/admin/risk-policies")
+def list_asset_risk_policies(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return [
+        serialize_asset_risk_policy(policy)
+        for policy in db.query(AssetRiskPolicy).order_by(
+            AssetRiskPolicy.priority.desc(),
+            AssetRiskPolicy.name.asc(),
+        ).all()
+    ]
+
+
+@app.post("/api/admin/risk-policies")
+def create_asset_risk_policy(
+    body: AssetRiskPolicyCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    name = body.name.strip()
+    target_tag = body.target_tag.strip().lower()
+    if db.query(AssetRiskPolicy).filter(AssetRiskPolicy.name == name).first():
+        raise HTTPException(status_code=409, detail="risk policy name already exists")
+
+    policy = AssetRiskPolicy(
+        id=str(uuid.uuid4()),
+        name=name,
+        target_tag=target_tag,
+        risk_appetite=body.risk_appetite,
+        priority=body.priority,
+        enabled=body.enabled,
+        reason=body.reason.strip(),
+        created_by=principal["actor"],
+        updated_by=principal["actor"],
+    )
+    db.add(policy)
+    db.commit()
+    db.refresh(policy)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.policy.created",
+        "asset_risk_policy",
+        policy.id,
+        serialize_asset_risk_policy(policy),
+    )
+    return {"ok": True, "policy": serialize_asset_risk_policy(policy)}
+
+
+@app.put("/api/admin/risk-policies/{policy_id}")
+def update_asset_risk_policy(
+    policy_id: str,
+    body: AssetRiskPolicyUpdate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    policy = db.get(AssetRiskPolicy, policy_id)
+    if not policy:
+        raise HTTPException(status_code=404, detail="risk policy not found")
+
+    before = serialize_asset_risk_policy(policy)
+    if body.name is not None:
+        name = body.name.strip()
+        duplicate = db.query(AssetRiskPolicy).filter(
+            AssetRiskPolicy.name == name,
+            AssetRiskPolicy.id != policy.id,
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="risk policy name already exists")
+        policy.name = name
+    if body.target_tag is not None:
+        policy.target_tag = body.target_tag.strip().lower()
+    if body.risk_appetite is not None:
+        policy.risk_appetite = body.risk_appetite
+    if body.priority is not None:
+        policy.priority = body.priority
+    if body.enabled is not None:
+        policy.enabled = body.enabled
+    policy.reason = body.reason.strip()
+    policy.updated_by = principal["actor"]
+    policy.updated_at = now()
+    db.commit()
+    db.refresh(policy)
+
+    after = serialize_asset_risk_policy(policy)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.policy.updated",
+        "asset_risk_policy",
+        policy.id,
+        {"before": before, "after": after},
+    )
+    return {"ok": True, "policy": after}
+
+
+@app.get("/api/admin/agents/{agent_id}/risk-profile")
+def get_asset_risk_profile(
+    agent_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return {
+        "agent_id": agent.id,
+        "hostname": agent.hostname,
+        "profile": serialize_asset_risk_profile(agent.risk_profile),
+        "effective": {
+            "criticality": asset_criticality(agent),
+            "exposure": asset_exposure(agent),
+            "compensating": asset_compensating_factor(agent),
+        },
+    }
+
+
+@app.put("/api/admin/agents/{agent_id}/risk-profile")
+def update_asset_risk_profile(
+    agent_id: str,
+    body: AssetRiskProfileUpdate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    allowed_controls = {"segmented", "edr-protected", "restricted-egress"}
+    controls = body.compensating_controls
+    normalized_controls = None
+    if controls is not None:
+        normalized_controls = sorted({
+            str(value).strip().lower()
+            for value in controls
+            if str(value).strip()
+        })
+        invalid = [value for value in normalized_controls if value not in allowed_controls]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "unsupported compensating control", "controls": invalid},
+            )
+
+    profile = agent.risk_profile
+    if not profile:
+        profile = AssetRiskProfile(agent=agent)
+        db.add(profile)
+
+    before = serialize_asset_risk_profile(profile)
+    profile.criticality_override = body.criticality
+    profile.external_override = body.external
+    profile.controls_json = (
+        dump(normalized_controls)
+        if normalized_controls is not None
+        else None
+    )
+    profile.reason = body.reason.strip()
+    profile.updated_by = principal["actor"]
+    profile.updated_at = now()
+    db.commit()
+    db.refresh(profile)
+
+    capture_asset_risk_snapshots(
+        db,
+        source=f"risk_profile:{principal['actor']}",
+        minimum_interval_seconds=0,
+    )
+    result = serialize_asset_risk_profile(profile)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.profile.updated",
+        "agent",
+        agent.id,
+        {
+            "before": before,
+            "after": result,
+            "effective": {
+                "criticality": asset_criticality(agent),
+                "exposure": asset_exposure(agent),
+                "compensating": asset_compensating_factor(agent),
+            },
+        },
+    )
+    return {
+        "ok": True,
+        "profile": result,
+        "effective": {
+            "criticality": asset_criticality(agent),
+            "exposure": asset_exposure(agent),
+            "compensating": asset_compensating_factor(agent),
+        },
     }
 
 
@@ -2929,6 +4408,35 @@ def greenbone_sync_now(principal=Depends(require_operator), db: Session = Depend
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/admin/integrations/threat-intel")
+def threat_intel_status(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    config = public_threat_intel_config()
+    state = integration_state(db, "threat_intel")
+    state.enabled = config["enabled"]
+    db.commit()
+    return serialize_integration_state(state, config)
+
+
+@app.post("/api/admin/integrations/threat-intel/sync")
+def threat_intel_sync_now(principal=Depends(require_operator), db: Session = Depends(get_db)):
+    config = public_threat_intel_config()
+    if not config["configured"]:
+        raise HTTPException(status_code=409, detail="threat intel integration is not configured")
+    try:
+        result = run_threat_intel_sync()
+        audit(
+            db,
+            principal["actor"],
+            "threat_intel.sync.requested",
+            "integration",
+            "threat_intel",
+            result,
+        )
+        return {"ok": True, "result": result}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/admin/vulnerabilities")
 def list_vulnerabilities(
     status: str | None = None,
@@ -2938,7 +4446,6 @@ def list_vulnerabilities(
     db: Session = Depends(get_db),
 ):
     q = db.query(VulnerabilityFinding).order_by(
-        VulnerabilityFinding.cvss.desc(),
         VulnerabilityFinding.last_seen.desc(),
     )
     if status:
@@ -2947,7 +4454,13 @@ def list_vulnerabilities(
         q = q.filter(VulnerabilityFinding.severity == severity.lower())
     if agent_id:
         q = q.filter(VulnerabilityFinding.agent_id == agent_id)
-    return [serialize_vulnerability(item) for item in q.limit(1000).all()]
+    items = [serialize_vulnerability(item) for item in q.limit(1000).all()]
+    items.sort(key=lambda item: (
+        item["status"] != "open",
+        -(item.get("risk") or {}).get("score", 0),
+        -float(item.get("cvss") or 0),
+    ))
+    return items
 
 
 @app.post("/api/admin/vulnerabilities/import")
@@ -2986,6 +4499,101 @@ def import_vulnerabilities(
         "updated": stats["updated"],
         "matched": stats["matched"],
     }
+
+
+@app.get("/api/admin/vulnerabilities/{finding_id}/sla-exceptions")
+def list_vulnerability_sla_exceptions(
+    finding_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    finding = db.get(VulnerabilityFinding, finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="vulnerability finding not found")
+    items = sorted(
+        list(finding.sla_exceptions or []),
+        key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return [serialize_sla_exception(item) for item in items]
+
+
+@app.post("/api/admin/vulnerabilities/{finding_id}/sla-exceptions")
+def create_vulnerability_sla_exception(
+    finding_id: str,
+    body: VulnerabilitySlaExceptionCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    finding = db.get(VulnerabilityFinding, finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="vulnerability finding not found")
+    if finding.status != "open":
+        raise HTTPException(status_code=409, detail="SLA exception requires an open vulnerability")
+
+    expires_at = body.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= now():
+        raise HTTPException(status_code=400, detail="SLA exception expiry must be in the future")
+    if active_sla_exception(finding):
+        raise HTTPException(status_code=409, detail="an active SLA exception already exists")
+
+    item = VulnerabilitySlaException(
+        id=str(uuid.uuid4()),
+        finding=finding,
+        reason=body.reason.strip(),
+        approved_by=principal["actor"],
+        expires_at=expires_at,
+    )
+    db.add(item)
+    db.commit()
+    audit(
+        db,
+        principal["actor"],
+        "vulnerability.sla_exception.created",
+        "vulnerability",
+        finding.id,
+        {
+            "exception_id": item.id,
+            "cve": finding.cve,
+            "expires_at": expires_at.isoformat(),
+            "reason": item.reason,
+        },
+    )
+    return serialize_sla_exception(item)
+
+
+@app.post("/api/admin/vulnerabilities/{finding_id}/sla-exceptions/{exception_id}/revoke")
+def revoke_vulnerability_sla_exception(
+    finding_id: str,
+    exception_id: str,
+    body: VulnerabilitySlaExceptionRevoke,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    item = db.get(VulnerabilitySlaException, exception_id)
+    if not item or item.finding_id != finding_id:
+        raise HTTPException(status_code=404, detail="SLA exception not found")
+    if item.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="SLA exception is already revoked")
+
+    item.revoked_at = now()
+    item.revoked_by = principal["actor"]
+    item.revoke_reason = body.reason.strip()
+    db.commit()
+    audit(
+        db,
+        principal["actor"],
+        "vulnerability.sla_exception.revoked",
+        "vulnerability",
+        finding_id,
+        {
+            "exception_id": item.id,
+            "reason": item.revoke_reason,
+        },
+    )
+    return serialize_sla_exception(item)
 
 
 @app.put("/api/admin/vulnerabilities/{finding_id}/status")

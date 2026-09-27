@@ -55,6 +55,15 @@ groups:
           summary: Integração Greenbone sem sync saudável
           description: O Greenbone está habilitado, mas o estado mais recente de sincronização não está OK.
 
+      - alert: PatchManagerThreatIntelSyncFailed
+        expr: patch_manager_threat_intel_enabled == 1 and patch_manager_threat_intel_sync_healthy == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Enriquecimento EPSS/KEV sem sync utilizável
+          description: A integração de threat intel está habilitada, mas nenhuma fonte produziu um sync utilizável recentemente.
+
       - alert: PatchManagerHighOfflineRatio
         expr: |
           (patch_manager_agents_offline / (patch_manager_agents_online + patch_manager_agents_offline)) > 0.10

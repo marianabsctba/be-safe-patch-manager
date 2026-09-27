@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.18.0
+
+- control plane e dashboard passam para versão 0.18.0; agente permanece em 0.16.0;
+- adicionado SLA configurável de vulnerabilidades por severidade;
+- findings abertos passam a receber prazo, idade, horas restantes e estado `within_sla`, `due_soon` ou `breached`;
+- estados não abertos permanecem visíveis como `excluded` e não inflam breach counters;
+- novo endpoint `GET /api/admin/reports/vulnerability-sla` consolida política, totais, severidade e findings priorizados;
+- summary administrativo passa a expor vulnerabilidades em breach e próximas do vencimento;
+- dashboard mostra cards de SLA e estado por finding na tabela de vulnerabilidades;
+- adicionadas exceções formais de SLA com motivo, aprovador, validade e revogação auditada;
+- exceção ativa pausa o contador de breach sem alterar o status real do finding;
+- expiração devolve automaticamente o finding ao cálculo normal de SLA;
+- adicionada priorização contextual com score 0–100 e razões explicáveis;
+- score combina CVSS, EPSS/KEV quando presentes, idade do finding e tags de criticidade/exposição do endpoint;
+- dashboard mostra risco contextual e total de findings urgentes;
+- adicionada integração opcional de threat intel com FIRST EPSS e CISA KEV;
+- sync enriquece findings abertos sem sobrescrever evidência original do scanner;
+- falha de uma fonte mantém a outra ativa e sinaliza estado degradado;
+- worker opcional executa sync periódico e o operador pode solicitar sync manual;
+- adicionada fila de remediação orientada a risco e SLA, com recomendação de próxima ação e justificativas;
+- findings elegíveis podem abrir a campanha pré-preenchida, mas continuam exigindo revisão humana antes do deploy;
+- adicionada camada de risco por ativo 0–1000, criticidade 1–5, exposição externa e fatores compensatórios;
+- adicionado risk appetite configurável e contagem de ativos acima do limite;
+- adicionados snapshots persistentes do risco por ativo e migration `0007_risk_history`;
+- Greenbone e Threat Intel geram snapshots com intervalo mínimo para evitar ruído;
+- console mostra tendência de risco (`up`, `down`, `flat`, `new`) e permite snapshot manual auditado;
+- adicionada decomposição explicável do Asset Risk e ranking global de `top_contributors`;
+- adicionada documentação técnica completa em `docs/risk-model.md` com fórmula, escalas, APIs, exemplos e princípios de segurança;
+- adicionado `AssetRiskProfile` persistente com migration `0008_risk_profiles`;
+- admin pode sobrescrever criticidade, exposição e controles por ativo, com precedência `profile > tags > default`;
+- alterações de perfil exigem motivo, ficam auditadas e geram novo snapshot de risco;
+- console permite editar o perfil de risco diretamente no ranking de ativos;
+- adicionadas políticas de risk appetite por tag via `asset_risk_policies` e migration `0009_risk_policies`;
+- políticas possuem prioridade, enable/disable, auditoria e fallback para `ASSET_RISK_APPETITE`;
+- relatório de Asset Risk passa a indicar policy efetiva, appetite por ativo e estado acima/abaixo do limite;
+- console permite criar e editar políticas de appetite por tag;
+- adicionada aceitação temporária de Asset Risk via `asset_risk_acceptances` e migration `0010_risk_accept`;
+- aceite não reduz score nem altera evidência; apenas muda o estado de governança para `accepted` enquanto válido;
+- aceitações exigem admin, motivo e validade de até 365 dias, com revogação e auditoria;
+- console separa ativos acima do appetite em aceitos e não aceitos;
+- corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
+- configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
+- adicionados testes de breach, due soon, exclusão, agregação e summary.
+
 ## 0.17.0
 
 - control plane e dashboard passam para versão 0.17.0; agente permanece em 0.16.0;

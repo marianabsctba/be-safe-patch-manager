@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.17</small>
+          <small>dashboard v0.18</small>
         </div>
       </div>
     </aside>
@@ -172,7 +172,100 @@
             <div id="greenboneDetails" class="integration-details"></div>
           </section>
 
+          <section class="panel integration-panel">
+            <div class="panel-head">
+              <div>
+                <p class="section-kicker">PRIORIZAÇÃO / THREAT INTEL</p>
+                <h2>FIRST EPSS + CISA KEV</h2>
+              </div>
+              <div class="integration-actions">
+                <span id="threatIntelStatusBadge" class="metric-pill">desativado</span>
+                <button id="threatIntelSync" class="row-action" data-min-role="operator" hidden>Sincronizar agora</button>
+              </div>
+            </div>
+            <div id="threatIntelDetails" class="integration-details"></div>
+          </section>
+
           <div id="vulnerabilitySummary" class="cards vuln-summary"></div>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="section-kicker">RISCO POR ATIVO</p>
+                <h2>Be Safe Asset Risk</h2>
+              </div>
+              <div class="integration-actions">
+                <span class="metric-pill">0–1000</span>
+                <button id="assetRiskSnapshot" class="row-action" data-min-role="operator" hidden>Salvar snapshot</button>
+              </div>
+            </div>
+            <div id="assetRiskStats" class="integration-details"></div>
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">RISK APPETITE POLICIES</p>
+                  <h3>Políticas por tag</h3>
+                </div>
+                <button class="row-action" data-min-role="admin" hidden onclick="createRiskPolicy()">Nova política</button>
+              </div>
+              <div id="riskPolicyList" class="integration-details"></div>
+            </div>
+            <div class="panel-subsection">
+              <p class="section-kicker">TOP RISK CONTRIBUTORS</p>
+              <div id="assetRiskContributors" class="integration-details"></div>
+            </div>
+            <div class="vuln-note">
+              Score agregado por ativo usando risco dos findings, criticidade 1–5, exposição externa e controles compensatórios. Aceitação de risco é governança temporária e nunca reduz o score.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Ativo</th>
+                    <th>Asset Risk</th>
+                    <th>Tendência</th>
+                    <th>Criticidade</th>
+                    <th>Exposição</th>
+                    <th>Findings</th>
+                    <th>Top fatores</th>
+                    <th>Decomposição</th>
+                    <th>Compensações</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="assetRiskTable"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="section-kicker">REMEDIAÇÃO ORIENTADA A RISCO</p>
+                <h2>Fila recomendada</h2>
+              </div>
+            </div>
+            <div id="remediationQueueStats" class="integration-details"></div>
+            <div class="vuln-note">
+              A fila combina risco contextual e SLA. Ela recomenda a próxima ação, mas não implanta patch automaticamente.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Finding</th>
+                    <th>Ação</th>
+                    <th>Prioridade</th>
+                    <th>Risco</th>
+                    <th>SLA</th>
+                    <th>Por quê</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="remediationQueue"></tbody>
+              </table>
+            </div>
+          </section>
+
 
           <section class="panel">
             <div class="panel-head endpoint-head">
@@ -205,10 +298,12 @@
                     <th>CVE</th>
                     <th>Severidade</th>
                     <th>CVSS</th>
+                    <th>Risco</th>
                     <th>Endpoint</th>
                     <th>Finding</th>
                     <th>Origem</th>
                     <th>Status</th>
+                    <th>SLA</th>
                     <th>Última detecção</th>
                     <th></th>
                   </tr>

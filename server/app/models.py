@@ -31,6 +31,9 @@ class Agent(Base):
     jobs = relationship("PatchJob", back_populates="agent", cascade="all, delete-orphan")
     vulnerabilities = relationship("VulnerabilityFinding", back_populates="agent")
     remediation_evidence = relationship("RemediationEvidence", back_populates="agent")
+    risk_snapshots = relationship("AssetRiskSnapshot", back_populates="agent", cascade="all, delete-orphan")
+    risk_profile = relationship("AssetRiskProfile", back_populates="agent", cascade="all, delete-orphan", uselist=False)
+    risk_acceptances = relationship("AssetRiskAcceptance", back_populates="agent", cascade="all, delete-orphan")
 
 
 class Campaign(Base):
@@ -106,6 +109,23 @@ class VulnerabilityFinding(Base):
 
     agent = relationship("Agent", back_populates="vulnerabilities")
     remediation_evidence = relationship("RemediationEvidence", back_populates="finding")
+    sla_exceptions = relationship("VulnerabilitySlaException", back_populates="finding", cascade="all, delete-orphan")
+
+
+class VulnerabilitySlaException(Base):
+    __tablename__ = "vulnerability_sla_exceptions"
+
+    id = Column(String(36), primary_key=True)
+    finding_id = Column(String(36), ForeignKey("vulnerability_findings.id"), nullable=False, index=True)
+    reason = Column(Text, nullable=False)
+    approved_by = Column(String(255), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by = Column(String(255), nullable=False, default="")
+    revoke_reason = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    finding = relationship("VulnerabilityFinding", back_populates="sla_exceptions")
 
 
 class RemediationEvidence(Base):
@@ -136,6 +156,69 @@ class RemediationEvidence(Base):
     campaign = relationship("Campaign", back_populates="remediation_evidence")
     job = relationship("PatchJob", back_populates="remediation_evidence")
     agent = relationship("Agent", back_populates="remediation_evidence")
+
+
+class AssetRiskPolicy(Base):
+    __tablename__ = "asset_risk_policies"
+
+    id = Column(String(36), primary_key=True)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    target_tag = Column(String(128), nullable=False, index=True)
+    risk_appetite = Column(Integer, nullable=False)
+    priority = Column(Integer, nullable=False, default=100)
+    enabled = Column(Boolean, nullable=False, default=True)
+    reason = Column(Text, nullable=False, default="")
+    created_by = Column(String(255), nullable=False, default="")
+    updated_by = Column(String(255), nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AssetRiskAcceptance(Base):
+    __tablename__ = "asset_risk_acceptances"
+
+    id = Column(String(36), primary_key=True)
+    agent_id = Column(String(36), ForeignKey("agents.id"), nullable=False, index=True)
+    reason = Column(Text, nullable=False)
+    approved_by = Column(String(255), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by = Column(String(255), nullable=False, default="")
+    revoke_reason = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    agent = relationship("Agent", back_populates="risk_acceptances")
+
+
+class AssetRiskProfile(Base):
+    __tablename__ = "asset_risk_profiles"
+
+    agent_id = Column(String(36), ForeignKey("agents.id"), primary_key=True)
+    criticality_override = Column(Integer, nullable=True)
+    external_override = Column(Boolean, nullable=True)
+    controls_json = Column(Text, nullable=True)
+    reason = Column(Text, nullable=False, default="")
+    updated_by = Column(String(255), nullable=False, default="")
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    agent = relationship("Agent", back_populates="risk_profile")
+
+
+class AssetRiskSnapshot(Base):
+    __tablename__ = "asset_risk_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(String(36), ForeignKey("agents.id"), nullable=False, index=True)
+    score = Column(Float, nullable=False)
+    level = Column(String(32), nullable=False, index=True)
+    criticality = Column(Integer, nullable=False)
+    external = Column(Boolean, nullable=False, default=False)
+    open_findings = Column(Integer, nullable=False, default=0)
+    factors_json = Column(Text, nullable=False, default="[]")
+    source = Column(String(64), nullable=False, default="manual")
+    captured_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+    agent = relationship("Agent", back_populates="risk_snapshots")
 
 
 class IntegrationState(Base):

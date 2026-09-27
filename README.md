@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.17; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.18; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -14,6 +14,17 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - ingestão normalizada de findings de scanners, começando por OpenVAS/Greenbone;
 - correlação de finding por hostname/IP com endpoint gerenciado;
 - CVE, severidade, CVSS, solução e referências de patch por finding;
+- SLA de vulnerabilidades configurável por severidade, com estados `within_sla`, `due_soon` e `breached`;
+- relatório consolidado de SLA em `GET /api/admin/reports/vulnerability-sla`;
+- exceções temporárias de SLA com aprovação administrativa, motivo, expiração e revogação auditada;
+- priorização contextual de vulnerabilidades com score explicável de 0–100 usando CVSS, EPSS/KEV quando disponíveis, idade e criticidade/exposição por tags do ativo;
+- enriquecimento opcional automático de CVEs usando FIRST EPSS e o catálogo CISA KEV, com cache no finding e modo degradado quando apenas uma fonte responde;
+- fila de remediação explicável que combina risco e SLA para recomendar patch imediato, agendamento, planejamento, triagem ou correlação de ativo, sem deploy automático;
+- risco agregado por ativo em escala 0–1000, com criticidade 1–5, exposição externa, fatores compensatórios e risk appetite configurável;
+- histórico persistente de Asset Risk com snapshots automáticos após syncs relevantes, delta de tendência e histórico consultável por endpoint;
+- perfil de risco explícito por ativo, com override governado de criticidade, exposição e controles compensatórios; tags permanecem como fallback automático;
+- risk appetite policies por tag/grupo, com prioridade, fallback global e auditoria; cada ativo pode ter um limite operacional diferente sem alterar seu score;
+- aceitação temporária de risco por ativo, com motivo, aprovador, validade, revogação e auditoria; o score permanece intacto;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
 - rescan Greenbone automático após patch validado;
@@ -97,6 +108,12 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - CI validando rules Prometheus e JSON do Grafana;
 - nenhuma ação de shell remoto arbitrário.
 
+## Modelo de risco
+
+O Be Safe v0.18 adiciona um modelo próprio de risk-based vulnerability management com score individual por finding, Asset Risk 0–1000, criticidade 1–5, exposição externa, controles compensatórios, risk appetite, histórico e decomposição de contributors.
+
+A referência técnica completa, incluindo fórmula, faixas, tags reconhecidas, exemplos, APIs e princípios de segurança, está em [docs/risk-model.md](docs/risk-model.md).
+
 ## Dashboard
 
 ### Visão geral
@@ -134,6 +151,8 @@ A v0.15 adiciona ativação segura do agente Linux com launcher estável, releas
 A v0.16 endurece o lifecycle do agente. Releases que sofrem rollback entram em quarentena, a liberação exige admin, rollouts do agente usam snapshot congelado e rings 10%, 30% e 100% com gate obrigatório, 100% de sucesso e sem override. O manifest assinado passa a carregar `source_commit` e `signing_key_id`, e o agente faz limpeza segura de releases antigas somente após ativação confirmada.
 
 A v0.17 endurece o control plane sem alterar o agente. Aprovações de ativação têm TTL, exigem heartbeat recente e ficam vinculadas à identidade completa da release assinada. Antes de qualquer claim, o servidor revalida expiração, SHA-256, source commit, signing key e release publicada. A console também permite pré-visualizar o snapshot elegível antes de aprovar o rollout.
+
+A v0.18 adiciona governança de SLA sem alterar o agente. Findings com status `open` recebem prazo calculado por severidade, idade, horas restantes e classificação operacional. O endpoint consolidado prioriza breaches e itens próximos do vencimento; estados como `accepted_risk`, `false_positive`, `not_detected` e `remediated` continuam visíveis, mas ficam fora dos contadores de breach. A mesma versão adiciona exceções formais persistentes: somente admin pode aprovar ou revogar, motivo e validade são obrigatórios, tudo fica auditado e a expiração devolve automaticamente o finding ao cálculo normal de SLA.
 
 ## Fluxo seguro de implantação
 
@@ -863,7 +882,8 @@ Próximas evoluções planejadas:
 - ingestão de CVEs do Wazuh;
 - patching de aplicações de terceiros;
 - integração ITSM/SOAR;
-- SLA, exceções e relatórios consolidados;
+- enriquecimentos adicionais de threat intelligence quando houver fonte confiável e necessidade operacional;
+- relatórios consolidados exportáveis;
 - testes de integração reais em endpoints Windows/Linux;
 - ativação segura equivalente do agente no Windows;
 - HA, retenção off-host e testes periódicos de recuperação completa.

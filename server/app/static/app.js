@@ -9,6 +9,10 @@ const state = {
   agents: [],
   vulnerabilities: [],
   greenbone: null,
+  threatIntel: null,
+  remediationQueue: null,
+  assetRisk: null,
+  riskPolicies: [],
   agentRelease: null,
   campaigns: [],
   jobs: [],
@@ -231,11 +235,15 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
       api('/api/admin/integrations/greenbone'),
+      api('/api/admin/integrations/threat-intel'),
+      api('/api/admin/reports/remediation-queue'),
+      api('/api/admin/reports/asset-risk'),
+      api('/api/admin/risk-policies'),
       api('/api/admin/agent-release'),
       api('/api/admin/campaigns'),
       api('/api/admin/jobs'),
@@ -247,6 +255,10 @@ async function load() {
     state.agents = agents;
     state.vulnerabilities = vulnerabilities;
     state.greenbone = greenbone;
+    state.threatIntel = threatIntel;
+    state.remediationQueue = remediationQueue;
+    state.assetRisk = assetRisk;
+    state.riskPolicies = riskPolicies;
     state.agentRelease = agentRelease;
     state.campaigns = campaigns;
     state.jobs = jobs;
@@ -279,6 +291,9 @@ function renderAll() {
   renderAgents();
   renderRiskEndpoints();
   renderGreenboneIntegration();
+  renderThreatIntelIntegration();
+  renderRemediationQueue();
+  renderAssetRisk();
   renderVulnerabilities();
   renderCampaigns();
   renderOverviewCampaigns();
@@ -298,6 +313,14 @@ function renderSummary(summary) {
     { label: 'Críticos', value: summary.critical_updates || 0, hint: 'prioridade alta', cls: summary.critical_updates ? 'danger' : 'ok' },
     { label: 'Reboot pendente', value: summary.reboot_required || 0, hint: 'endpoints', cls: summary.reboot_required ? 'warn' : 'ok' },
     { label: 'Falhas', value: summary.failed_jobs || 0, hint: 'jobs acumulados', cls: summary.failed_jobs ? 'danger' : 'ok' },
+    { label: 'SLA vencido', value: summary.sla_breached_vulnerabilities || 0, hint: 'vulnerabilidades abertas', cls: summary.sla_breached_vulnerabilities ? 'danger' : 'ok' },
+    { label: 'SLA próximo', value: summary.sla_due_soon_vulnerabilities || 0, hint: 'vence em até 24h', cls: summary.sla_due_soon_vulnerabilities ? 'warn' : 'ok' },
+    { label: 'Exceções SLA', value: summary.sla_exception_vulnerabilities || 0, hint: 'aprovadas e ainda válidas', cls: summary.sla_exception_vulnerabilities ? 'accent' : 'ok' },
+    { label: 'Risco urgente', value: summary.urgent_risk_vulnerabilities || 0, hint: 'priorização contextual', cls: summary.urgent_risk_vulnerabilities ? 'danger' : 'ok' },
+    { label: 'Prontas p/ remediação', value: summary.remediation_ready_vulnerabilities || 0, hint: 'campanha possível', cls: summary.remediation_ready_vulnerabilities ? 'accent' : 'ok' },
+    { label: 'Ativos risco crítico', value: summary.critical_risk_assets || 0, hint: 'score 850–1000', cls: summary.critical_risk_assets ? 'danger' : 'ok' },
+    { label: 'Risco médio ativos', value: summary.average_asset_risk || 0, hint: 'escala 0–1000', cls: 'neutral' },
+    { label: 'Acima do apetite', value: summary.assets_above_risk_appetite || 0, hint: 'policy efetiva / global', cls: summary.assets_above_risk_appetite ? 'danger' : 'ok' },
     { label: 'Agentes incompatíveis', value: Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0), hint: summary.compatibility_enforced ? 'enforcement ativo' : 'somente observação', cls: (Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0)) ? 'danger' : 'ok' },
     { label: 'Jobs bloqueados', value: summary.blocked_jobs || 0, hint: 'aguardando upgrade do agente', cls: summary.blocked_jobs ? 'danger' : 'ok' },
     { label: 'Update staged', value: summary.agent_update_staged || 0, hint: 'assinado e aguardando ativação', cls: summary.agent_update_staged ? 'accent' : 'ok' },
@@ -440,6 +463,14 @@ function renderRiskEndpoints() {
 
 
 
+function vulnerabilityRiskBadge(risk) {
+  if (!risk) return badge('-', 'info');
+  if (risk.level === 'urgent') return badge('URGENTE ' + risk.score, 'fail');
+  if (risk.level === 'high') return badge('ALTO ' + risk.score, 'warn');
+  if (risk.level === 'medium') return badge('MÉDIO ' + risk.score, 'info');
+  return badge('BAIXO ' + risk.score, 'muted-badge');
+}
+
 function vulnerabilitySeverityClass(severity) {
   if (severity === 'critical') return 'fail';
   if (severity === 'high' || severity === 'medium') return 'warn';
@@ -533,6 +564,476 @@ function renderGreenboneIntegration() {
   $('#greenboneSync').disabled = !config.configured || status === 'running';
 }
 
+function renderThreatIntelIntegration() {
+  const data = state.threatIntel || {};
+  const config = data.config || {};
+  const details = data.details || {};
+  const status = data.status || (config.enabled ? 'idle' : 'disabled');
+  const labels = {
+    disabled: 'desativado',
+    idle: config.configured ? 'pronto' : 'não configurado',
+    running: 'sincronizando',
+    ok: 'OK',
+    degraded: 'degradado',
+    error: 'erro',
+  };
+  const cls = status === 'ok'
+    ? 'ok'
+    : status === 'error'
+      ? 'fail'
+      : ['running', 'degraded'].includes(status)
+        ? 'warn'
+        : 'info';
+
+  $('#threatIntelStatusBadge').className = 'metric-pill ' + cls;
+  $('#threatIntelStatusBadge').textContent = labels[status] || status;
+
+  const rows = [
+    ['Modo', config.enabled ? 'automático' : 'manual / desativado'],
+    ['Fontes', 'FIRST EPSS + CISA KEV'],
+    ['Último sucesso', data.last_success_at ? when(data.last_success_at) : 'nunca'],
+    ['CVEs consideradas', details.unique_cves == null ? '-' : details.unique_cves],
+    ['EPSS enriquecidas', details.epss_enriched == null ? '-' : details.epss_enriched],
+    ['KEV encontradas', details.kev_enriched == null ? '-' : details.kev_enriched],
+    ['Findings atualizados', details.updated == null ? '-' : details.updated],
+  ];
+
+  $('#threatIntelDetails').innerHTML = rows.map((row) =>
+    '<div><span>' + esc(row[0]) + '</span><strong>' + esc(row[1]) + '</strong></div>'
+  ).join('');
+
+  const sourceErrors = details.source_errors && typeof details.source_errors === 'object'
+    ? Object.entries(details.source_errors)
+    : [];
+  if (sourceErrors.length) {
+    $('#threatIntelDetails').insertAdjacentHTML(
+      'beforeend',
+      '<div class="integration-error"><span>Fonte degradada</span><strong>' +
+      esc(sourceErrors.map(([name, message]) => name + ': ' + message).join(' · ')) +
+      '</strong></div>'
+    );
+  } else if (data.last_error) {
+    $('#threatIntelDetails').insertAdjacentHTML(
+      'beforeend',
+      '<div class="integration-error"><span>Último erro</span><strong>' + esc(data.last_error) + '</strong></div>'
+    );
+  }
+
+  $('#threatIntelSync').disabled = !config.configured || status === 'running';
+}
+
+
+function remediationActionBadge(action) {
+  const labels = {
+    patch_now: ['PATCH AGORA', 'fail'],
+    schedule_patch: ['AGENDAR', 'warn'],
+    plan_patch: ['PLANEJAR', 'info'],
+    scan_or_manual_triage: ['TRIAGEM', 'warn'],
+    correlate_asset: ['CORRELACIONAR', 'fail'],
+    exception_active: ['EXCEÇÃO ATIVA', 'info'],
+    none: ['SEM AÇÃO', 'muted-badge'],
+  };
+  const item = labels[action] || [action || '-', 'info'];
+  return badge(item[0], item[1]);
+}
+
+function renderRemediationQueue() {
+  const report = state.remediationQueue || {};
+  const summary = report.summary || {};
+  const items = Array.isArray(report.items) ? report.items.slice(0, 10) : [];
+
+  $('#remediationQueueStats').innerHTML = [
+    ['Patch agora', summary.patch_now || 0],
+    ['Agendar', summary.schedule_patch || 0],
+    ['Triagem', summary.scan_or_manual_triage || 0],
+    ['Correlacionar', summary.correlate_asset || 0],
+    ['Prontas p/ campanha', summary.eligible_for_campaign || 0],
+  ].map(([label, value]) =>
+    '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+  ).join('');
+
+  if (!items.length) {
+    $('#remediationQueue').innerHTML =
+      '<tr><td colspan="7"><div class="empty-state good">Nenhuma vulnerabilidade aberta na fila.</div></td></tr>';
+    return;
+  }
+
+  $('#remediationQueue').innerHTML = items.map((item) => {
+    const rec = item.recommendation || {};
+    const risk = rec.risk || {};
+    const reasons = Array.isArray(rec.reasons) ? rec.reasons : [];
+    return '<tr>' +
+      '<td><strong>' + esc(item.cve || 'sem CVE') + '</strong><br><small class="muted">' + esc(item.hostname || 'sem endpoint') + '</small></td>' +
+      '<td>' + remediationActionBadge(rec.action) + '</td>' +
+      '<td><strong>' + esc(rec.priority_score == null ? '-' : rec.priority_score) + '</strong></td>' +
+      '<td>' + vulnerabilityRiskBadge(risk) + '</td>' +
+      '<td>' + vulnerabilitySlaBadge(rec.sla) + '</td>' +
+      '<td><small>' + esc(reasons.join(' · ') || '-') + '</small></td>' +
+      '<td>' + (
+        rec.eligible_for_campaign && item.agent_id && roleAtLeast('operator')
+          ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + item.id + '\')">Preparar campanha</button>'
+          : ''
+      ) + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+
+function assetRiskBadge(risk) {
+  if (!risk) return badge('-', 'info');
+  if (risk.level === 'critical') return badge('CRÍTICO ' + risk.score, 'fail');
+  if (risk.level === 'high') return badge('ALTO ' + risk.score, 'warn');
+  if (risk.level === 'medium') return badge('MÉDIO ' + risk.score, 'info');
+  return badge('BAIXO ' + risk.score, 'muted-badge');
+}
+
+function assetRiskTrend(risk) {
+  const trend = risk && risk.trend ? risk.trend : {};
+  if (trend.direction === 'up') return badge('↑ +' + Number(trend.delta || 0).toFixed(1), 'fail');
+  if (trend.direction === 'down') return badge('↓ ' + Number(trend.delta || 0).toFixed(1), 'ok');
+  if (trend.direction === 'flat') return badge('→ 0', 'info');
+  return badge('novo', 'muted-badge');
+}
+
+function renderAssetRisk() {
+  const report = state.assetRisk || {};
+  const summary = report.summary || {};
+  const assets = Array.isArray(report.assets) ? report.assets.slice(0, 10) : [];
+
+  $('#assetRiskStats').innerHTML = [
+    ['Ativos', summary.assets || 0],
+    ['Críticos', summary.critical || 0],
+    ['Altos', summary.high || 0],
+    ['Média', summary.average_score == null ? '-' : summary.average_score],
+    ['Apetite global', summary.risk_appetite == null ? 700 : summary.risk_appetite],
+    ['Políticas', summary.risk_policies || 0],
+    ['Acima', summary.above_risk_appetite || 0],
+    ['Aceitos', summary.accepted_above_appetite || 0],
+    ['Sem aceite', summary.unaccepted_above_appetite || 0],
+  ].map(([label, value]) =>
+    '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+  ).join('');
+
+  const topContributors = Array.isArray(report.top_contributors) ? report.top_contributors : [];
+  $('#assetRiskContributors').innerHTML = topContributors.length
+    ? topContributors.map((item, index) =>
+        '<div class="risk-contributor">' +
+          '<span>' + esc(String(index + 1) + '. ' + item.name) + '</span>' +
+          '<strong>' + esc(Number(item.raw || 0).toFixed(1)) + '</strong>' +
+        '</div>'
+      ).join('')
+    : '<div class="empty-state">Sem contributors calculados.</div>';
+
+  renderRiskPolicies();
+
+  if (!assets.length) {
+    $('#assetRiskTable').innerHTML =
+      '<tr><td colspan="10"><div class="empty-state">Nenhum ativo calculado.</div></td></tr>';
+    return;
+  }
+
+  $('#assetRiskTable').innerHTML = assets.map((item) => {
+    const risk = item.risk || {};
+    const crit = risk.asset_criticality || {};
+    const exposure = risk.exposure || {};
+    const compensating = risk.compensating || {};
+    const policy = item.risk_policy || {};
+    const policyData = policy.policy || {};
+    const acceptance = item.risk_acceptance || null;
+    const factors = Array.isArray(risk.top_factors) ? risk.top_factors : [];
+    return '<tr>' +
+      '<td><strong>' + esc(item.hostname || item.agent_id) + '</strong><br><small class="muted">' + esc(item.ip_address || '') + '</small></td>' +
+      '<td>' + assetRiskBadge(risk) +
+        '<br><small class="muted">apetite ' + esc(risk.risk_appetite == null ? '-' : risk.risk_appetite) +
+        ' · ' + esc(policy.source === 'policy' ? (policyData.name || 'policy') : 'global') + '</small>' +
+        (risk.governance_status === 'accepted'
+          ? '<br>' + badge('RISCO ACEITO', 'info') + '<br><small class="muted">até ' + esc(when(acceptance && acceptance.expires_at)) + '</small>'
+          : risk.above_risk_appetite
+            ? '<br>' + badge('acima do apetite', 'fail')
+            : '') +
+      '</td>' +
+      '<td>' + assetRiskTrend(risk) + '</td>' +
+      '<td><strong>' + esc(crit.score == null ? '-' : crit.score) + '/5</strong></td>' +
+      '<td>' + (exposure.external ? badge('externo', 'fail') : badge('interno', 'ok')) + '</td>' +
+      '<td><strong>' + esc(risk.open_findings == null ? 0 : risk.open_findings) + '</strong></td>' +
+      '<td><small>' + esc(factors.join(' · ') || '-') + '</small></td>' +
+      '<td><small>' + esc(
+        Array.isArray(risk.decomposition) && risk.decomposition.length
+          ? risk.decomposition
+              .slice(0, 4)
+              .map((item) => item.name + ' ' + (item.raw >= 0 ? '+' : '') + Number(item.raw || 0).toFixed(1))
+              .join(' · ')
+          : '-'
+      ) + '</small></td>' +
+      '<td><small>' + esc(
+        Array.isArray(compensating.controls) && compensating.controls.length
+          ? compensating.controls.map((control) => control.tag).join(', ')
+          : 'nenhum'
+      ) + '<br><span class="muted">fonte: ' + esc(compensating.source || 'tags') + '</span></small></td>' +
+      '<td>' + (
+        roleAtLeast('admin')
+          ? '<button class="row-action" onclick="editAssetRiskProfile(\'' + item.agent_id + '\')">Perfil de risco</button>' +
+            (acceptance && acceptance.active
+              ? ' <button class="row-action" onclick="revokeAssetRiskAcceptance(\'' + item.agent_id + '\', \'' + acceptance.id + '\')">Revogar aceite</button>'
+              : risk.above_risk_appetite
+                ? ' <button class="row-action" onclick="createAssetRiskAcceptance(\'' + item.agent_id + '\')">Aceitar risco</button>'
+                : '')
+          : ''
+      ) + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+
+function renderRiskPolicies() {
+  const policies = Array.isArray(state.riskPolicies) ? state.riskPolicies : [];
+  const target = $('#riskPolicyList');
+  if (!target) return;
+
+  target.innerHTML = policies.length
+    ? policies.map((policy) =>
+        '<div class="risk-contributor">' +
+          '<span><strong>' + esc(policy.name) + '</strong> · tag ' + esc(policy.target_tag) +
+          ' · prioridade ' + esc(policy.priority) +
+          (policy.enabled ? '' : ' · desativada') + '</span>' +
+          '<span><strong>apetite ' + esc(policy.risk_appetite) + '</strong>' +
+          (roleAtLeast('admin')
+            ? ' <button class="row-action" onclick="editRiskPolicy(\'' + policy.id + '\')">Editar</button>'
+            : '') +
+          '</span>' +
+        '</div>'
+      ).join('')
+    : '<div class="empty-state">Nenhuma política por tag. Vale o appetite global.</div>';
+}
+
+window.createRiskPolicy = async () => {
+  if (!requireRole('admin', 'Somente admin pode criar política de risco.')) return;
+  const name = prompt('Nome da política:');
+  if (!name || name.trim().length < 3) return;
+  const targetTag = prompt('Tag alvo (ex.: tier0, prod, lab):');
+  if (!targetTag || !targetTag.trim()) return;
+  const appetite = Number(prompt('Risk appetite 1–1000:', '700'));
+  if (!Number.isInteger(appetite) || appetite < 1 || appetite > 1000) {
+    toast('Risk appetite deve estar entre 1 e 1000.', 'fail');
+    return;
+  }
+  const priority = Number(prompt('Prioridade da política (maior vence):', '100'));
+  if (!Number.isInteger(priority) || priority < 1 || priority > 10000) {
+    toast('Prioridade inválida.', 'fail');
+    return;
+  }
+  const reason = prompt('Motivo da política:');
+  if (!reason || reason.trim().length < 5) return;
+
+  try {
+    await api('/api/admin/risk-policies', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: name.trim(),
+        target_tag: targetTag.trim().toLowerCase(),
+        risk_appetite: appetite,
+        priority,
+        enabled: true,
+        reason: reason.trim(),
+      }),
+    });
+    toast('Política de risco criada.');
+    await load();
+  } catch (error) {
+    toast('Política de risco: ' + error.message, 'fail');
+  }
+};
+
+window.editRiskPolicy = async (policyId) => {
+  if (!requireRole('admin', 'Somente admin pode editar política de risco.')) return;
+  const policy = (state.riskPolicies || []).find((item) => item.id === policyId);
+  if (!policy) return;
+
+  const name = prompt('Nome:', policy.name);
+  if (name === null || name.trim().length < 3) return;
+  const tag = prompt('Tag alvo:', policy.target_tag);
+  if (tag === null || !tag.trim()) return;
+  const appetite = Number(prompt('Risk appetite 1–1000:', String(policy.risk_appetite)));
+  if (!Number.isInteger(appetite) || appetite < 1 || appetite > 1000) {
+    toast('Risk appetite inválido.', 'fail');
+    return;
+  }
+  const priority = Number(prompt('Prioridade (maior vence):', String(policy.priority)));
+  if (!Number.isInteger(priority) || priority < 1 || priority > 10000) {
+    toast('Prioridade inválida.', 'fail');
+    return;
+  }
+  const enabledRaw = prompt('Status: on ou off', policy.enabled ? 'on' : 'off');
+  if (enabledRaw === null || !['on', 'off'].includes(enabledRaw.trim().toLowerCase())) {
+    toast('Use on ou off.', 'fail');
+    return;
+  }
+  const reason = prompt('Motivo da alteração:');
+  if (!reason || reason.trim().length < 5) return;
+
+  try {
+    await api('/api/admin/risk-policies/' + policyId, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: name.trim(),
+        target_tag: tag.trim().toLowerCase(),
+        risk_appetite: appetite,
+        priority,
+        enabled: enabledRaw.trim().toLowerCase() === 'on',
+        reason: reason.trim(),
+      }),
+    });
+    toast('Política de risco atualizada.');
+    await load();
+  } catch (error) {
+    toast('Política de risco: ' + error.message, 'fail');
+  }
+};
+
+
+window.createAssetRiskAcceptance = async (agentId) => {
+  if (!requireRole('admin', 'Somente admin pode aceitar risco.')) return;
+
+  const reason = prompt('Motivo da aceitação de risco:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+  const daysRaw = prompt('Validade da aceitação em dias (1–365):', '30');
+  const days = Number(daysRaw);
+  if (!Number.isInteger(days) || days < 1 || days > 365) {
+    toast('Validade deve ficar entre 1 e 365 dias.', 'fail');
+    return;
+  }
+
+  const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  try {
+    await api('/api/admin/agents/' + agentId + '/risk-acceptances', {
+      method: 'POST',
+      body: JSON.stringify({
+        reason: reason.trim(),
+        expires_at: expiresAt,
+      }),
+    });
+    toast('Risco aceito temporariamente. O score não foi alterado.');
+    await load();
+  } catch (error) {
+    toast('Aceitação de risco: ' + error.message, 'fail');
+  }
+};
+
+window.revokeAssetRiskAcceptance = async (agentId, acceptanceId) => {
+  if (!requireRole('admin', 'Somente admin pode revogar aceitação de risco.')) return;
+
+  const reason = prompt('Motivo da revogação da aceitação:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+
+  try {
+    await api('/api/admin/agents/' + agentId + '/risk-acceptances/' + acceptanceId + '/revoke', {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    toast('Aceitação de risco revogada.');
+    await load();
+  } catch (error) {
+    toast('Revogação de risco: ' + error.message, 'fail');
+  }
+};
+
+
+window.editAssetRiskProfile = async (agentId) => {
+  if (!requireRole('admin', 'Somente admin pode alterar o perfil de risco.')) return;
+
+  const item = state.assetRisk && Array.isArray(state.assetRisk.assets)
+    ? state.assetRisk.assets.find((asset) => asset.agent_id === agentId)
+    : null;
+  if (!item) {
+    toast('Ativo não encontrado no relatório de risco.', 'fail');
+    return;
+  }
+
+  let current = null;
+  try {
+    current = await api('/api/admin/agents/' + agentId + '/risk-profile');
+  } catch (error) {
+    toast('Perfil de risco: ' + error.message, 'fail');
+    return;
+  }
+
+  const profile = current.profile || {};
+  const effective = current.effective || {};
+  const currentCriticality = profile.criticality == null
+    ? ''
+    : String(profile.criticality);
+  const criticalityRaw = prompt(
+    'Criticidade 1–5. Deixe vazio para automático por tags.\nAtual efetiva: ' +
+    String((effective.criticality || {}).score || '-'),
+    currentCriticality
+  );
+  if (criticalityRaw === null) return;
+  let criticality = null;
+  if (criticalityRaw.trim() !== '') {
+    criticality = Number(criticalityRaw);
+    if (!Number.isInteger(criticality) || criticality < 1 || criticality > 5) {
+      toast('Criticidade precisa ser um inteiro entre 1 e 5.', 'fail');
+      return;
+    }
+  }
+
+  const exposureDefault = profile.external === true ? 'externo' : profile.external === false ? 'interno' : 'auto';
+  const exposureRaw = prompt('Exposição: auto, interno ou externo.', exposureDefault);
+  if (exposureRaw === null) return;
+  const exposureValue = exposureRaw.trim().toLowerCase();
+  if (!['auto', 'interno', 'externo'].includes(exposureValue)) {
+    toast('Use auto, interno ou externo.', 'fail');
+    return;
+  }
+  const external = exposureValue === 'auto' ? null : exposureValue === 'externo';
+
+  const controlsDefault = Array.isArray(profile.compensating_controls)
+    ? profile.compensating_controls.join(', ')
+    : 'auto';
+  const controlsRaw = prompt(
+    'Controles: auto ou lista separada por vírgula.\nPermitidos: segmented, edr-protected, restricted-egress',
+    controlsDefault
+  );
+  if (controlsRaw === null) return;
+
+  let compensatingControls = null;
+  if (controlsRaw.trim().toLowerCase() !== 'auto') {
+    compensatingControls = controlsRaw
+      .split(',')
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  const reason = prompt('Motivo da alteração do perfil de risco:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+
+  try {
+    await api('/api/admin/agents/' + agentId + '/risk-profile', {
+      method: 'PUT',
+      body: JSON.stringify({
+        criticality,
+        external,
+        compensating_controls: compensatingControls,
+        reason: reason.trim(),
+      }),
+    });
+    toast('Perfil de risco atualizado e snapshot registrado.');
+    await load();
+  } catch (error) {
+    toast('Perfil de risco: ' + error.message, 'fail');
+  }
+};
+
+
 function remediationStatusLabel(status) {
   const labels = {
     waiting_validation: 'aguardando validação',
@@ -570,6 +1071,15 @@ function remediationBadge(remediation) {
     '</span>';
 }
 
+function vulnerabilitySlaBadge(sla) {
+  if (!sla || !sla.state) return badge('-', 'info');
+  if (sla.state === 'breached') return badge('SLA vencido', 'fail');
+  if (sla.state === 'due_soon') return badge('SLA próximo', 'warn');
+  if (sla.state === 'within_sla') return badge('no SLA', 'ok');
+  if (sla.state === 'exception') return badge('exceção SLA', 'info');
+  return badge('fora do SLA ativo', 'info');
+}
+
 function renderVulnerabilities() {
   const open = state.vulnerabilities.filter((item) => item.status === 'open');
   const critical = open.filter((item) => item.severity === 'critical');
@@ -583,6 +1093,10 @@ function renderVulnerabilities() {
     ['Altas', high.length, 'prioridade alta', high.length ? 'warn' : 'ok'],
     ['Correlacionadas', matched.length, 'com endpoint gerenciado', 'accent'],
     ['Sem endpoint', unmatched.length, 'exigem correlação', unmatched.length ? 'danger' : 'ok'],
+    ['SLA vencido', open.filter((item) => item.sla && item.sla.state === 'breached').length, 'prazo de remediação excedido', open.some((item) => item.sla && item.sla.state === 'breached') ? 'danger' : 'ok'],
+    ['SLA próximo', open.filter((item) => item.sla && item.sla.state === 'due_soon').length, 'vence em até 24h', open.some((item) => item.sla && item.sla.state === 'due_soon') ? 'warn' : 'ok'],
+    ['Exceções SLA', open.filter((item) => item.sla && item.sla.state === 'exception').length, 'aprovação temporária', open.some((item) => item.sla && item.sla.state === 'exception') ? 'accent' : 'ok'],
+    ['Risco urgente', open.filter((item) => item.risk && item.risk.level === 'urgent').length, 'score contextual ≥ 80', open.some((item) => item.risk && item.risk.level === 'urgent') ? 'danger' : 'ok'],
     ['Remediadas', state.vulnerabilities.filter((item) => item.status === 'remediated').length, 'status atual', 'ok'],
     ['Com evidência', state.vulnerabilities.filter((item) => item.remediation && item.remediation.status === 'verified').length, 'rescan pós-patch comprovado', 'ok'],
   ].map(([label, value, hint, cls]) => `
@@ -595,7 +1109,7 @@ function renderVulnerabilities() {
 
   const items = filteredVulnerabilities();
   if (!items.length) {
-    $('#vulnerabilities').innerHTML = '<tr><td colspan="9"><div class="empty-state">Nenhum finding encontrado.</div></td></tr>';
+    $('#vulnerabilities').innerHTML = '<tr><td colspan="11"><div class="empty-state">Nenhum finding encontrado.</div></td></tr>';
     return;
   }
 
@@ -604,6 +1118,10 @@ function renderVulnerabilities() {
       <td><strong>${esc(item.cve || 'sem CVE')}</strong></td>
       <td>${badge(item.severity || 'unknown', vulnerabilitySeverityClass(item.severity))}</td>
       <td><strong>${Number(item.cvss || 0).toFixed(1)}</strong></td>
+      <td>
+        ${vulnerabilityRiskBadge(item.risk)}
+        <br><small class="muted">${item.risk && item.risk.kev ? 'KEV · ' : ''}${item.risk && item.risk.epss !== null && item.risk.epss !== undefined ? 'EPSS ' + Math.round(item.risk.epss * 100) + '%' : ''}</small>
+      </td>
       <td>
         ${item.matched
           ? '<strong>' + esc(item.hostname) + '</strong><br><small class="muted">' + esc(item.ip_address || item.host || '') + '</small>'
@@ -618,10 +1136,20 @@ function renderVulnerabilities() {
         ${badge(vulnerabilityStatusLabel(item.status), item.status === 'remediated' ? 'ok' : item.status === 'open' ? 'warn' : 'info')}
         <br><span class="vuln-remediation">${remediationBadge(item.remediation)}</span>
       </td>
+      <td>
+        ${vulnerabilitySlaBadge(item.sla)}
+        <br><small class="muted">${item.sla && item.sla.state === 'exception' && item.sla.exception ? 'até ' + when(item.sla.exception.expires_at) : item.sla && item.sla.active ? esc(String(item.sla.remaining_hours) + 'h restantes') : ''}</small>
+      </td>
       <td>${when(item.last_seen)}</td>
       <td>
         ${item.status === 'open' && item.matched && roleAtLeast('operator')
           ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + item.id + '\')">Criar campanha</button>'
+          : ''}
+        ${item.status === 'open' && roleAtLeast('admin') && (!item.sla || item.sla.state !== 'exception')
+          ? '<button class="row-action" onclick="createSlaException(\'' + item.id + '\')">Criar exceção SLA</button>'
+          : ''}
+        ${item.status === 'open' && roleAtLeast('admin') && item.sla && item.sla.state === 'exception' && item.sla.exception
+          ? '<button class="row-action" onclick="revokeSlaException(\'' + item.id + '\', \'' + item.sla.exception.id + '\')">Revogar exceção</button>'
           : ''}
         ${item.remediation && ['error','still_detected'].includes(item.remediation.status) && roleAtLeast('operator')
           ? '<button class="row-action" onclick="retryRemediationRescan(\'' + item.remediation.id + '\')">Novo rescan</button>'
@@ -630,6 +1158,51 @@ function renderVulnerabilities() {
     </tr>
   `).join('');
 }
+
+window.createSlaException = async (findingId) => {
+  if (!requireRole('admin', 'Perfil admin necessário.')) return;
+  const reason = prompt('Motivo da exceção de SLA:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+  const daysRaw = prompt('Validade da exceção em dias:', '7');
+  const days = Number(daysRaw);
+  if (!Number.isFinite(days) || days <= 0 || days > 365) {
+    toast('Informe uma validade entre 1 e 365 dias.', 'fail');
+    return;
+  }
+  const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  try {
+    await api('/api/admin/vulnerabilities/' + findingId + '/sla-exceptions', {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim(), expires_at: expiresAt }),
+    });
+    toast('Exceção de SLA aprovada.');
+    await load();
+  } catch (error) {
+    toast('Exceção SLA: ' + error.message, 'fail');
+  }
+};
+
+window.revokeSlaException = async (findingId, exceptionId) => {
+  if (!requireRole('admin', 'Perfil admin necessário.')) return;
+  const reason = prompt('Motivo da revogação da exceção:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+  try {
+    await api('/api/admin/vulnerabilities/' + findingId + '/sla-exceptions/' + exceptionId + '/revoke', {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    toast('Exceção de SLA revogada.');
+    await load();
+  } catch (error) {
+    toast('Revogação SLA: ' + error.message, 'fail');
+  }
+};
 
 window.retryRemediationRescan = async (evidenceId) => {
   if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
@@ -674,10 +1247,16 @@ window.prepareCampaignFromFinding = (findingId) => {
   form.elements.ring_percent.value = 100;
   form.elements.action.value = (finding.patch_refs || []).length ? 'install_updates' : 'scan_updates';
   form.elements.packages.value = (finding.patch_refs || []).join(', ');
+  const recommendation = state.remediationQueue && Array.isArray(state.remediationQueue.items)
+    ? state.remediationQueue.items.find((item) => item.id === finding.id)
+    : null;
+  const rec = recommendation ? recommendation.recommendation || {} : {};
   form.elements.description.value =
     'Remediação de ' + (finding.cve || finding.external_id) +
     ' detectada por ' + finding.source +
     ' · CVSS ' + Number(finding.cvss || 0).toFixed(1) +
+    (finding.risk ? ' · risco ' + finding.risk.score + '/100' : '') +
+    (rec.action ? ' · recomendação ' + rec.action : '') +
     (finding.title ? ' · ' + finding.title : '');
 
   const context = $('#campaignSourceContext');
@@ -1424,6 +2003,49 @@ $('#greenboneSync').addEventListener('click', async () => {
     $('#greenboneSync').textContent = 'Sincronizar agora';
   }
 });
+
+
+
+$('#threatIntelSync').addEventListener('click', async () => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+
+  $('#threatIntelSync').disabled = true;
+  $('#threatIntelSync').textContent = 'Enriquecendo...';
+
+  try {
+    const result = await api('/api/admin/integrations/threat-intel/sync', { method: 'POST' });
+    const stats = result.result || {};
+    toast('Threat Intel: ' + Number(stats.updated || 0) + ' finding(s) enriquecido(s).');
+    await load();
+  } catch (error) {
+    toast('Threat Intel: ' + error.message, 'fail');
+    await load();
+  } finally {
+    $('#threatIntelSync').textContent = 'Sincronizar agora';
+  }
+});
+
+
+
+$('#assetRiskSnapshot').addEventListener('click', async () => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+
+  $('#assetRiskSnapshot').disabled = true;
+  $('#assetRiskSnapshot').textContent = 'Salvando...';
+
+  try {
+    const result = await api('/api/admin/reports/asset-risk/snapshot', { method: 'POST' });
+    const stats = result.result || {};
+    toast('Asset Risk: ' + Number(stats.created || 0) + ' snapshot(s) salvo(s).');
+    await load();
+  } catch (error) {
+    toast('Asset Risk: ' + error.message, 'fail');
+  } finally {
+    $('#assetRiskSnapshot').textContent = 'Salvar snapshot';
+    $('#assetRiskSnapshot').disabled = false;
+  }
+});
+
 
 
 
