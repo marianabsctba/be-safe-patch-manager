@@ -3,70 +3,276 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#09090b" />
   <title>Be Safe Patch Manager</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <header>
-    <div>
-      <h1>Be Safe Patch Manager</h1>
-      <p>Inventário, compliance, campanhas e evidências de atualização</p>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">BS</div>
+        <div>
+          <strong>Be Safe</strong>
+          <span>Patch Manager</span>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-view="overview"><span>◫</span>Visão geral</button>
+        <button class="nav-item" data-view="endpoints"><span>⌁</span>Endpoints</button>
+        <button class="nav-item" data-view="campaigns"><span>⇧</span>Campanhas</button>
+        <button class="nav-item" data-view="executions"><span>▤</span>Execuções</button>
+        <button class="nav-item" data-view="audit"><span>◎</span>Auditoria</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="status-dot"></span>
+        <div>
+          <strong>Patch Manager</strong>
+          <small>dashboard v0.2</small>
+        </div>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">BE SAFE / PATCH MANAGEMENT</p>
+          <h1 id="pageTitle">Visão geral</h1>
+        </div>
+
+        <div class="topbar-actions">
+          <span id="lastUpdate" class="last-update">Aguardando autenticação</span>
+          <button id="refresh" class="icon-button" title="Atualizar">↻</button>
+          <div class="token-box">
+            <input id="token" type="password" autocomplete="off" placeholder="Admin token" />
+            <button id="saveToken">Conectar</button>
+          </div>
+        </div>
+      </header>
+
+      <main>
+        <section class="view active" data-view-panel="overview">
+          <div id="summary" class="cards"></div>
+
+          <div class="overview-grid">
+            <section class="panel health-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">POSTURA</p>
+                  <h2>Patch compliance</h2>
+                </div>
+                <span id="complianceLabel" class="metric-pill">0%</span>
+              </div>
+
+              <div class="compliance-wrap">
+                <div id="complianceRing" class="compliance-ring" style="--pct:0">
+                  <div>
+                    <strong id="complianceValue">0%</strong>
+                    <span>compliant</span>
+                  </div>
+                </div>
+
+                <div class="health-list">
+                  <div><span>Compliant</span><strong id="healthCompliant">0</strong></div>
+                  <div><span>Com pendências</span><strong id="healthPending">0</strong></div>
+                  <div><span>Críticas</span><strong id="healthCritical">0</strong></div>
+                  <div><span>Reboot pendente</span><strong id="healthReboot">0</strong></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">RISCO</p>
+                  <h2>Endpoints prioritários</h2>
+                </div>
+                <button class="text-button jump-view" data-target="endpoints">Ver todos</button>
+              </div>
+              <div id="riskEndpoints" class="risk-list"></div>
+            </section>
+          </div>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="section-kicker">ATIVIDADE</p>
+                <h2>Campanhas recentes</h2>
+              </div>
+              <button class="text-button jump-view" data-target="campaigns">Gerenciar</button>
+            </div>
+            <div id="overviewCampaigns" class="campaigns compact"></div>
+          </section>
+        </section>
+
+        <section class="view" data-view-panel="endpoints">
+          <section class="panel">
+            <div class="panel-head endpoint-head">
+              <div>
+                <p class="section-kicker">INVENTÁRIO</p>
+                <h2>Endpoints gerenciados</h2>
+              </div>
+
+              <div class="filters">
+                <input id="endpointSearch" type="search" placeholder="Buscar hostname, SO, IP ou tag" />
+                <select id="endpointFilter">
+                  <option value="all">Todos</option>
+                  <option value="critical">Com críticas</option>
+                  <option value="pending">Com pendências</option>
+                  <option value="reboot">Reboot pendente</option>
+                  <option value="online">Online</option>
+                  <option value="offline">Offline</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Endpoint</th>
+                    <th>Status</th>
+                    <th>Sistema</th>
+                    <th>Tags</th>
+                    <th>Último contato</th>
+                    <th>Pendentes</th>
+                    <th>Críticas</th>
+                    <th>Reboot</th>
+                  </tr>
+                </thead>
+                <tbody id="agents"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" data-view-panel="campaigns">
+          <div class="campaign-layout">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">ORQUESTRAÇÃO</p>
+                  <h2>Nova campanha</h2>
+                </div>
+              </div>
+
+              <form id="campaignForm" class="grid-form">
+                <label>
+                  <span>Nome</span>
+                  <input name="name" placeholder="Ex.: Windows Setembro - Piloto" required />
+                </label>
+
+                <label>
+                  <span>Sistema</span>
+                  <select name="target_os">
+                    <option value="all">Todos os SO</option>
+                    <option value="windows">Windows</option>
+                    <option value="linux">Linux</option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>Tag</span>
+                  <input name="target_tag" placeholder="piloto, prod..." />
+                </label>
+
+                <label>
+                  <span>Ring (%)</span>
+                  <input name="ring_percent" type="number" min="1" max="100" value="100" />
+                </label>
+
+                <label>
+                  <span>Ação</span>
+                  <select name="action">
+                    <option value="scan_updates">Somente scan</option>
+                    <option value="install_updates">Instalar updates</option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>Executar a partir de</span>
+                  <input name="not_before" type="datetime-local" />
+                </label>
+
+                <label class="wide">
+                  <span>Pacotes / KBs</span>
+                  <input name="packages" placeholder="KB5030219, openssl, curl..." />
+                </label>
+
+                <label class="wide">
+                  <span>Descrição</span>
+                  <textarea name="description" placeholder="Objetivo, janela ou observações da campanha"></textarea>
+                </label>
+
+                <label class="check wide">
+                  <input name="allow_reboot" type="checkbox" />
+                  <span>Permitir reboot quando necessário</span>
+                </label>
+
+                <button type="submit" class="primary wide">Criar campanha</button>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">DEPLOYMENTS</p>
+                  <h2>Campanhas</h2>
+                </div>
+              </div>
+              <div id="campaigns" class="campaigns"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view-panel="executions">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="section-kicker">EVIDÊNCIAS</p>
+                <h2>Execuções recentes</h2>
+              </div>
+              <span id="jobCount" class="metric-pill">0 jobs</span>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Endpoint</th>
+                    <th>Campanha</th>
+                    <th>Ação</th>
+                    <th>Status</th>
+                    <th>Início</th>
+                    <th>Fim</th>
+                    <th>Erro</th>
+                  </tr>
+                </thead>
+                <tbody id="jobs"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" data-view-panel="audit">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="section-kicker">TRILHA</p>
+                <h2>Auditoria</h2>
+              </div>
+              <span id="auditCount" class="metric-pill">0 eventos</span>
+            </div>
+            <div id="auditFeed" class="audit-feed"></div>
+          </section>
+        </section>
+      </main>
     </div>
-    <div class="token-box">
-      <input id="token" type="password" placeholder="Admin token" />
-      <button id="saveToken">Entrar</button>
-    </div>
-  </header>
+  </div>
 
-  <main>
-    <section id="summary" class="cards"></section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Endpoints</h2>
-        <button id="refresh">Atualizar</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Hostname</th><th>SO</th><th>Tags</th><th>Último contato</th><th>Pendentes</th><th>Críticas</th><th>Reboot</th></tr></thead>
-          <tbody id="agents"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><h2>Nova campanha</h2></div>
-      <form id="campaignForm" class="grid-form">
-        <input name="name" placeholder="Nome da campanha" required />
-        <select name="target_os"><option value="all">Todos os SO</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
-        <input name="target_tag" placeholder="Tag (opcional): piloto, prod..." />
-        <input name="ring_percent" type="number" min="1" max="100" value="100" />
-        <select name="action"><option value="scan_updates">Somente scan</option><option value="install_updates">Instalar updates</option></select>
-        <label class="check"><input name="allow_reboot" type="checkbox" /> permitir reboot</label>
-        <input name="not_before" type="datetime-local" />
-        <input name="packages" placeholder="Pacotes/KBs opcionais, separados por vírgula" />
-        <textarea name="description" placeholder="Descrição"></textarea>
-        <button type="submit">Criar campanha</button>
-      </form>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><h2>Campanhas</h2></div>
-      <div id="campaigns" class="campaigns"></div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><h2>Execuções recentes</h2></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Endpoint</th><th>Campanha</th><th>Ação</th><th>Status</th><th>Erro</th></tr></thead>
-          <tbody id="jobs"></tbody>
-        </table>
-      </div>
-    </section>
-  </main>
-
-  <template id="cardTpl"><article class="card"><span></span><strong></strong></article></template>
+  <div id="toast" class="toast" aria-live="polite"></div>
   <script src="/static/app.js"></script>
 </body>
 </html>
