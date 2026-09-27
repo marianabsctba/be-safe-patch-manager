@@ -20,8 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -419,6 +419,44 @@ VULNERABILITY_SLA_DUE_SOON_HOURS = _seconds_setting(
 )
 
 
+def serialize_sla_exception(item: VulnerabilitySlaException, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    expires_at = item.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    revoked_at = item.revoked_at
+    if revoked_at and revoked_at.tzinfo is None:
+        revoked_at = revoked_at.replace(tzinfo=timezone.utc)
+    active = revoked_at is None and expires_at > reference
+    return {
+        "id": item.id,
+        "finding_id": item.finding_id,
+        "reason": item.reason,
+        "approved_by": item.approved_by,
+        "expires_at": expires_at.isoformat(),
+        "revoked_at": revoked_at.isoformat() if revoked_at else None,
+        "revoked_by": item.revoked_by,
+        "revoke_reason": item.revoke_reason,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "active": active,
+        "expired": revoked_at is None and expires_at <= reference,
+    }
+
+
+def active_sla_exception(finding: VulnerabilityFinding, reference: datetime | None = None):
+    reference = reference or now()
+    candidates = sorted(
+        list(finding.sla_exceptions or []),
+        key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    for item in candidates:
+        data = serialize_sla_exception(item, reference)
+        if data["active"]:
+            return item
+    return None
+
+
 def vulnerability_sla(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
     reference = reference or now()
     if reference.tzinfo is None:
@@ -433,9 +471,13 @@ def vulnerability_sla(finding: VulnerabilityFinding, reference: datetime | None 
     due_at = first_seen + timedelta(hours=target_hours)
     age_hours = max(0.0, (reference - first_seen).total_seconds() / 3600.0)
     remaining_hours = (due_at - reference).total_seconds() / 3600.0
-    active = finding.status == "open"
+    exception = active_sla_exception(finding, reference)
+    open_finding = finding.status == "open"
+    active = open_finding and exception is None
 
-    if not active:
+    if exception is not None:
+        state = "exception"
+    elif not open_finding:
         state = "excluded"
     elif remaining_hours < 0:
         state = "breached"
@@ -447,12 +489,14 @@ def vulnerability_sla(finding: VulnerabilityFinding, reference: datetime | None 
     return {
         "state": state,
         "active": active,
+        "open": open_finding,
         "target_hours": target_hours,
         "age_hours": round(age_hours, 1),
         "remaining_hours": round(remaining_hours, 1),
         "due_at": due_at.isoformat(),
         "breached": state == "breached",
         "due_soon": state == "due_soon",
+        "exception": serialize_sla_exception(exception, reference) if exception else None,
     }
 
 
@@ -465,6 +509,7 @@ def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> 
         "due_soon": 0,
         "breached": 0,
         "excluded": 0,
+        "exception": 0,
     }
     by_severity = {}
     items = []
@@ -479,10 +524,11 @@ def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> 
         severity = str(finding.severity or "unknown").strip().lower()
         bucket = by_severity.setdefault(
             severity,
-            {"active": 0, "within_sla": 0, "due_soon": 0, "breached": 0},
+            {"active": 0, "within_sla": 0, "due_soon": 0, "breached": 0, "exception": 0},
         )
         if sla["active"]:
             bucket["active"] += 1
+        if sla["open"]:
             bucket[state] = bucket.get(state, 0) + 1
 
         items.append({
@@ -498,7 +544,7 @@ def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> 
             "sla": sla,
         })
 
-    state_rank = {"breached": 0, "due_soon": 1, "within_sla": 2, "excluded": 3}
+    state_rank = {"breached": 0, "due_soon": 1, "within_sla": 2, "exception": 3, "excluded": 4}
     items.sort(key=lambda item: (
         state_rank.get(item["sla"]["state"], 9),
         item["sla"]["remaining_hours"],
@@ -3110,6 +3156,101 @@ def import_vulnerabilities(
         "updated": stats["updated"],
         "matched": stats["matched"],
     }
+
+
+@app.get("/api/admin/vulnerabilities/{finding_id}/sla-exceptions")
+def list_vulnerability_sla_exceptions(
+    finding_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    finding = db.get(VulnerabilityFinding, finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="vulnerability finding not found")
+    items = sorted(
+        list(finding.sla_exceptions or []),
+        key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return [serialize_sla_exception(item) for item in items]
+
+
+@app.post("/api/admin/vulnerabilities/{finding_id}/sla-exceptions")
+def create_vulnerability_sla_exception(
+    finding_id: str,
+    body: VulnerabilitySlaExceptionCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    finding = db.get(VulnerabilityFinding, finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="vulnerability finding not found")
+    if finding.status != "open":
+        raise HTTPException(status_code=409, detail="SLA exception requires an open vulnerability")
+
+    expires_at = body.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= now():
+        raise HTTPException(status_code=400, detail="SLA exception expiry must be in the future")
+    if active_sla_exception(finding):
+        raise HTTPException(status_code=409, detail="an active SLA exception already exists")
+
+    item = VulnerabilitySlaException(
+        id=str(uuid.uuid4()),
+        finding=finding,
+        reason=body.reason.strip(),
+        approved_by=principal["actor"],
+        expires_at=expires_at,
+    )
+    db.add(item)
+    db.commit()
+    audit(
+        db,
+        principal["actor"],
+        "vulnerability.sla_exception.created",
+        "vulnerability",
+        finding.id,
+        {
+            "exception_id": item.id,
+            "cve": finding.cve,
+            "expires_at": expires_at.isoformat(),
+            "reason": item.reason,
+        },
+    )
+    return serialize_sla_exception(item)
+
+
+@app.post("/api/admin/vulnerabilities/{finding_id}/sla-exceptions/{exception_id}/revoke")
+def revoke_vulnerability_sla_exception(
+    finding_id: str,
+    exception_id: str,
+    body: VulnerabilitySlaExceptionRevoke,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    item = db.get(VulnerabilitySlaException, exception_id)
+    if not item or item.finding_id != finding_id:
+        raise HTTPException(status_code=404, detail="SLA exception not found")
+    if item.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="SLA exception is already revoked")
+
+    item.revoked_at = now()
+    item.revoked_by = principal["actor"]
+    item.revoke_reason = body.reason.strip()
+    db.commit()
+    audit(
+        db,
+        principal["actor"],
+        "vulnerability.sla_exception.revoked",
+        "vulnerability",
+        finding_id,
+        {
+            "exception_id": item.id,
+            "reason": item.revoke_reason,
+        },
+    )
+    return serialize_sla_exception(item)
 
 
 @app.put("/api/admin/vulnerabilities/{finding_id}/status")
