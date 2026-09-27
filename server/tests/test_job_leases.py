@@ -1,10 +1,14 @@
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 
+
+SERVER_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SERVER_ROOT))
 
 TEST_DB = Path(__file__).resolve().parent / "test-runtime.db"
 TEST_DB.unlink(missing_ok=True)
