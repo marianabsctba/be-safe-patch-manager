@@ -191,6 +191,24 @@ class AgentMtlsBindRequest(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+class AssetRiskPolicyCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
+    target_tag: str = Field(min_length=1, max_length=128)
+    risk_appetite: int = Field(ge=1, le=1000)
+    priority: int = Field(default=100, ge=1, le=10000)
+    enabled: bool = True
+    reason: str = Field(min_length=5, max_length=1000)
+
+
+class AssetRiskPolicyUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=3, max_length=128)
+    target_tag: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    risk_appetite: Optional[int] = Field(default=None, ge=1, le=1000)
+    priority: Optional[int] = Field(default=None, ge=1, le=10000)
+    enabled: Optional[bool] = None
+    reason: str = Field(min_length=5, max_length=1000)
+
+
 class AssetRiskProfileUpdate(BaseModel):
     criticality: Optional[int] = Field(default=None, ge=1, le=5)
     external: Optional[bool] = None
