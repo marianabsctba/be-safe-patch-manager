@@ -139,3 +139,48 @@ def test_invalid_service_name_fails_closed():
     item = result["nginx;rm -rf /"]
     assert item["healthy"] is False
     assert item["status"] == "invalid_name"
+
+
+
+def test_inventory_reports_agent_runtime_metadata(monkeypatch):
+    monkeypatch.setattr(
+        patch_agent,
+        "rollback_capability",
+        lambda: {"checkpoint_supported": False, "automatic_restore": False},
+    )
+
+    data = patch_agent.inventory()
+
+    assert data["agent"]["version"] == "0.13.0"
+    assert data["agent"]["protocol"] == 2
+    assert "install_updates" in data["agent"]["capabilities"]
+    assert "health_telemetry_v1" in data["agent"]["capabilities"]
+    assert "job_leases_v1" in data["agent"]["capabilities"]
+
+
+def test_user_agent_uses_runtime_version(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        content = b"{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {}
+
+    def fake_request(method, url, **kwargs):
+        captured["headers"] = kwargs.get("headers") or {}
+        return FakeResponse()
+
+    monkeypatch.setattr(patch_agent, "tls_request_options", lambda cfg: {"verify": True, "cert": None})
+    monkeypatch.setattr(patch_agent.requests, "request", fake_request)
+
+    patch_agent.api(
+        {"server_url": "https://127.0.0.1"},
+        "GET",
+        "/health",
+    )
+
+    assert captured["headers"]["User-Agent"] == "PatchManagerAgent/0.13.0"
