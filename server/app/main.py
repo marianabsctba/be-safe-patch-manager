@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from .database import Base, SessionLocal, engine, get_db
+from .database import SessionLocal, get_db
 from .models import Agent, AuditEvent, Campaign, IntegrationState, PatchJob, VulnerabilityFinding
 from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, VulnerabilityImportRequest, VulnerabilityStatusUpdate
 from .security import hash_token, new_token, require_admin, require_enrollment
@@ -23,7 +23,6 @@ from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
 from .greenbone import public_config as public_greenbone_config
 
-Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Be Safe Patch Manager", version="0.6.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
