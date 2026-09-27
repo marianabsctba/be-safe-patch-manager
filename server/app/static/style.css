@@ -1350,3 +1350,53 @@ button:disabled:hover {
 @media (max-width:760px) {
   .drawer-metrics { grid-template-columns:repeat(2,1fr); }
 }
+
+
+/* Vulnerability management */
+.vuln-note {
+  margin:-3px 0 14px;
+  padding:10px 12px;
+  border:1px solid #292930;
+  border-left:3px solid var(--pink);
+  border-radius:8px;
+  background:#121216;
+  color:var(--muted);
+  font-size:10px;
+  line-height:1.5;
+}
+
+.campaign-source-context {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:10px 12px;
+  border:1px solid rgba(255,45,132,.30);
+  border-radius:8px;
+  background:var(--pink-soft);
+  color:#d7d7dc;
+  font-size:10px;
+}
+
+.campaign-source-context[hidden] {
+  display:none;
+}
+
+.campaign-source-context strong {
+  color:#fff;
+}
+
+.campaign-source-context span {
+  color:#ff9bc4;
+  text-align:right;
+}
+
+@media (max-width:760px) {
+  .campaign-source-context {
+    align-items:flex-start;
+    flex-direction:column;
+  }
+  .campaign-source-context span {
+    text-align:left;
+  }
+}

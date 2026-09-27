@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório — v0.4. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório — v0.5. A base já executa patching real, mas ainda exige hardening e validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
 
@@ -10,7 +10,11 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 
 - inventário e heartbeat de endpoints;
 - scan de updates pendentes;
-- dashboard de compliance, risco, endpoints, campanhas, execuções e auditoria;
+- dashboard de compliance, risco, endpoints, vulnerabilidades, campanhas, execuções e auditoria;
+- ingestão normalizada de findings de scanners, começando por OpenVAS/Greenbone;
+- correlação de finding por hostname/IP com endpoint gerenciado;
+- CVE, severidade, CVSS, solução e referências de patch por finding;
+- criação de campanha a partir de finding correlacionado;
 - Windows Update Agent via COM no Windows;
 - `apt`, `dnf` e `yum` no Linux;
 - campanhas por SO, tag, pacote/KB e percentual;
@@ -46,7 +50,7 @@ A tela de execuções consolida status do job, validação pós-patch e estado d
 
 A implementação atual é centralizada em FastAPI e usa SQLite no MVP. Os agentes Windows e Linux fazem polling de jobs, enviam heartbeat, inventário, patch scan e evidências de execução.
 
-O desenho mostra **OpenVAS / Greenbone como integração opcional/futura**. Essa integração ainda não faz parte da v0.4; a intenção é evoluir para correlação CVE → endpoint → patch → rescan.
+A v0.5 já possui a camada de ingestão e normalização para findings de scanners e a correlação com endpoints. O sync automático via GMP ainda é a próxima etapa; a remediação só deve ser considerada confirmada após rescan ou atualização explícita do finding.
 
 ## Fluxo seguro de implantação
 
@@ -71,6 +75,42 @@ O health gate exige, no ring atual:
 - heartbeat novo após a instalação;
 - ausência de reboot ainda pendente;
 - ausência de regressão no número de updates pendentes/críticos em relação ao baseline.
+
+## Vulnerabilidades e OpenVAS
+
+A API administrativa aceita findings normalizados de scanners em:
+
+`POST /api/admin/vulnerabilities/import`
+
+Exemplo de payload:
+
+```json
+{
+  "source": "openvas",
+  "scan_id": "scan-2026-09-27",
+  "findings": [
+    {
+      "external_id": "result-123",
+      "host": "pc-001",
+      "ip_address": "10.10.10.20",
+      "cves": ["CVE-2026-12345"],
+      "title": "Exemplo de vulnerabilidade",
+      "severity": "critical",
+      "cvss": 9.8,
+      "port": "443/tcp",
+      "solution": "Aplicar atualização do fabricante",
+      "patch_refs": ["KB1234567"],
+      "resolved": false
+    }
+  ]
+}
+```
+
+O servidor tenta correlacionar o finding com um agente por IP ou hostname. Findings não correlacionados continuam visíveis para tratamento.
+
+A interface permite preparar uma campanha diretamente a partir de um finding correlacionado. A campanha fica vinculada ao `agent_id` no payload, sem criar tags temporárias.
+
+**Importante:** instalar um patch não altera automaticamente o finding para remediado. A confirmação deve vir de rescan ou de atualização explícita do status.
 
 ## Rollback
 
@@ -256,8 +296,8 @@ be-safe-patch-manager/
 
 Próximas evoluções planejadas:
 
-- integração OpenVAS / Greenbone;
-- correlação CVE → endpoint → patch → rescan;
+- sync automático OpenVAS / Greenbone via GMP;
+- rescan automático e reconciliação CVE → endpoint → patch → rescan;
 - ingestão de CVEs do Wazuh;
 - patching de aplicações de terceiros;
 - integração ITSM/SOAR;

@@ -50,6 +50,34 @@ class CampaignCreate(BaseModel):
     post_patch_validation: bool = True
     prepare_rollback: bool = True
     rollback_required: bool = False
+    target_agent_id: str = ""
+    target_finding_id: str = ""
+
+
+class VulnerabilityFindingInput(BaseModel):
+    external_id: str = Field(min_length=1, max_length=255)
+    host: str = ""
+    ip_address: str = ""
+    cves: List[str] = Field(default_factory=list)
+    title: str = ""
+    severity: str = ""
+    cvss: float = Field(default=0.0, ge=0.0, le=10.0)
+    port: str = ""
+    solution: str = ""
+    patch_refs: List[str] = Field(default_factory=list)
+    resolved: bool = False
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+
+class VulnerabilityImportRequest(BaseModel):
+    source: str = Field(default="openvas", min_length=1, max_length=64)
+    scan_id: str = ""
+    findings: List[VulnerabilityFindingInput] = Field(default_factory=list)
+
+
+class VulnerabilityStatusUpdate(BaseModel):
+    status: str
+
 
 class RingAdvance(BaseModel):
     target_percent: int = Field(ge=1, le=100)

@@ -21,6 +21,7 @@
       <nav class="nav">
         <button class="nav-item active" data-view="overview"><span>◫</span>Visão geral</button>
         <button class="nav-item" data-view="endpoints"><span>⌁</span>Endpoints</button>
+        <button class="nav-item" data-view="vulnerabilities"><span>◇</span>Vulnerabilidades</button>
         <button class="nav-item" data-view="campaigns"><span>⇧</span>Campanhas</button>
         <button class="nav-item" data-view="executions"><span>▤</span>Execuções</button>
         <button class="nav-item" data-view="audit"><span>◎</span>Auditoria</button>
@@ -30,7 +31,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.4</small>
+          <small>dashboard v0.5</small>
         </div>
       </div>
     </aside>
@@ -149,6 +150,54 @@
           </section>
         </section>
 
+        <section class="view" data-view-panel="vulnerabilities">
+          <div id="vulnerabilitySummary" class="cards vuln-summary"></div>
+
+          <section class="panel">
+            <div class="panel-head endpoint-head">
+              <div>
+                <p class="section-kicker">GVUL / OPENVAS</p>
+                <h2>Vulnerabilidades correlacionadas</h2>
+              </div>
+
+              <div class="filters">
+                <input id="vulnerabilitySearch" type="search" placeholder="Buscar CVE, endpoint, IP ou finding" />
+                <select id="vulnerabilityFilter">
+                  <option value="open">Abertas</option>
+                  <option value="all">Todas</option>
+                  <option value="critical">Críticas</option>
+                  <option value="high">Altas</option>
+                  <option value="unmatched">Sem endpoint</option>
+                  <option value="remediated">Remediadas</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="vuln-note">
+              Findings importados de scanners permanecem abertos até um rescan ou atualização explícita confirmar a remediação.
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>CVE</th>
+                    <th>Severidade</th>
+                    <th>CVSS</th>
+                    <th>Endpoint</th>
+                    <th>Finding</th>
+                    <th>Origem</th>
+                    <th>Status</th>
+                    <th>Última detecção</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="vulnerabilities"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
         <section class="view" data-view-panel="campaigns">
           <div class="campaign-layout">
             <section class="panel">
@@ -160,6 +209,9 @@
               </div>
 
               <form id="campaignForm" class="grid-form">
+                <input name="target_agent_id" type="hidden" />
+                <input name="target_finding_id" type="hidden" />
+                <div id="campaignSourceContext" class="campaign-source-context wide" hidden></div>
                 <label>
                   <span>Nome</span>
                   <input name="name" placeholder="Ex.: Windows Setembro - Piloto" required />

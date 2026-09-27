@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+- adicionada tabela normalizada de vulnerabilidades;
+- adicionada ingestão administrativa de findings de scanners;
+- correlação de findings por hostname/IP com endpoints gerenciados;
+- nova tela de Vulnerabilidades com CVE, CVSS, severidade, origem e status;
+- campanha pode ser pré-preenchida a partir de finding correlacionado;
+- campanhas podem ser direcionadas a um único `target_agent_id` sem tag temporária;
+- finding não é marcado como remediado automaticamente após patching;
+- base preparada para sync OpenVAS/Greenbone via GMP e rescan posterior.
+
 ## 0.1.1
 
 Security and public-repository hardening release.

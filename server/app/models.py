@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from .database import Base
 
@@ -28,6 +28,7 @@ class Agent(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     jobs = relationship("PatchJob", back_populates="agent", cascade="all, delete-orphan")
+    vulnerabilities = relationship("VulnerabilityFinding", back_populates="agent")
 
 
 class Campaign(Base):
@@ -66,6 +67,36 @@ class PatchJob(Base):
 
     campaign = relationship("Campaign", back_populates="jobs")
     agent = relationship("Agent", back_populates="jobs")
+
+
+class VulnerabilityFinding(Base):
+    __tablename__ = "vulnerability_findings"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", "cve", name="uq_vulnerability_source_external_cve"),
+    )
+
+    id = Column(String(36), primary_key=True)
+    source = Column(String(64), nullable=False, default="openvas", index=True)
+    external_id = Column(String(255), nullable=False)
+    scan_id = Column(String(255), nullable=False, default="")
+    agent_id = Column(String(36), ForeignKey("agents.id"), nullable=True, index=True)
+    host = Column(String(255), nullable=False, default="")
+    ip_address = Column(String(128), nullable=False, default="", index=True)
+    cve = Column(String(64), nullable=False, default="", index=True)
+    title = Column(Text, nullable=False, default="")
+    severity = Column(String(32), nullable=False, default="unknown", index=True)
+    cvss = Column(Float, nullable=False, default=0.0)
+    port = Column(String(128), nullable=False, default="")
+    solution = Column(Text, nullable=False, default="")
+    patch_refs_json = Column(Text, nullable=False, default="[]")
+    raw_json = Column(Text, nullable=False, default="{}")
+    status = Column(String(32), nullable=False, default="open", index=True)
+    first_seen = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_seen = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    agent = relationship("Agent", back_populates="vulnerabilities")
 
 
 class AuditEvent(Base):

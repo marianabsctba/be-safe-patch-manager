@@ -2,6 +2,7 @@ import hashlib
 import math
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,12 +15,12 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import Agent, AuditEvent, Campaign, PatchJob
-from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate
+from .models import Agent, AuditEvent, Campaign, PatchJob, VulnerabilityFinding
+from .schemas import CampaignCreate, HeartbeatRequest, JobResultRequest, RegisterRequest, RegisterResponse, RingAdvance, RollbackRequest, TagUpdate, VulnerabilityImportRequest, VulnerabilityStatusUpdate
 from .security import hash_token, new_token, require_admin, require_enrollment
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="Be Safe Patch Manager", version="0.4.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.5.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -79,6 +80,85 @@ def serialize_agent(a: Agent):
     }
 
 
+
+
+
+CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.I)
+
+
+def normalize_cve(value: str) -> str:
+    value = str(value or "").strip().upper()
+    return value if CVE_RE.fullmatch(value) else ""
+
+
+def severity_from_cvss(cvss: float, explicit: str = "") -> str:
+    explicit = str(explicit or "").strip().lower()
+    aliases = {
+        "critical": "critical",
+        "high": "high",
+        "important": "high",
+        "medium": "medium",
+        "moderate": "medium",
+        "low": "low",
+        "log": "low",
+        "info": "info",
+        "informational": "info",
+    }
+    if explicit in aliases:
+        return aliases[explicit]
+    score = float(cvss or 0)
+    if score >= 9.0:
+        return "critical"
+    if score >= 7.0:
+        return "high"
+    if score >= 4.0:
+        return "medium"
+    if score > 0:
+        return "low"
+    return "unknown"
+
+
+def match_agent_for_vulnerability(db: Session, host: str, ip_address: str):
+    host_key = str(host or "").strip().lower().rstrip(".")
+    short_host = host_key.split(".", 1)[0] if host_key else ""
+    ip_key = str(ip_address or "").strip()
+
+    for agent in db.query(Agent).all():
+        if ip_key and agent.ip_address and agent.ip_address.strip() == ip_key:
+            return agent
+        agent_host = str(agent.hostname or "").strip().lower().rstrip(".")
+        if host_key and agent_host:
+            if agent_host == host_key:
+                return agent
+            if agent_host.split(".", 1)[0] == short_host:
+                return agent
+    return None
+
+
+def serialize_vulnerability(v: VulnerabilityFinding):
+    return {
+        "id": v.id,
+        "source": v.source,
+        "external_id": v.external_id,
+        "scan_id": v.scan_id,
+        "agent_id": v.agent_id,
+        "hostname": v.agent.hostname if v.agent else "",
+        "agent_os": v.agent.os_family if v.agent else "",
+        "host": v.host,
+        "ip_address": v.ip_address,
+        "cve": v.cve,
+        "title": v.title,
+        "severity": v.severity,
+        "cvss": v.cvss,
+        "port": v.port,
+        "solution": v.solution,
+        "patch_refs": load(v.patch_refs_json, []),
+        "status": v.status,
+        "matched": bool(v.agent_id),
+        "first_seen": v.first_seen.isoformat() if v.first_seen else None,
+        "last_seen": v.last_seen.isoformat() if v.last_seen else None,
+        "resolved_at": v.resolved_at.isoformat() if v.resolved_at else None,
+    }
 
 
 def parse_clock(value: str) -> int:
@@ -544,6 +624,15 @@ def admin_summary(_=Depends(require_admin), db: Session = Depends(get_db)):
         "critical_updates": sum(a.critical_updates for a in agents),
         "reboot_required": sum(1 for a in agents if a.reboot_required),
         "failed_jobs": db.query(PatchJob).filter(PatchJob.status == "failed").count(),
+        "open_vulnerabilities": db.query(VulnerabilityFinding).filter(VulnerabilityFinding.status == "open").count(),
+        "critical_vulnerabilities": db.query(VulnerabilityFinding).filter(
+            VulnerabilityFinding.status == "open",
+            VulnerabilityFinding.severity == "critical",
+        ).count(),
+        "unmatched_vulnerabilities": db.query(VulnerabilityFinding).filter(
+            VulnerabilityFinding.status == "open",
+            VulnerabilityFinding.agent_id.is_(None),
+        ).count(),
     }
 
 
@@ -563,6 +652,147 @@ def update_tags(agent_id: str, body: TagUpdate, _=Depends(require_admin), db: Se
     return serialize_agent(agent)
 
 
+@app.get("/api/admin/vulnerabilities")
+def list_vulnerabilities(
+    status: str | None = None,
+    severity: str | None = None,
+    agent_id: str | None = None,
+    _=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    q = db.query(VulnerabilityFinding).order_by(
+        VulnerabilityFinding.cvss.desc(),
+        VulnerabilityFinding.last_seen.desc(),
+    )
+    if status:
+        q = q.filter(VulnerabilityFinding.status == status.lower())
+    if severity:
+        q = q.filter(VulnerabilityFinding.severity == severity.lower())
+    if agent_id:
+        q = q.filter(VulnerabilityFinding.agent_id == agent_id)
+    return [serialize_vulnerability(item) for item in q.limit(1000).all()]
+
+
+@app.post("/api/admin/vulnerabilities/import")
+def import_vulnerabilities(
+    body: VulnerabilityImportRequest,
+    _=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    source = body.source.strip().lower()
+    if not re.fullmatch(r"[a-z0-9._-]{1,64}", source):
+        raise HTTPException(status_code=400, detail="invalid vulnerability source")
+
+    imported = 0
+    created = 0
+    updated = 0
+    matched = 0
+    timestamp = now()
+
+    for finding in body.findings:
+        cves = sorted({normalize_cve(cve) for cve in finding.cves if normalize_cve(cve)})
+        if not cves:
+            cves = [""]
+
+        agent = match_agent_for_vulnerability(db, finding.host, finding.ip_address)
+        if agent:
+            matched += len(cves)
+
+        for cve in cves:
+            item = db.query(VulnerabilityFinding).filter(
+                VulnerabilityFinding.source == source,
+                VulnerabilityFinding.external_id == finding.external_id,
+                VulnerabilityFinding.cve == cve,
+            ).first()
+
+            if not item:
+                item = VulnerabilityFinding(
+                    id=str(uuid.uuid4()),
+                    source=source,
+                    external_id=finding.external_id,
+                    cve=cve,
+                    first_seen=timestamp,
+                )
+                db.add(item)
+                created += 1
+            else:
+                updated += 1
+
+            item.scan_id = body.scan_id
+            item.agent_id = agent.id if agent else None
+            item.host = finding.host
+            item.ip_address = finding.ip_address
+            item.title = finding.title
+            item.severity = severity_from_cvss(finding.cvss, finding.severity)
+            item.cvss = float(finding.cvss or 0)
+            item.port = finding.port
+            item.solution = finding.solution
+            item.patch_refs_json = dump(sorted(set(finding.patch_refs)))
+            item.raw_json = dump(finding.raw)
+            item.last_seen = timestamp
+            item.status = "remediated" if finding.resolved else "open"
+            item.resolved_at = timestamp if finding.resolved else None
+            imported += 1
+
+    db.commit()
+    audit(
+        db,
+        "admin",
+        "vulnerabilities.imported",
+        "vulnerability_source",
+        source,
+        {
+            "scan_id": body.scan_id,
+            "received": len(body.findings),
+            "normalized": imported,
+            "created": created,
+            "updated": updated,
+            "matched": matched,
+        },
+    )
+    return {
+        "ok": True,
+        "source": source,
+        "scan_id": body.scan_id,
+        "received": len(body.findings),
+        "normalized": imported,
+        "created": created,
+        "updated": updated,
+        "matched": matched,
+    }
+
+
+@app.put("/api/admin/vulnerabilities/{finding_id}/status")
+def update_vulnerability_status(
+    finding_id: str,
+    body: VulnerabilityStatusUpdate,
+    _=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    allowed = {"open", "remediated", "accepted_risk", "false_positive"}
+    status = body.status.strip().lower()
+    if status not in allowed:
+        raise HTTPException(status_code=400, detail="invalid vulnerability status")
+
+    finding = db.get(VulnerabilityFinding, finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="vulnerability finding not found")
+
+    finding.status = status
+    finding.resolved_at = now() if status == "remediated" else None
+    db.commit()
+    audit(
+        db,
+        "admin",
+        "vulnerability.status.updated",
+        "vulnerability",
+        finding.id,
+        {"status": status, "cve": finding.cve, "source": finding.source},
+    )
+    return serialize_vulnerability(finding)
+
+
+
 @app.get("/api/admin/campaigns")
 def list_campaigns(_=Depends(require_admin), db: Session = Depends(get_db)):
     campaigns = db.query(Campaign).order_by(Campaign.created_at.desc()).all()
@@ -575,6 +805,21 @@ def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session 
         raise HTTPException(status_code=400, detail="unsupported action")
 
     validate_campaign_policy(body)
+
+    target_agent = None
+    if body.target_agent_id:
+        target_agent = db.get(Agent, body.target_agent_id)
+        if not target_agent:
+            raise HTTPException(status_code=404, detail="target agent not found")
+
+    target_finding = None
+    if body.target_finding_id:
+        target_finding = db.get(VulnerabilityFinding, body.target_finding_id)
+        if not target_finding:
+            raise HTTPException(status_code=404, detail="source vulnerability finding not found")
+        if target_agent and target_finding.agent_id and target_finding.agent_id != target_agent.id:
+            raise HTTPException(status_code=400, detail="vulnerability finding does not belong to target agent")
+
     if body.rollback_required and not body.prepare_rollback:
         raise HTTPException(status_code=400, detail="rollback_required requires prepare_rollback")
 
@@ -594,6 +839,10 @@ def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session 
         "post_patch_validation": body.post_patch_validation,
         "prepare_rollback": body.prepare_rollback,
         "rollback_required": body.rollback_required,
+        "target_agent_id": target_agent.id if target_agent else "",
+        "target_agent_hostname": target_agent.hostname if target_agent else "",
+        "source_finding_id": target_finding.id if target_finding else "",
+        "source_cve": target_finding.cve if target_finding else "",
     }
 
     campaign = Campaign(
@@ -624,6 +873,8 @@ def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session 
             "post_patch_validation": body.post_patch_validation,
             "prepare_rollback": body.prepare_rollback,
             "rollback_required": body.rollback_required,
+            "target_agent_id": target_agent.id if target_agent else "",
+            "source_finding_id": target_finding.id if target_finding else "",
         },
     )
     return serialize_campaign(campaign)
@@ -631,7 +882,11 @@ def create_campaign(body: CampaignCreate, _=Depends(require_admin), db: Session 
 
 def campaign_candidates(db: Session, campaign: Campaign):
     candidates = []
+    payload = load(campaign.payload_json, {})
+    target_agent_id = str(payload.get("target_agent_id") or "")
     for agent in db.query(Agent).all():
+        if target_agent_id and agent.id != target_agent_id:
+            continue
         if campaign.target_os != "all" and agent.os_family != campaign.target_os:
             continue
         tags = load(agent.tags, [])

@@ -5,6 +5,7 @@ const state = {
   token: '',
   summary: null,
   agents: [],
+  vulnerabilities: [],
   campaigns: [],
   jobs: [],
   audit: [],
@@ -16,6 +17,7 @@ const state = {
 const titles = {
   overview: 'Visão geral',
   endpoints: 'Endpoints',
+  vulnerabilities: 'Vulnerabilidades',
   campaigns: 'Campanhas',
   executions: 'Execuções',
   audit: 'Auditoria',
@@ -164,9 +166,10 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, campaigns, jobs, audit] = await Promise.all([
+    const [summary, agents, vulnerabilities, campaigns, jobs, audit] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
+      api('/api/admin/vulnerabilities'),
       api('/api/admin/campaigns'),
       api('/api/admin/jobs'),
       api('/api/admin/audit'),
@@ -174,6 +177,7 @@ async function load() {
 
     state.summary = summary;
     state.agents = agents;
+    state.vulnerabilities = vulnerabilities;
     state.campaigns = campaigns;
     state.jobs = jobs;
     state.audit = audit;
@@ -204,6 +208,7 @@ function renderAll() {
   renderCompliance(state.summary || {});
   renderAgents();
   renderRiskEndpoints();
+  renderVulnerabilities();
   renderCampaigns();
   renderOverviewCampaigns();
   renderJobs();
@@ -341,6 +346,142 @@ function renderRiskEndpoints() {
   `).join('');
 }
 
+
+
+function vulnerabilitySeverityClass(severity) {
+  if (severity === 'critical') return 'fail';
+  if (severity === 'high' || severity === 'medium') return 'warn';
+  if (severity === 'low') return 'info';
+  return 'muted-badge';
+}
+
+function vulnerabilityStatusLabel(status) {
+  const labels = {
+    open: 'aberta',
+    remediated: 'remediada',
+    accepted_risk: 'risco aceito',
+    false_positive: 'falso positivo',
+  };
+  return labels[status] || status;
+}
+
+function filteredVulnerabilities() {
+  const query = ($('#vulnerabilitySearch')?.value || '').trim().toLowerCase();
+  const filter = $('#vulnerabilityFilter')?.value || 'open';
+
+  return state.vulnerabilities.filter((item) => {
+    const searchable = [
+      item.cve,
+      item.hostname,
+      item.host,
+      item.ip_address,
+      item.title,
+      item.source,
+      item.external_id,
+    ].join(' ').toLowerCase();
+
+    if (query && !searchable.includes(query)) return false;
+    if (filter === 'open' && item.status !== 'open') return false;
+    if (filter === 'critical' && !(item.status === 'open' && item.severity === 'critical')) return false;
+    if (filter === 'high' && !(item.status === 'open' && item.severity === 'high')) return false;
+    if (filter === 'unmatched' && !(item.status === 'open' && !item.matched)) return false;
+    if (filter === 'remediated' && item.status !== 'remediated') return false;
+    return true;
+  });
+}
+
+function renderVulnerabilities() {
+  const open = state.vulnerabilities.filter((item) => item.status === 'open');
+  const critical = open.filter((item) => item.severity === 'critical');
+  const high = open.filter((item) => item.severity === 'high');
+  const matched = open.filter((item) => item.matched);
+  const unmatched = open.filter((item) => !item.matched);
+
+  $('#vulnerabilitySummary').innerHTML = [
+    ['Abertas', open.length, 'findings ativos', open.length ? 'warn' : 'ok'],
+    ['Críticas', critical.length, 'CVSS / scanner', critical.length ? 'danger' : 'ok'],
+    ['Altas', high.length, 'prioridade alta', high.length ? 'warn' : 'ok'],
+    ['Correlacionadas', matched.length, 'com endpoint gerenciado', 'accent'],
+    ['Sem endpoint', unmatched.length, 'exigem correlação', unmatched.length ? 'danger' : 'ok'],
+    ['Remediadas', state.vulnerabilities.filter((item) => item.status === 'remediated').length, 'confirmadas por status/rescan', 'ok'],
+  ].map(([label, value, hint, cls]) => `
+    <article class="card ${cls}">
+      <span>${esc(label)}</span>
+      <strong>${esc(value)}</strong>
+      <small>${esc(hint)}</small>
+    </article>
+  `).join('');
+
+  const items = filteredVulnerabilities();
+  if (!items.length) {
+    $('#vulnerabilities').innerHTML = '<tr><td colspan="9"><div class="empty-state">Nenhum finding encontrado.</div></td></tr>';
+    return;
+  }
+
+  $('#vulnerabilities').innerHTML = items.map((item) => `
+    <tr>
+      <td><strong>${esc(item.cve || 'sem CVE')}</strong></td>
+      <td>${badge(item.severity || 'unknown', vulnerabilitySeverityClass(item.severity))}</td>
+      <td><strong>${Number(item.cvss || 0).toFixed(1)}</strong></td>
+      <td>
+        ${item.matched
+          ? '<strong>' + esc(item.hostname) + '</strong><br><small class="muted">' + esc(item.ip_address || item.host || '') + '</small>'
+          : badge('não correlacionado', 'fail')}
+      </td>
+      <td>
+        <strong>${esc(item.title || item.external_id)}</strong>
+        <br><small class="muted">${esc(item.port || item.external_id || '')}</small>
+      </td>
+      <td>${badge(item.source || '-', 'info')}</td>
+      <td>${badge(vulnerabilityStatusLabel(item.status), item.status === 'remediated' ? 'ok' : item.status === 'open' ? 'warn' : 'info')}</td>
+      <td>${when(item.last_seen)}</td>
+      <td>
+        ${item.status === 'open' && item.matched
+          ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + item.id + '\')">Criar campanha</button>'
+          : ''}
+      </td>
+    </tr>
+  `).join('');
+}
+
+window.prepareCampaignFromFinding = (findingId) => {
+  const finding = state.vulnerabilities.find((item) => item.id === findingId);
+  if (!finding || !finding.matched || !finding.agent_id) {
+    toast('O finding precisa estar correlacionado a um endpoint gerenciado.', 'fail');
+    return;
+  }
+
+  const agent = state.agents.find((item) => item.id === finding.agent_id);
+  if (!agent) {
+    toast('Endpoint correlacionado não encontrado no inventário.', 'fail');
+    return;
+  }
+
+  const form = $('#campaignForm');
+  form.elements.target_agent_id.value = finding.agent_id;
+  form.elements.target_finding_id.value = finding.id;
+  form.elements.name.value = (finding.cve || 'Vulnerabilidade') + ' · ' + (finding.hostname || agent.hostname);
+  form.elements.target_os.value = agent.os_family || 'all';
+  form.elements.target_tag.value = '';
+  form.elements.ring_percent.value = 100;
+  form.elements.action.value = (finding.patch_refs || []).length ? 'install_updates' : 'scan_updates';
+  form.elements.packages.value = (finding.patch_refs || []).join(', ');
+  form.elements.description.value =
+    'Remediação de ' + (finding.cve || finding.external_id) +
+    ' detectada por ' + finding.source +
+    ' · CVSS ' + Number(finding.cvss || 0).toFixed(1) +
+    (finding.title ? ' · ' + finding.title : '');
+
+  const context = $('#campaignSourceContext');
+  context.hidden = false;
+  context.innerHTML =
+    '<strong>Origem da campanha</strong>' +
+    '<span>' + esc(finding.cve || finding.external_id) + ' · ' + esc(finding.hostname || finding.host) + ' · ' + esc(finding.source) + '</span>';
+
+  setView('campaigns');
+  form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  toast('Campanha pré-preenchida. Revise os pacotes/KBs antes de criar.');
+};
 
 function setDrawerTab(tab) {
   state.drawerTab = tab;
@@ -596,6 +737,8 @@ function campaignCard(campaign, compact = false) {
         <div class="campaign-meta">
           ${badge((campaign.target_os || 'all').toUpperCase())}
           ${campaign.target_tag ? badge(campaign.target_tag, 'info') : ''}
+          ${payload.target_agent_hostname ? badge('endpoint: ' + payload.target_agent_hostname, 'info') : ''}
+          ${payload.source_cve ? badge(payload.source_cve, 'warn') : ''}
           <span>Ring atual <strong>${esc(campaign.ring_percent)}%</strong></span>
           <span>${esc(actionLabel(campaign.action))}</span>
           ${campaign.not_before ? `<span>Após ${esc(shortWhen(campaign.not_before))}</span>` : ''}
@@ -785,6 +928,8 @@ $$('.jump-view').forEach((button) => {
 
 $('#endpointSearch').addEventListener('input', renderAgents);
 $('#endpointFilter').addEventListener('change', renderAgents);
+$('#vulnerabilitySearch').addEventListener('input', renderVulnerabilities);
+$('#vulnerabilityFilter').addEventListener('change', renderVulnerabilities);
 
 
 document.addEventListener('click', (event) => {
@@ -848,6 +993,8 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     post_patch_validation: form.get('post_patch_validation') === 'on',
     prepare_rollback: form.get('prepare_rollback') === 'on',
     rollback_required: form.get('rollback_required') === 'on',
+    target_agent_id: form.get('target_agent_id') || '',
+    target_finding_id: form.get('target_finding_id') || '',
     not_before: form.get('not_before')
       ? new Date(form.get('not_before')).toISOString()
       : null,
@@ -862,6 +1009,11 @@ $('#campaignForm').addEventListener('submit', async (event) => {
 
     event.target.reset();
     event.target.elements.ring_percent.value = 10;
+    event.target.elements.maintenance_timezone.value = 'America/Sao_Paulo';
+    event.target.elements.post_patch_validation.checked = true;
+    event.target.elements.prepare_rollback.checked = true;
+    $('#campaignSourceContext').hidden = true;
+    $('#campaignSourceContext').innerHTML = '';
     toast('Campanha criada.');
     await load();
   } catch (error) {
