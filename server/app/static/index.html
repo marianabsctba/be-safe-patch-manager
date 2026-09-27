@@ -190,6 +190,36 @@
           <section class="panel">
             <div class="panel-head">
               <div>
+                <p class="section-kicker">RISCO POR ATIVO</p>
+                <h2>Be Safe Asset Risk</h2>
+              </div>
+              <span class="metric-pill">0–1000</span>
+            </div>
+            <div id="assetRiskStats" class="integration-details"></div>
+            <div class="vuln-note">
+              Score agregado por ativo usando risco dos findings, criticidade 1–5, exposição externa e controles compensatórios.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Ativo</th>
+                    <th>Asset Risk</th>
+                    <th>Criticidade</th>
+                    <th>Exposição</th>
+                    <th>Findings</th>
+                    <th>Top fatores</th>
+                    <th>Compensações</th>
+                  </tr>
+                </thead>
+                <tbody id="assetRiskTable"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
                 <p class="section-kicker">REMEDIAÇÃO ORIENTADA A RISCO</p>
                 <h2>Fila recomendada</h2>
               </div>
