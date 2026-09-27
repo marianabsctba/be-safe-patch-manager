@@ -30,7 +30,7 @@ from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 from .agent_updates import AgentReleaseError, load_signed_release
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.17.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.18.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -404,6 +404,121 @@ def severity_from_cvss(cvss: float, explicit: str = "") -> str:
     return "unknown"
 
 
+VULNERABILITY_SLA_HOURS = {
+    "critical": _seconds_setting("VULNERABILITY_SLA_CRITICAL_HOURS", 72, 1),
+    "high": _seconds_setting("VULNERABILITY_SLA_HIGH_HOURS", 168, 1),
+    "medium": _seconds_setting("VULNERABILITY_SLA_MEDIUM_HOURS", 720, 1),
+    "low": _seconds_setting("VULNERABILITY_SLA_LOW_HOURS", 2160, 1),
+    "info": _seconds_setting("VULNERABILITY_SLA_INFO_HOURS", 4320, 1),
+    "unknown": _seconds_setting("VULNERABILITY_SLA_UNKNOWN_HOURS", 720, 1),
+}
+VULNERABILITY_SLA_DUE_SOON_HOURS = _seconds_setting(
+    "VULNERABILITY_SLA_DUE_SOON_HOURS",
+    24,
+    1,
+)
+
+
+def vulnerability_sla(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+
+    severity = str(finding.severity or "unknown").strip().lower()
+    target_hours = int(VULNERABILITY_SLA_HOURS.get(severity, VULNERABILITY_SLA_HOURS["unknown"]))
+    first_seen = finding.first_seen or finding.created_at or reference
+    if first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=timezone.utc)
+
+    due_at = first_seen + timedelta(hours=target_hours)
+    age_hours = max(0.0, (reference - first_seen).total_seconds() / 3600.0)
+    remaining_hours = (due_at - reference).total_seconds() / 3600.0
+    active = finding.status == "open"
+
+    if not active:
+        state = "excluded"
+    elif remaining_hours < 0:
+        state = "breached"
+    elif remaining_hours <= VULNERABILITY_SLA_DUE_SOON_HOURS:
+        state = "due_soon"
+    else:
+        state = "within_sla"
+
+    return {
+        "state": state,
+        "active": active,
+        "target_hours": target_hours,
+        "age_hours": round(age_hours, 1),
+        "remaining_hours": round(remaining_hours, 1),
+        "due_at": due_at.isoformat(),
+        "breached": state == "breached",
+        "due_soon": state == "due_soon",
+    }
+
+
+def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    findings = db.query(VulnerabilityFinding).all()
+    summary = {
+        "active": 0,
+        "within_sla": 0,
+        "due_soon": 0,
+        "breached": 0,
+        "excluded": 0,
+    }
+    by_severity = {}
+    items = []
+
+    for finding in findings:
+        sla = vulnerability_sla(finding, reference)
+        state = sla["state"]
+        summary[state] = summary.get(state, 0) + 1
+        if sla["active"]:
+            summary["active"] += 1
+
+        severity = str(finding.severity or "unknown").strip().lower()
+        bucket = by_severity.setdefault(
+            severity,
+            {"active": 0, "within_sla": 0, "due_soon": 0, "breached": 0},
+        )
+        if sla["active"]:
+            bucket["active"] += 1
+            bucket[state] = bucket.get(state, 0) + 1
+
+        items.append({
+            "id": finding.id,
+            "cve": finding.cve,
+            "title": finding.title,
+            "severity": severity,
+            "status": finding.status,
+            "agent_id": finding.agent_id,
+            "hostname": finding.agent.hostname if finding.agent else "",
+            "first_seen": finding.first_seen.isoformat() if finding.first_seen else None,
+            "last_seen": finding.last_seen.isoformat() if finding.last_seen else None,
+            "sla": sla,
+        })
+
+    state_rank = {"breached": 0, "due_soon": 1, "within_sla": 2, "excluded": 3}
+    items.sort(key=lambda item: (
+        state_rank.get(item["sla"]["state"], 9),
+        item["sla"]["remaining_hours"],
+        item["severity"],
+        item["cve"],
+    ))
+
+    return {
+        "generated_at": reference.isoformat(),
+        "policy": {
+            "hours_by_severity": VULNERABILITY_SLA_HOURS,
+            "due_soon_hours": VULNERABILITY_SLA_DUE_SOON_HOURS,
+            "active_statuses": ["open"],
+        },
+        "summary": summary,
+        "by_severity": by_severity,
+        "items": items,
+    }
+
+
 def match_agent_for_vulnerability(db: Session, host: str, ip_address: str):
     host_key = str(host or "").strip().lower().rstrip(".")
     short_host = host_key.split(".", 1)[0] if host_key else ""
@@ -474,6 +589,7 @@ def serialize_vulnerability(v: VulnerabilityFinding):
         "patch_refs": load(v.patch_refs_json, []),
         "status": v.status,
         "matched": bool(v.agent_id),
+        "sla": vulnerability_sla(v),
         "first_seen": v.first_seen.isoformat() if v.first_seen else None,
         "last_seen": v.last_seen.isoformat() if v.last_seen else None,
         "resolved_at": v.resolved_at.isoformat() if v.resolved_at else None,
@@ -2550,6 +2666,7 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
         return (now() - ls).total_seconds() < 900
     online = sum(1 for a in agents if is_online(a))
     compliant = sum(1 for a in agents if a.pending_updates == 0)
+    sla_report = vulnerability_sla_report(db)
     return {
         "agents": total,
         "online": online,
@@ -2568,6 +2685,8 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             VulnerabilityFinding.status == "open",
             VulnerabilityFinding.agent_id.is_(None),
         ).count(),
+        "sla_breached_vulnerabilities": sla_report["summary"]["breached"],
+        "sla_due_soon_vulnerabilities": sla_report["summary"]["due_soon"],
         "agent_supported": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "supported"),
         "agent_outdated": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "outdated"),
         "agent_unknown": sum(1 for a in agents if agent_runtime_metadata(a)["status"] == "unknown"),
@@ -2615,6 +2734,11 @@ def admin_summary(_=Depends(require_viewer), db: Session = Depends(get_db)):
             )
         ),
     }
+
+
+@app.get("/api/admin/reports/vulnerability-sla")
+def admin_vulnerability_sla_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    return vulnerability_sla_report(db)
 
 
 @app.get("/api/admin/agents")
