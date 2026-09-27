@@ -123,6 +123,7 @@ function jobClass(status) {
 function actionLabel(action) {
   if (action === 'install_updates') return 'Instalar updates';
   if (action === 'rollback_checkpoint') return 'Rollback aprovado';
+  if (action === 'activate_agent_update') return 'Ativar update do agente';
   return 'Scan de updates';
 }
 
@@ -731,6 +732,14 @@ function renderAgentDrawer(agent = selectedAgent()) {
   const agentUpdate = agent.inventory && agent.inventory.update && typeof agent.inventory.update === 'object'
     ? agent.inventory.update
     : {};
+  const activationState = agent.inventory && agent.inventory.activation && typeof agent.inventory.activation === 'object'
+    ? agent.inventory.activation
+    : {};
+  const activationCapable = Boolean(
+    agent.runtime
+    && Array.isArray(agent.runtime.capabilities)
+    && agent.runtime.capabilities.includes('signed_update_activation_v1')
+  );
 
   $('#drawerHostname').textContent = agent.hostname || '-';
   $('#drawerSubtitle').textContent = ((agent.os_name || agent.os_family || '-') + ' ' + (agent.os_version || '')).trim();
@@ -764,6 +773,7 @@ function renderAgentDrawer(agent = selectedAgent()) {
     ['Protocolo', agent.runtime && agent.runtime.protocol ? agent.runtime.protocol : '-', agent.runtime && agent.runtime.protocol_supported ? 'ok' : 'danger'],
     ['Capabilities', agent.runtime && agent.runtime.capabilities ? agent.runtime.capabilities.length : 0, 'neutral'],
     ['Update agente', agentUpdate.status === 'staged' ? 'staged ' + (agentUpdate.staged_version || '') : (agentUpdate.status || '-'), agentUpdate.status === 'error' ? 'danger' : agentUpdate.status === 'staged' ? 'warn' : 'neutral'],
+    ['Ativação', activationState.status || '-', activationState.status === 'committed' ? 'ok' : activationState.status === 'rolled_back' ? 'danger' : ['pending','switching'].includes(activationState.status) ? 'warn' : 'neutral'],
   ];
 
   $('#drawerMetrics').innerHTML = metrics.map((item) =>
@@ -774,6 +784,21 @@ function renderAgentDrawer(agent = selectedAgent()) {
   ).join('');
 
   $('#drawerTags').value = (agent.tags || []).join(', ');
+
+  const activateButton = $('#activateAgentUpdate');
+  if (activateButton) {
+    const eligibleActivation = roleAtLeast('admin')
+      && String(agent.os_family || '').toLowerCase() === 'linux'
+      && agentUpdate.status === 'staged'
+      && Boolean(agentUpdate.staged_version)
+      && activationCapable
+      && !['pending','switching'].includes(activationState.status);
+    activateButton.hidden = !eligibleActivation;
+    activateButton.disabled = !eligibleActivation;
+    activateButton.textContent = eligibleActivation
+      ? 'Ativar v' + agentUpdate.staged_version
+      : 'Ativar update staged';
+  }
 
   const identity = [
     ['Agent ID', agent.id],
@@ -1368,6 +1393,49 @@ document.addEventListener('keydown', (event) => {
 $('#closeDrawer').addEventListener('click', closeAgent);
 $('#drawerBackdrop').addEventListener('click', closeAgent);
 $('#saveTags').addEventListener('click', saveAgentTags);
+
+$('#activateAgentUpdate').addEventListener('click', async () => {
+  if (!requireRole('admin', 'Somente admin pode ativar update do agente.')) return;
+  const agent = selectedAgent();
+  if (!agent) return;
+
+  const update = agent.inventory && agent.inventory.update && typeof agent.inventory.update === 'object'
+    ? agent.inventory.update
+    : {};
+  const expectedVersion = String(update.staged_version || '');
+  if (!expectedVersion) {
+    toast('O endpoint não reporta uma versão staged.', 'fail');
+    return;
+  }
+
+  const reason = prompt('Motivo da ativação do agente (obrigatório):');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+
+  const approved = confirm(
+    'Ativar o agente v' + expectedVersion + ' em ' + agent.hostname + '?\n\n' +
+    'O serviço será reiniciado. O launcher fará rollback automático se a nova versão não confirmar heartbeat.'
+  );
+  if (!approved) return;
+
+  try {
+    await api('/api/admin/agents/' + agent.id + '/updates/activate', {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_version: expectedVersion,
+        reason: reason.trim(),
+        acknowledge_risk: true,
+      }),
+    });
+    toast('Ativação aprovada e colocada na fila.');
+    await load();
+    renderAgentDrawer();
+  } catch (error) {
+    toast('Ativação do agente: ' + error.message, 'fail');
+  }
+});
 
 $('#bindMtls').addEventListener('click', async () => {
   if (!requireRole('admin', 'Somente admin pode vincular ou rotacionar certificado mTLS.')) return;
