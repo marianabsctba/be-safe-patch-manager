@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -28,6 +29,7 @@ from app.agent_updates import (
     SIGNATURE_NAME,
     canonical_manifest_bytes,
     load_signed_release,
+    public_key_id,
     sha256_file,
 )
 
@@ -71,6 +73,10 @@ def generate_key(args):
 
 def build(args):
     source_version, protocol, capabilities = read_agent_metadata()
+    source_commit = str(args.source_commit or "").strip().lower()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", source_commit):
+        raise SystemExit("--source-commit must be a full 40- or 64-hex Git commit id")
+
     version = args.version or source_version
     if version != source_version:
         raise SystemExit(
@@ -103,20 +109,20 @@ def build(args):
         archive.write(REPO_ROOT / "agent" / "requirements.txt", "requirements.txt")
 
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "product": PRODUCT,
         "version": version,
         "protocol": protocol,
         "capabilities": capabilities,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_commit": source_commit,
+        "signing_key_id": public_key_id(key.public_key()),
         "artifact": {
             "filename": artifact_name,
             "sha256": sha256_file(artifact_path),
             "size_bytes": artifact_path.stat().st_size,
         },
     }
-    if args.source_commit:
-        manifest["source_commit"] = args.source_commit
 
     manifest_path = output / MANIFEST_NAME
     signature_path = output / SIGNATURE_NAME
@@ -145,6 +151,8 @@ def verify(args):
                 "protocol": manifest["protocol"],
                 "artifact": manifest["artifact"]["filename"],
                 "sha256": manifest["artifact"]["sha256"],
+                "source_commit": manifest["source_commit"],
+                "signing_key_id": manifest["signing_key_id"],
             },
             indent=2,
         )
@@ -164,7 +172,7 @@ def main():
     builder.add_argument("--private-key", required=True)
     builder.add_argument("--output", required=True)
     builder.add_argument("--version", default="")
-    builder.add_argument("--source-commit", default="")
+    builder.add_argument("--source-commit", required=True)
     builder.set_defaults(func=build)
 
     verifier = subs.add_parser("verify", help="verify a signed agent release")

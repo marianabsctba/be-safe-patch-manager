@@ -23,7 +23,7 @@ import psutil
 import requests
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, load_pem_public_key
 
 DEFAULT_CONFIG = Path(os.getenv("PATCH_AGENT_CONFIG", "/etc/patch-manager/agent.json" if os.name != "nt" else r"C:\ProgramData\PatchManager\agent.json"))
 PKG_RE = re.compile(r"^[A-Za-z0-9._+:-]{1,128}$")
@@ -51,6 +51,7 @@ UPDATE_ALLOWED_FILES = {"patch_agent.py", "requirements.txt"}
 UPDATE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
 UPDATE_FILENAME_RE = re.compile(r"^be-safe-patch-agent-[A-Za-z0-9.+-]+\.zip$")
 UPDATE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+UPDATE_SOURCE_COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 def utcnow():
@@ -154,7 +155,7 @@ def canonical_update_manifest(manifest):
 def validate_update_manifest(manifest):
     if not isinstance(manifest, dict):
         raise RuntimeError("update manifest must be an object")
-    if manifest.get("schema") != 1 or manifest.get("product") != UPDATE_PRODUCT:
+    if manifest.get("schema") != 2 or manifest.get("product") != UPDATE_PRODUCT:
         raise RuntimeError("unsupported update manifest")
     version = str(manifest.get("version") or "")
     if not UPDATE_VERSION_RE.fullmatch(version):
@@ -190,6 +191,14 @@ def validate_update_manifest(manifest):
     if size_bytes < 1 or size_bytes > UPDATE_MAX_BYTES:
         raise RuntimeError("update artifact size outside allowed range")
 
+    source_commit = str(manifest.get("source_commit") or "").strip().lower()
+    if not UPDATE_SOURCE_COMMIT_RE.fullmatch(source_commit):
+        raise RuntimeError("invalid or missing update source_commit")
+
+    signing_key_id = str(manifest.get("signing_key_id") or "").strip().lower()
+    if not UPDATE_SHA256_RE.fullmatch(signing_key_id):
+        raise RuntimeError("invalid or missing update signing_key_id")
+
     return manifest
 
 
@@ -217,8 +226,13 @@ def verify_update_manifest(cfg, manifest, signature_b64):
         raise RuntimeError("invalid update signature encoding") from exc
     if len(signature) != 64:
         raise RuntimeError("invalid update signature length")
+    key = update_public_key(cfg)
+    key_material = key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    actual_key_id = hashlib.sha256(key_material).hexdigest()
+    if str(manifest.get("signing_key_id") or "").lower() != actual_key_id:
+        raise RuntimeError("update signing_key_id does not match pinned public key")
     try:
-        update_public_key(cfg).verify(signature, canonical_update_manifest(manifest))
+        key.verify(signature, canonical_update_manifest(manifest))
     except InvalidSignature as exc:
         raise RuntimeError("update manifest signature verification failed") from exc
     return manifest, signature
@@ -463,6 +477,8 @@ def stage_signed_update(cfg):
         "staged_version": version,
         "artifact_sha256": artifact["sha256"],
         "artifact_filename": artifact["filename"],
+        "source_commit": manifest["source_commit"],
+        "signing_key_id": manifest["signing_key_id"],
         "activation": "manual",
     })
 

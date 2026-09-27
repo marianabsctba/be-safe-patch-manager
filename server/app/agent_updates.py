@@ -6,7 +6,7 @@ from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, load_pem_public_key
 
 
 MANIFEST_NAME = "agent-release.json"
@@ -17,6 +17,8 @@ VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
 FILENAME_RE = re.compile(r"^be-safe-patch-agent-[A-Za-z0-9.+-]+\.zip$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 CAPABILITY_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+SOURCE_COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+KEY_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class AgentReleaseError(RuntimeError):
@@ -44,10 +46,18 @@ def _public_key(path: Path) -> Ed25519PublicKey:
     return key
 
 
+def public_key_id(key: Ed25519PublicKey) -> str:
+    material = key.public_bytes(
+        Encoding.DER,
+        PublicFormat.SubjectPublicKeyInfo,
+    )
+    return hashlib.sha256(material).hexdigest()
+
+
 def validate_manifest(manifest: dict) -> dict:
     if not isinstance(manifest, dict):
         raise AgentReleaseError("agent release manifest must be an object")
-    if manifest.get("schema") != 1:
+    if manifest.get("schema") != 2:
         raise AgentReleaseError("unsupported agent release manifest schema")
     if manifest.get("product") != PRODUCT:
         raise AgentReleaseError("invalid agent release product")
@@ -98,11 +108,21 @@ def validate_manifest(manifest: dict) -> dict:
     if not generated_at or len(generated_at) > 64:
         raise AgentReleaseError("invalid agent release generated_at")
 
+    source_commit = str(manifest.get("source_commit") or "").strip().lower()
+    if not SOURCE_COMMIT_RE.fullmatch(source_commit):
+        raise AgentReleaseError("invalid or missing agent release source_commit")
+
+    signing_key_id = str(manifest.get("signing_key_id") or "").strip().lower()
+    if not KEY_ID_RE.fullmatch(signing_key_id):
+        raise AgentReleaseError("invalid or missing agent release signing_key_id")
+
     return {
         **manifest,
         "version": version,
         "protocol": protocol,
         "capabilities": normalized_capabilities,
+        "source_commit": source_commit,
+        "signing_key_id": signing_key_id,
         "artifact": {
             **artifact,
             "filename": filename,
@@ -137,8 +157,13 @@ def load_signed_release(release_dir: Path, public_key_file: Path) -> dict:
     if len(signature) != 64:
         raise AgentReleaseError("invalid Ed25519 signature length")
 
+    key = _public_key(public_key_file)
+    actual_key_id = public_key_id(key)
+    if manifest["signing_key_id"] != actual_key_id:
+        raise AgentReleaseError("agent release signing_key_id does not match trusted public key")
+
     try:
-        _public_key(public_key_file).verify(signature, canonical_manifest_bytes(manifest))
+        key.verify(signature, canonical_manifest_bytes(manifest))
     except InvalidSignature as exc:
         raise AgentReleaseError("agent release manifest signature is invalid") from exc
 
