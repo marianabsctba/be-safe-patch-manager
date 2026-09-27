@@ -20,7 +20,7 @@ os.environ["GREENBONE_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine
 from app.main import app, now
-from app.models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, VulnerabilityFinding
+from app.models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
 from app import observability
 
 
@@ -147,7 +147,22 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
             status="ok",
             last_success_at=now(),
         )
-        db.add_all([agent, campaign, job, finding, greenbone])
+        evidence = RemediationEvidence(
+            id="obs-evidence",
+            finding_id=finding.id,
+            campaign_id=campaign.id,
+            job_id=job.id,
+            agent_id=agent.id,
+            source="openvas",
+            cve=finding.cve,
+            greenbone_task_id="task-observability",
+            baseline_report_id="baseline",
+            rescan_report_id="rescan",
+            status="verified",
+            evidence_json="{}",
+            verified_at=now(),
+        )
+        db.add_all([agent, campaign, job, finding, greenbone, evidence])
         db.commit()
     finally:
         db.close()
@@ -176,6 +191,7 @@ def test_metrics_are_aggregated_and_do_not_expose_endpoint_identity(tmp_path, mo
     assert "patch_manager_health_services_unhealthy 1.0" in body
     assert "patch_manager_health_applications_unhealthy 0.0" in body
     assert "patch_manager_health_collection_errors 0.0" in body
+    assert 'patch_manager_remediation_evidence{status="verified"} 1.0' in body
 
     assert "sensitive-hostname-should-not-leak" not in body
     assert "10.123.45.67" not in body

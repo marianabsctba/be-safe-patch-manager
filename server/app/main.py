@@ -1650,7 +1650,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.10.0", "time": now().isoformat()}
+    return {"status": "ok", "version": "0.12.0", "time": now().isoformat()}
 
 
 @app.get("/ready")
