@@ -2,7 +2,9 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 
 const state = {
-  token: '',
+  sessionToken: '',
+  user: null,
+  users: [],
   summary: null,
   agents: [],
   vulnerabilities: [],
@@ -22,13 +24,28 @@ const titles = {
   campaigns: 'Campanhas',
   executions: 'Execuções',
   audit: 'Auditoria',
+  users: 'Usuários',
 };
 
+const roleLevels = { viewer: 10, operator: 20, admin: 30 };
+
+function roleAtLeast(role) {
+  const current = state.user && state.user.role ? roleLevels[state.user.role] || 0 : 0;
+  return current >= (roleLevels[role] || 999);
+}
+
+function requireRole(role, message = 'Permissão insuficiente.') {
+  if (!roleAtLeast(role)) {
+    toast(message, 'fail');
+    return false;
+  }
+  return true;
+}
+
 function headers() {
-  return {
-    'Content-Type': 'application/json',
-    'X-Admin-Token': state.token,
-  };
+  const result = { 'Content-Type': 'application/json' };
+  if (state.sessionToken) result['X-Session-Token'] = state.sessionToken;
+  return result;
 }
 
 async function api(path, options = {}) {
@@ -42,7 +59,10 @@ async function api(path, options = {}) {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`${response.status} ${body}`);
+    const error = new Error(`${response.status} ${body}`);
+    error.status = response.status;
+    error.body = body;
+    throw error;
   }
 
   return response.json();
@@ -149,6 +169,45 @@ function toast(message, type = 'ok') {
   }, 3200);
 }
 
+function showLogin(message = '') {
+  state.sessionToken = '';
+  state.user = null;
+  state.users = [];
+  $('#authUser').hidden = true;
+  $('#loginGate').hidden = false;
+  $('#lastUpdate').textContent = 'Aguardando autenticação';
+  $('#loginError').hidden = !message;
+  $('#loginError').textContent = message;
+  applyPermissions();
+}
+
+function hideLogin() {
+  $('#loginGate').hidden = true;
+  $('#loginError').hidden = true;
+  $('#authUser').hidden = false;
+}
+
+function applyPermissions() {
+  $('[data-min-role]').forEach((element) => {
+    const allowed = roleAtLeast(element.dataset.minRole);
+    element.hidden = !allowed;
+  });
+
+  const user = state.user;
+  $('#authUsername').textContent = user ? user.username : '-';
+  $('#authRole').textContent = user ? String(user.role || '').toUpperCase() : '-';
+
+  if (state.view === 'users' && !roleAtLeast('admin')) {
+    setView('overview');
+  }
+
+  if ($('#drawerTags')) $('#drawerTags').disabled = !roleAtLeast('operator');
+}
+
+function userRoleBadge(role) {
+  return badge(String(role || '-').toUpperCase(), role === 'admin' ? 'fail' : role === 'operator' ? 'warn' : 'info');
+}
+
 function setView(view) {
   state.view = view;
   $$('.nav-item').forEach((button) => {
@@ -163,12 +222,12 @@ function setView(view) {
 }
 
 async function load() {
-  if (!state.token) return;
+  if (!state.sessionToken) return;
 
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, campaigns, jobs, audit] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -176,6 +235,7 @@ async function load() {
       api('/api/admin/campaigns'),
       api('/api/admin/jobs'),
       api('/api/admin/audit'),
+      roleAtLeast('admin') ? api('/api/admin/users') : Promise.resolve([]),
     ]);
 
     state.summary = summary;
@@ -185,8 +245,10 @@ async function load() {
     state.campaigns = campaigns;
     state.jobs = jobs;
     state.audit = audit;
+    state.users = users;
 
     renderAll();
+    applyPermissions();
 
     $('#lastUpdate').textContent = `Atualizado ${new Date().toLocaleTimeString('pt-BR', {
       hour: '2-digit',
@@ -194,11 +256,9 @@ async function load() {
       second: '2-digit',
     })}`;
   } catch (error) {
-    if (String(error.message).startsWith('401 ')) {
-      state.token = '';
-      $('#saveToken').textContent = 'Conectar';
-      $('#lastUpdate').textContent = 'Sessão desconectada';
-      toast('Token administrativo inválido.', 'fail');
+    if (error.status === 401) {
+      showLogin('Sua sessão expirou ou não é mais válida.');
+      toast('Sessão encerrada.', 'fail');
     } else {
       toast(`Falha ao carregar: ${error.message}`, 'fail');
     }
@@ -218,6 +278,7 @@ function renderAll() {
   renderOverviewCampaigns();
   renderJobs();
   renderAudit();
+  renderUsers();
   if (state.selectedAgentId) renderAgentDrawer();
 }
 
@@ -489,7 +550,7 @@ function renderVulnerabilities() {
       <td>${badge(vulnerabilityStatusLabel(item.status), item.status === 'remediated' ? 'ok' : item.status === 'open' ? 'warn' : 'info')}</td>
       <td>${when(item.last_seen)}</td>
       <td>
-        ${item.status === 'open' && item.matched
+        ${item.status === 'open' && item.matched && roleAtLeast('operator')
           ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + item.id + '\')">Criar campanha</button>'
           : ''}
       </td>
@@ -498,6 +559,7 @@ function renderVulnerabilities() {
 }
 
 window.prepareCampaignFromFinding = (findingId) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
   const finding = state.vulnerabilities.find((item) => item.id === findingId);
   if (!finding || !finding.matched || !finding.agent_id) {
     toast('O finding precisa estar correlacionado a um endpoint gerenciado.', 'fail');
@@ -645,6 +707,7 @@ function renderAgentDrawer(agent = selectedAgent()) {
 }
 
 async function saveAgentTags() {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
   const agent = selectedAgent();
   if (!agent) return;
 
@@ -712,7 +775,10 @@ function rollbackBadge(rollback) {
 function rollbackControl(job) {
   const state = job.rollback || {};
   if (state.status === 'eligible') {
-    return '<button class="row-action danger-action" onclick="approveRollback(\'' + job.id + '\')">Aprovar rollback</button>';
+    if (roleAtLeast('admin')) {
+      return '<button class="row-action danger-action" onclick="approveRollback(\'' + job.id + '\')">Aprovar rollback</button>';
+    }
+    return badge('admin necessário', 'warn');
   }
   return rollbackBadge(state);
 }
@@ -769,9 +835,9 @@ function campaignCard(campaign, compact = false) {
     : 'sem janela restritiva';
 
   let action = '';
-  if (campaign.status === 'draft') {
+  if (roleAtLeast('operator') && campaign.status === 'draft') {
     action = '<button onclick="deploy(\'' + campaign.id + '\')">Implantar ' + esc(campaign.ring_percent) + '%</button>';
-  } else if (campaign.status === 'deployed' && nextRing) {
+  } else if (roleAtLeast('operator') && campaign.status === 'deployed' && nextRing) {
     action = ringReady
       ? '<button onclick="advanceCampaign(\'' + campaign.id + '\',' + nextRing + ')">Avançar para ' + nextRing + '%</button>'
       : '<button disabled title="' + esc(healthReasonLabel(health.reason)) + '">Gate aguardando</button>';
@@ -850,7 +916,7 @@ function renderOverviewCampaigns() {
 function executionStatusControl(job) {
   const status = badge(statusLabel(job.status), jobClass(job.status));
   const attempt = '<small class="muted">tentativa ' + esc(job.attempt_count || 0) + '</small>';
-  if (job.status === 'stalled') {
+  if (job.status === 'stalled' && roleAtLeast('admin')) {
     return status + '<br>' + attempt +
       '<br><button class="row-action danger-action" onclick="retryStalledJob(\'' + job.id + '\')">Revisar e tentar novamente</button>';
   }
@@ -912,7 +978,71 @@ function renderAudit() {
   `).join('');
 }
 
+
+function renderUsers() {
+  if (!$('#users')) return;
+  $('#userCount').textContent = state.users.length + ' usuário' + (state.users.length === 1 ? '' : 's');
+
+  if (!roleAtLeast('admin')) {
+    $('#users').innerHTML = '';
+    return;
+  }
+
+  $('#users').innerHTML = state.users.length ? state.users.map((user) => {
+    const isSelf = state.user && user.id === state.user.id;
+    return `
+      <tr>
+        <td><strong>${esc(user.username)}</strong>${isSelf ? '<br><small class="muted">sessão atual</small>' : ''}</td>
+        <td>
+          <select class="inline-select" id="role-${esc(user.id)}" ${isSelf ? 'disabled' : ''}>
+            <option value="viewer" ${user.role === 'viewer' ? 'selected' : ''}>Viewer</option>
+            <option value="operator" ${user.role === 'operator' ? 'selected' : ''}>Operator</option>
+            <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Admin</option>
+          </select>
+        </td>
+        <td>${badge(user.active ? 'ativo' : 'inativo', user.active ? 'ok' : 'muted-badge')}</td>
+        <td>${when(user.last_login_at)}</td>
+        <td class="user-actions">
+          ${isSelf ? userRoleBadge(user.role) :
+            '<button class="row-action" onclick="saveUserRole(\'' + user.id + '\')">Salvar perfil</button>' +
+            '<button class="row-action ' + (user.active ? 'danger-action' : '') + '" onclick="toggleUser(\'' + user.id + '\',' + (!user.active) + ')">' + (user.active ? 'Desativar' : 'Ativar') + '</button>'}
+        </td>
+      </tr>`;
+  }).join('') : '<tr><td colspan="5"><div class="empty-state">Nenhum usuário.</div></td></tr>';
+}
+
+window.saveUserRole = async (userId) => {
+  if (!requireRole('admin')) return;
+  const role = $('#role-' + userId).value;
+  try {
+    await api('/api/admin/users/' + userId, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    });
+    toast('Perfil atualizado.');
+    await load();
+  } catch (error) {
+    toast('Usuário: ' + error.message, 'fail');
+  }
+};
+
+window.toggleUser = async (userId, active) => {
+  if (!requireRole('admin')) return;
+  if (!confirm((active ? 'Ativar' : 'Desativar') + ' este usuário?')) return;
+  try {
+    await api('/api/admin/users/' + userId, {
+      method: 'PATCH',
+      body: JSON.stringify({ active }),
+    });
+    toast(active ? 'Usuário ativado.' : 'Usuário desativado.');
+    await load();
+  } catch (error) {
+    toast('Usuário: ' + error.message, 'fail');
+  }
+};
+
 window.deploy = async (id) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
   if (!confirm('Implantar esta campanha nos endpoints selecionados?')) return;
 
   try {
@@ -925,6 +1055,7 @@ window.deploy = async (id) => {
 };
 
 window.advanceCampaign = async (id, targetPercent) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
   if (!confirm('Avançar esta campanha para o ring de ' + targetPercent + '%?')) return;
 
   try {
@@ -941,6 +1072,7 @@ window.advanceCampaign = async (id, targetPercent) => {
 
 
 window.retryStalledJob = async (jobId) => {
+  if (!requireRole('admin', 'Somente admin pode autorizar retry de job stalled.')) return;
   const reason = prompt('Descreva a revisão feita antes de reexecutar este job:');
   if (!reason || reason.trim().length < 5) {
     toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
@@ -962,6 +1094,7 @@ window.retryStalledJob = async (jobId) => {
 
 
 window.approveRollback = async (jobId) => {
+  if (!requireRole('admin', 'Somente admin pode aprovar rollback.')) return;
   const reason = prompt('Motivo da aprovação do rollback (obrigatório):');
   if (!reason || reason.trim().length < 5) {
     toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
@@ -981,23 +1114,61 @@ window.approveRollback = async (jobId) => {
   }
 };
 
-$('#saveToken').addEventListener('click', () => {
-  const candidate = $('#token').value.trim();
+$('#loginForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  const username = String(form.get('username') || '').trim();
+  const password = String(form.get('password') || '');
+  const button = $('#loginButton');
 
-  if (!candidate) {
-    toast('Informe o token administrativo.', 'fail');
-    return;
+  button.disabled = true;
+  button.textContent = 'Entrando...';
+  $('#loginError').hidden = true;
+
+  try {
+    const result = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+    state.sessionToken = result.session_token;
+    state.user = result.user;
+    event.target.reset();
+    hideLogin();
+    applyPermissions();
+    await load();
+  } catch (error) {
+    $('#loginError').hidden = false;
+    $('#loginError').textContent = error.status === 401 ? 'Usuário ou senha inválidos.' : error.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Entrar';
   }
-
-  state.token = candidate;
-  $('#token').value = '';
-  $('#saveToken').textContent = 'Conectado';
-  load();
 });
 
-$('#token').addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
-    $('#saveToken').click();
+$('#logout').addEventListener('click', async () => {
+  try {
+    if (state.sessionToken) await api('/api/auth/logout', { method: 'POST' });
+  } catch {
+    // Logout local continua mesmo se a sessão já tiver expirado.
+  }
+  showLogin('');
+});
+
+$('#changePassword').addEventListener('click', async () => {
+  if (!state.sessionToken || !state.user || state.user.break_glass) return;
+  const currentPassword = prompt('Senha atual:');
+  if (!currentPassword) return;
+  const newPassword = prompt('Nova senha (mínimo 14 caracteres):');
+  if (!newPassword) return;
+
+  try {
+    await api('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    toast('Senha alterada. Outras sessões foram revogadas.');
+  } catch (error) {
+    toast('Senha: ' + error.message, 'fail');
   }
 });
 
@@ -1017,10 +1188,7 @@ $('#vulnerabilitySearch').addEventListener('input', renderVulnerabilities);
 $('#vulnerabilityFilter').addEventListener('change', renderVulnerabilities);
 
 $('#greenboneSync').addEventListener('click', async () => {
-  if (!state.token) {
-    toast('Conecte com o token administrativo primeiro.', 'fail');
-    return;
-  }
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
 
   $('#greenboneSync').disabled = true;
   $('#greenboneSync').textContent = 'Sincronizando...';
@@ -1066,10 +1234,7 @@ $('.drawer-tab').forEach((button) => {
 $('#campaignForm').addEventListener('submit', async (event) => {
   event.preventDefault();
 
-  if (!state.token) {
-    toast('Conecte com o token administrativo primeiro.', 'fail');
-    return;
-  }
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
 
   const form = new FormData(event.target);
   const packages = String(form.get('packages') || '')
@@ -1129,6 +1294,30 @@ $('#campaignForm').addEventListener('submit', async (event) => {
   }
 });
 
+$('#userForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!requireRole('admin')) return;
+
+  const form = new FormData(event.target);
+  try {
+    await api('/api/admin/users', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: String(form.get('username') || '').trim(),
+        password: String(form.get('password') || ''),
+        role: String(form.get('role') || 'viewer'),
+      }),
+    });
+    event.target.reset();
+    toast('Usuário criado.');
+    await load();
+  } catch (error) {
+    toast('Usuário: ' + error.message, 'fail');
+  }
+});
+
 setInterval(() => {
-  if (state.token) load();
+  if (state.sessionToken) load();
 }, 30000);
+
+showLogin('');

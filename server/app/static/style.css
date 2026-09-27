@@ -1482,3 +1482,135 @@ button:disabled:hover {
   .integration-actions { align-items:flex-end; flex-direction:column; }
   .integration-details { grid-template-columns:1fr; }
 }
+
+
+/* RBAC / authentication */
+[hidden] {
+  display:none !important;
+}
+
+.auth-gate {
+  position:fixed;
+  inset:0;
+  z-index:1000;
+  display:grid;
+  place-items:center;
+  padding:24px;
+  background:
+    radial-gradient(circle at 50% 20%, rgba(255,45,132,.11), transparent 34%),
+    rgba(5,5,7,.97);
+}
+
+.auth-card {
+  width:min(420px,100%);
+  display:grid;
+  gap:16px;
+  padding:30px;
+  border:1px solid var(--border);
+  border-radius:16px;
+  background:#101013;
+  box-shadow:0 24px 90px rgba(0,0,0,.45);
+}
+
+.auth-logo {
+  width:50px;
+  height:50px;
+  display:grid;
+  place-items:center;
+  border-radius:14px;
+  background:var(--pink);
+  color:#fff;
+  font-size:18px;
+  font-weight:900;
+}
+
+.auth-card h2,
+.auth-card p {
+  margin:0;
+}
+
+.auth-copy {
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.6;
+}
+
+.auth-card label {
+  display:grid;
+  gap:7px;
+}
+
+.auth-card label span {
+  color:#c9c9cf;
+  font-size:11px;
+}
+
+.auth-card input {
+  width:100%;
+  padding:12px 13px;
+  border:1px solid var(--border);
+  border-radius:8px;
+  background:#09090c;
+  color:var(--text);
+}
+
+.auth-error {
+  color:#fda4af;
+  font-size:11px;
+}
+
+.auth-user {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding-left:12px;
+  border-left:1px solid var(--border);
+}
+
+.auth-user > div {
+  min-width:110px;
+}
+
+.auth-user strong,
+.auth-user span {
+  display:block;
+}
+
+.auth-user strong {
+  color:#f2f2f4;
+  font-size:11px;
+}
+
+.auth-user span {
+  margin-top:2px;
+  color:var(--pink);
+  font-size:9px;
+  font-weight:800;
+  letter-spacing:.1em;
+}
+
+.user-layout {
+  display:grid;
+  grid-template-columns:minmax(300px,.8fr) minmax(0,1.8fr);
+  gap:16px;
+}
+
+.inline-select {
+  min-width:105px;
+  padding:7px 8px;
+  border:1px solid var(--border);
+  border-radius:7px;
+  background:#111116;
+  color:var(--text);
+}
+
+.user-actions {
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+}
+
+@media (max-width:980px) {
+  .user-layout { grid-template-columns:1fr; }
+  .auth-user > div { min-width:auto; }
+}

@@ -25,13 +25,14 @@
         <button class="nav-item" data-view="campaigns"><span>⇧</span>Campanhas</button>
         <button class="nav-item" data-view="executions"><span>▤</span>Execuções</button>
         <button class="nav-item" data-view="audit"><span>◎</span>Auditoria</button>
+        <button class="nav-item" data-view="users" data-min-role="admin" hidden><span>♙</span>Usuários</button>
       </nav>
 
       <div class="sidebar-footer">
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.7</small>
+          <small>dashboard v0.8</small>
         </div>
       </div>
     </aside>
@@ -46,9 +47,13 @@
         <div class="topbar-actions">
           <span id="lastUpdate" class="last-update">Aguardando autenticação</span>
           <button id="refresh" class="icon-button" title="Atualizar">↻</button>
-          <div class="token-box">
-            <input id="token" type="password" autocomplete="off" placeholder="Admin token" />
-            <button id="saveToken">Conectar</button>
+          <div class="auth-user" id="authUser" hidden>
+            <div>
+              <strong id="authUsername">-</strong>
+              <span id="authRole">-</span>
+            </div>
+            <button id="changePassword" class="text-button">Senha</button>
+            <button id="logout" class="text-button">Sair</button>
           </div>
         </div>
       </header>
@@ -159,7 +164,7 @@
               </div>
               <div class="integration-actions">
                 <span id="greenboneStatusBadge" class="metric-pill">desativado</span>
-                <button id="greenboneSync" class="row-action">Sincronizar agora</button>
+                <button id="greenboneSync" class="row-action" data-min-role="operator" hidden>Sincronizar agora</button>
               </div>
             </div>
             <div id="greenboneDetails" class="integration-details"></div>
@@ -214,7 +219,7 @@
 
         <section class="view" data-view-panel="campaigns">
           <div class="campaign-layout">
-            <section class="panel">
+            <section class="panel" data-min-role="operator" hidden>
               <div class="panel-head">
                 <div>
                   <p class="section-kicker">ORQUESTRAÇÃO</p>
@@ -384,6 +389,63 @@
             <div id="auditFeed" class="audit-feed"></div>
           </section>
         </section>
+
+        <section class="view" data-view-panel="users" data-min-role="admin" hidden>
+          <div class="user-layout">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">RBAC</p>
+                  <h2>Novo usuário</h2>
+                </div>
+              </div>
+              <form id="userForm" class="grid-form">
+                <label>
+                  <span>Usuário</span>
+                  <input name="username" autocomplete="off" placeholder="operador.patch" required minlength="3" />
+                </label>
+                <label>
+                  <span>Perfil</span>
+                  <select name="role">
+                    <option value="viewer">Viewer</option>
+                    <option value="operator">Operator</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </label>
+                <label class="wide">
+                  <span>Senha inicial</span>
+                  <input name="password" type="password" autocomplete="new-password" minlength="14" required />
+                </label>
+                <p class="form-hint wide">A senha inicial deve ter pelo menos 14 caracteres. O sistema armazena somente hash Argon2.</p>
+                <button type="submit" class="primary wide">Criar usuário</button>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">ACESSO</p>
+                  <h2>Usuários</h2>
+                </div>
+                <span id="userCount" class="metric-pill">0 usuários</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Usuário</th>
+                      <th>Perfil</th>
+                      <th>Status</th>
+                      <th>Último login</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="users"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
       </main>
     </div>
   </div>
@@ -420,7 +482,7 @@
           </div>
           <div class="tag-editor">
             <input id="drawerTags" placeholder="piloto, prod, financeiro..." />
-            <button id="saveTags">Salvar</button>
+            <button id="saveTags" data-min-role="operator" hidden>Salvar</button>
           </div>
         </div>
 
@@ -449,6 +511,25 @@
       </section>
     </div>
   </aside>
+
+  <div id="loginGate" class="auth-gate">
+    <form id="loginForm" class="auth-card">
+      <div class="auth-logo">BS</div>
+      <p class="section-kicker">BE SAFE / PATCH MANAGEMENT</p>
+      <h2>Acesso ao console</h2>
+      <p class="auth-copy">Entre com sua conta. A sessão fica somente na memória do navegador.</p>
+      <label>
+        <span>Usuário</span>
+        <input name="username" autocomplete="username" required />
+      </label>
+      <label>
+        <span>Senha</span>
+        <input name="password" type="password" autocomplete="current-password" required />
+      </label>
+      <button id="loginButton" type="submit" class="primary">Entrar</button>
+      <p id="loginError" class="auth-error" hidden></p>
+    </form>
+  </div>
 
   <div id="toast" class="toast" aria-live="polite"></div>
   <script src="/static/app.js"></script>
