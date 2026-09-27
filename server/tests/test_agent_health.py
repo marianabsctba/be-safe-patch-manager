@@ -151,7 +151,7 @@ def test_inventory_reports_agent_runtime_metadata(monkeypatch):
 
     data = patch_agent.inventory()
 
-    assert data["agent"]["version"] == "0.13.0"
+    assert data["agent"]["version"] == "0.14.0"
     assert data["agent"]["protocol"] == 2
     assert "install_updates" in data["agent"]["capabilities"]
     assert "health_telemetry_v1" in data["agent"]["capabilities"]
@@ -183,4 +183,4 @@ def test_user_agent_uses_runtime_version(monkeypatch):
         "/health",
     )
 
-    assert captured["headers"]["User-Agent"] == "PatchManagerAgent/0.13.0"
+    assert captured["headers"]["User-Agent"] == "PatchManagerAgent/0.14.0"
