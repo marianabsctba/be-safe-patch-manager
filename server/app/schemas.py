@@ -240,6 +240,9 @@ class AssetRiskProfileUpdate(BaseModel):
     criticality: Optional[int] = Field(default=None, ge=1, le=5)
     external: Optional[bool] = None
     compensating_controls: Optional[List[str]] = None
+    owner: Optional[str] = Field(default=None, max_length=255)
+    business_service: Optional[str] = Field(default=None, max_length=255)
+    environment: Optional[str] = Field(default=None, max_length=64)
     reason: str = Field(min_length=5, max_length=1000)
 
 
