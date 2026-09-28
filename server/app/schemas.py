@@ -326,6 +326,7 @@ class PatchFeedProviderCreate(BaseModel):
     failure_threshold: int = Field(default=3, ge=1, le=20)
     cooldown_seconds: int = Field(default=1800, ge=60, le=86400)
     records: List[PatchMetadataRecord] = Field(default_factory=list, max_length=5000)
+    config: dict = Field(default_factory=dict)
 
 
 class PatchFeedProviderUpdate(BaseModel):
@@ -336,6 +337,7 @@ class PatchFeedProviderUpdate(BaseModel):
     failure_threshold: Optional[int] = Field(default=None, ge=1, le=20)
     cooldown_seconds: Optional[int] = Field(default=None, ge=60, le=86400)
     records: Optional[List[PatchMetadataRecord]] = Field(default=None, max_length=5000)
+    config: Optional[dict] = None
 
 
 class PatchCatalogLifecycleUpdate(BaseModel):

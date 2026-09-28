@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.33</small>
+          <small>dashboard v0.34</small>
         </div>
       </div>
     </aside>
@@ -410,7 +410,7 @@
               </div>
               <div id="patchFeedStats" class="integration-details"></div>
               <div class="vuln-note">
-                Providers independentes alimentam o enrichment engine com prioridade e TTL próprios. Falhas consecutivas abrem circuit breaker para evitar sync em loop contra uma fonte degradada.
+                Providers independentes alimentam o enrichment engine com prioridade e TTL próprios. MSRC CVRF e Ubuntu Security API usam endpoints oficiais HTTPS, limite de payload e cache condicional quando a fonte oferece ETag/Last-Modified.
               </div>
               <div class="table-wrap">
                 <table>

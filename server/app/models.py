@@ -427,6 +427,8 @@ class PatchFeedProvider(Base):
     last_error = Column(Text, nullable=False, default="")
     last_summary_json = Column(Text, nullable=False, default="{}")
     records_json = Column(Text, nullable=False, default="[]")
+    provider_config_json = Column(Text, nullable=False, default="{}")
+    adapter_state_json = Column(Text, nullable=False, default="{}")
     created_by = Column(String(255), nullable=False)
     updated_by = Column(String(255), nullable=False)
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)

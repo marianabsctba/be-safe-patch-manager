@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.33; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.34; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -47,7 +47,11 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - conflitos de metadata são preservados para auditoria e dados vencidos aparecem como `stale`, evitando confiança silenciosa em feed antigo;
 - Patch Feed Orchestrator gerencia providers independentes com prioridade, TTL, intervalo, health, contadores de falha e circuit breaker;
 - sync manual e worker agendado usam o mesmo enrichment engine, evitando caminhos diferentes entre operação humana e automação;
-- provider `curated` é o primeiro adapter funcional; o core de orquestração fica desacoplado para adapters Microsoft/Linux futuros;
+- providers disponíveis: `curated`, `msrc_cvrf` (Microsoft Security Update Guide / CVRF v3) e `ubuntu_security` (Ubuntu Security API);
+- MSRC adapter consolida Vendor Fix por KB e traz CVEs, produto, severidade, release date e supersedence;
+- Ubuntu adapter consulta notices/details e correlaciona pacotes corrigidos/CVEs com patch refs Linux por nome de pacote;
+- adapters oficiais usam somente endpoints HTTPS hardcoded, timeout e limite de resposta, evitando URL arbitrária/SSRF via configuração;
+- ETag/Last-Modified são preservados por provider para conditional GET quando suportado pela fonte;
 - Change Freeze / Blackout Calendar bloqueia deploy e avanço de ring em janelas ativas por SO/tag;
 - emergency override é por campanha, exige admin + justificativa, pode ser revogado e fica integralmente auditado;
 - Active Threat Watch baseado em CISA KEV, EPSS e ransomware known;

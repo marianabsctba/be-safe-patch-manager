@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.34.0
+
+- control plane e dashboard passam para versão 0.34.0; agente permanece em 0.16.0;
+- adicionados adapters oficiais `msrc_cvrf` e `ubuntu_security` ao Patch Feed Orchestrator;
+- MSRC CVRF v3 parser consolida Vendor Fix por KB e extrai CVEs, produto, severidade, release date e supersedence;
+- Ubuntu Security API adapter consulta notices/details e converte pacotes corrigidos em metadata compatível com patch refs Linux;
+- adapters usam somente HTTPS hardcoded, timeout, limite de 12 MiB e conditional GET com ETag/Last-Modified;
+- adicionada migration 0026_patch_feed_adapter_state para configuração e cache/state por provider;
+- configuração do adapter fica separada de estado/cache para não misturar governança com transporte;
+- adicionados testes com fixtures para parser MSRC, parser Ubuntu, dispatch e cache 304.
+
 ## 0.33.0
 
 - control plane e dashboard passam para versão 0.33.0; agente permanece em 0.16.0;

@@ -31,8 +31,9 @@ from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
+from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.33.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.34.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -1644,6 +1645,8 @@ def serialize_patch_feed_provider(provider: PatchFeedProvider, reference: dateti
         "last_error": provider.last_error,
         "last_summary": load(provider.last_summary_json, {}),
         "record_count": len(load(provider.records_json, [])),
+        "config": load(provider.provider_config_json, {}),
+        "adapter_state": load(provider.adapter_state_json, {}),
         "created_by": provider.created_by,
         "updated_by": provider.updated_by,
         "created_at": provider.created_at.isoformat() if provider.created_at else None,
@@ -1687,10 +1690,20 @@ def run_patch_feed_provider(db: Session, provider: PatchFeedProvider, actor: str
     db.commit()
 
     try:
-        if provider.provider_type != "curated":
-            raise RuntimeError(f"provider type not implemented: {provider.provider_type}")
+        if provider.provider_type == "curated":
+            raw_records = load(provider.records_json, [])
+            adapter_state = load(provider.adapter_state_json, {})
+            adapter_meta = {"adapter": "curated", "records": len(raw_records)}
+        else:
+            adapter_result = fetch_patch_feed_records(
+                provider.provider_type,
+                config=load(provider.provider_config_json, {}),
+                state=load(provider.adapter_state_json, {}),
+            )
+            raw_records = adapter_result["records"]
+            adapter_state = adapter_result.get("state", {})
+            adapter_meta = adapter_result.get("meta", {})
 
-        raw_records = load(provider.records_json, [])
         body = PatchMetadataImportRequest(
             source=f"feed:{provider.name}",
             priority=provider.priority,
@@ -1705,12 +1718,14 @@ def run_patch_feed_provider(db: Session, provider: PatchFeedProvider, actor: str
         provider.last_error = ""
         provider.consecutive_failures = 0
         provider.circuit_open_until = None
-        provider.last_summary_json = dump(summary)
+        provider.adapter_state_json = dump(adapter_state)
+        provider.last_summary_json = dump({**summary, "adapter": adapter_meta})
         db.commit()
         return {
             "provider": provider.name,
             "status": "ok",
             "summary": summary,
+            "adapter": adapter_meta,
         }
     except Exception as exc:
         provider.consecutive_failures = int(provider.consecutive_failures or 0) + 1
@@ -6857,8 +6872,8 @@ def create_patch_feed(
     db: Session = Depends(get_db),
 ):
     provider_type = body.provider_type.strip().lower()
-    if provider_type != "curated":
-        raise HTTPException(status_code=400, detail="only curated provider is available in this version")
+    if provider_type not in {"curated", "msrc_cvrf", "ubuntu_security"}:
+        raise HTTPException(status_code=400, detail="unsupported patch feed provider type")
     if db.query(PatchFeedProvider).filter(func.lower(PatchFeedProvider.name) == body.name.strip().lower()).first():
         raise HTTPException(status_code=409, detail="patch feed provider name already exists")
     provider = PatchFeedProvider(
@@ -6872,6 +6887,8 @@ def create_patch_feed(
         failure_threshold=body.failure_threshold,
         cooldown_seconds=body.cooldown_seconds,
         records_json=dump([item.model_dump(mode="json", exclude_none=True) for item in body.records]),
+        provider_config_json=dump(body.config or {}),
+        adapter_state_json="{}",
         created_by=principal["actor"],
         updated_by=principal["actor"],
     )
@@ -6903,6 +6920,9 @@ def update_patch_feed(
             setattr(provider, field, value)
     if body.records is not None:
         provider.records_json = dump([item.model_dump(mode="json", exclude_none=True) for item in body.records])
+    if body.config is not None:
+        provider.provider_config_json = dump(body.config)
+        provider.adapter_state_json = "{}"
     provider.updated_by = principal["actor"]
     db.commit()
     after = serialize_patch_feed_provider(provider)

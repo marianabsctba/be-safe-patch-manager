@@ -1982,7 +1982,8 @@ function renderPatchFeeds() {
         (item.circuit_open && roleAtLeast('admin') ? ' <button class="row-action" onclick="resetPatchFeedCircuit(\'' + esc(item.id) + '\')">Reset circuit</button>' : '')
       : '';
     return '<tr>' +
-      '<td><strong>' + esc(item.name) + '</strong><br><small class="muted">' + esc(item.provider_type) + '</small></td>' +
+      '<td><strong>' + esc(item.name) + '</strong><br><small class="muted">' + esc(item.provider_type) + '</small>' +
+        (item.adapter_state && Object.keys(item.adapter_state).length ? '<br>' + badge('CACHE', 'info') : '') + '</td>' +
       '<td>' + status + '</td>' +
       '<td><strong>' + esc(item.priority) + '</strong><br><small class="muted">TTL ' + esc(item.ttl_hours) + 'h</small></td>' +
       '<td><small>' + esc(item.interval_seconds) + 's<br>' + esc(item.failure_threshold) + ' falhas → ' + esc(item.cooldown_seconds) + 's cooldown</small></td>' +
