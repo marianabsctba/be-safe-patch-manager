@@ -51,6 +51,10 @@
 - adicionada Risk Reduction Simulation por ativo/finding via `/api/admin/agents/{agent_id}/risk-simulation`;
 - simulação calcula before/after, delta, percentual de redução e cruzamento abaixo do appetite sem mutar findings, evidência, campanhas ou histórico;
 - console ganhou ação `Simular impacto` e painel de resultado projetado;
+- adicionado relatório `risk-reduction-opportunities` com ranking por redução projetada de Asset Risk;
+- oportunidades incluem impacto individual, appetite, SLA e ação recomendada, sem mutar o estado real;
+- removido agregado de redução total porque simulações individuais não são matematicamente aditivas;
+- console ganhou tabela de oportunidades priorizadas por maior redução de risco;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
