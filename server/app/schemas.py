@@ -293,6 +293,29 @@ class AssetRiskProfileUpdate(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
 
 
+class PatchMetadataRecord(BaseModel):
+    patch_ref: str = Field(min_length=1, max_length=255)
+    vendor: Optional[str] = Field(default=None, max_length=128)
+    product: Optional[str] = Field(default=None, max_length=255)
+    title: Optional[str] = Field(default=None, max_length=2000)
+    severity: Optional[str] = Field(default=None, max_length=32)
+    classification: Optional[str] = Field(default=None, max_length=64)
+    release_date: Optional[datetime] = None
+    eol_date: Optional[datetime] = None
+    supersedes: List[str] = Field(default_factory=list, max_length=100)
+    cves: List[str] = Field(default_factory=list, max_length=500)
+    source_url: Optional[str] = Field(default=None, max_length=2000)
+
+
+class PatchMetadataImportRequest(BaseModel):
+    source: str = Field(min_length=2, max_length=64)
+    priority: int = Field(default=100, ge=1, le=1000)
+    observed_at: Optional[datetime] = None
+    ttl_hours: Optional[int] = Field(default=168, ge=1, le=8760)
+    dry_run: bool = False
+    records: List[PatchMetadataRecord] = Field(min_length=1, max_length=5000)
+
+
 class PatchCatalogLifecycleUpdate(BaseModel):
     vendor: Optional[str] = Field(default=None, max_length=128)
     product: Optional[str] = Field(default=None, max_length=255)

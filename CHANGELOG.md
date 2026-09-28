@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.31.0
+
+- control plane e dashboard passam para versão 0.31.0; agente permanece em 0.16.0;
+- adicionado Patch Metadata Enrichment Engine com importação em lote, dry-run, prioridade de fonte e TTL;
+- adicionada migration 0023_patch_metadata_evidence e tabela de evidências por patch/fonte;
+- provenance passa a ser field-level: source, priority, observed_at, expires_at e actor por campo;
+- conflito de fonte inferior é registrado sem sobrescrever metadata mais confiável;
+- manual lifecycle recebe prioridade máxima (1000), preservando decisão administrativa explícita;
+- CVEs fornecidas por metadata enrichment passam a complementar CVEs vindas do scanner sem substituí-las;
+- Patch Catalog mostra metadata stale e conflitos e resume a saúde do enrichment;
+- adicionados testes de precedence, dry-run, stale metadata, conflito e CVE merge.
+
 ## 0.30.0
 
 - control plane e dashboard passam para versão 0.30.0; agente permanece em 0.16.0;

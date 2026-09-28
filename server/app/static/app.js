@@ -1905,6 +1905,8 @@ function renderPatchCatalog() {
     ['Superseded', summary.superseded || 0],
     ['EOL', summary.eol || 0],
     ['Patch Tuesday', summary.patch_tuesday || 0],
+    ['Metadata stale', summary.stale_metadata || 0],
+    ['Conflitos', summary.metadata_conflicts || 0],
     ['Ready', summary.ready || 0],
     ['Pilot', summary.pilot || 0],
   ].map(([label, value]) =>
@@ -1934,6 +1936,7 @@ function renderPatchCatalog() {
     const guard = item.guard || {};
     const lifecycle = item.lifecycle || {};
     const supersedence = item.supersedence || {};
+    const enrichment = item.enrichment || {};
     const affected = (item.affected_assets || []).slice(0, 3).map(x => esc(x.hostname)).join('<br>');
     return '<tr>' +
       '<td><strong>' + esc(item.patch_ref) + '</strong><br><small class="muted">' + esc(item.title || item.product || '-') + '</small></td>' +
@@ -1950,6 +1953,8 @@ function renderPatchCatalog() {
       '<td><strong>' + esc(confidence.confidence || 'insufficient_data') + '</strong><br><small class="muted">' + esc(confidence.success_rate == null ? '-' : confidence.success_rate + '%') + '</small></td>' +
       '<td><small>' +
         (supersedence.obsolete ? badge('OBSOLETA', 'muted-badge') : badge('LEAF', 'ok')) +
+        (enrichment.stale ? ' ' + badge('STALE META', 'warn') : '') +
+        ((enrichment.conflicts || []).length ? ' ' + badge((enrichment.conflicts || []).length + ' CONFLICT', 'fail') : '') +
         (supersedence.preferred_replacement ? '<br>→ ' + esc(supersedence.preferred_replacement) : '') +
         '<br>' + esc(lifecycle.release_age_days == null ? 'idade desconhecida' : lifecycle.release_age_days + 'd') +
         '</small></td>' +

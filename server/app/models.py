@@ -362,6 +362,7 @@ class PatchCatalogEntry(Base):
     lifecycle_source = Column(String(64), nullable=False, default="")
     lifecycle_updated_by = Column(String(255), nullable=False, default="")
     lifecycle_updated_at = Column(DateTime(timezone=True), nullable=True)
+    enrichment_json = Column(Text, nullable=False, default="{}")
     metadata_json = Column(Text, nullable=False, default="{}")
     first_seen = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     last_seen = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
@@ -387,6 +388,24 @@ class PatchApplicability(Base):
 
     patch = relationship("PatchCatalogEntry", back_populates="observations")
     agent = relationship("Agent")
+
+
+class PatchMetadataEvidence(Base):
+    __tablename__ = "patch_metadata_evidence"
+    __table_args__ = (
+        UniqueConstraint("patch_key", "source", name="uq_patch_metadata_evidence_patch_source"),
+    )
+
+    id = Column(String(36), primary_key=True)
+    patch_key = Column(String(255), ForeignKey("patch_catalog_entries.patch_key"), nullable=False, index=True)
+    source = Column(String(64), nullable=False, index=True)
+    priority = Column(Integer, nullable=False, default=100, index=True)
+    observed_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    payload_json = Column(Text, nullable=False, default="{}")
+    imported_by = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class PatchBlockRule(Base):

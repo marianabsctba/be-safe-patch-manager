@@ -21,8 +21,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -32,7 +32,7 @@ from .observability import metrics_response, prometheus_http_middleware, readine
 from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.30.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.31.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -1343,6 +1343,274 @@ def second_tuesday(year: int, month: int) -> datetime:
     return first + timedelta(days=days_until_tuesday + 7)
 
 
+
+PATCH_METADATA_FIELDS = (
+    "vendor",
+    "product",
+    "title",
+    "severity",
+    "classification",
+    "release_date",
+    "eol_date",
+    "supersedes",
+    "cves",
+)
+
+
+def normalize_metadata_value(field: str, value: Any):
+    if field in {"release_date", "eol_date"}:
+        if value is None or value == "":
+            return None
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    if field in {"supersedes", "cves"}:
+        values = value or []
+        normalized = []
+        for item in values:
+            raw = normalize_cve(item) if field == "cves" else normalize_patch_ref(item)
+            if raw:
+                normalized.append(raw)
+        return list(dict.fromkeys(normalized))
+    if value is None:
+        return None
+    return str(value).strip()
+
+
+def metadata_value_for_json(value: Any):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def patch_enrichment_state(entry: PatchCatalogEntry, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    state = load(entry.enrichment_json, {})
+    fields = state.get("fields") if isinstance(state.get("fields"), dict) else {}
+    conflicts = state.get("conflicts") if isinstance(state.get("conflicts"), list) else []
+    stale = []
+    for field, meta in fields.items():
+        expires_at = meta.get("expires_at") if isinstance(meta, dict) else None
+        if not expires_at:
+            continue
+        try:
+            expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires <= reference:
+                stale.append(field)
+        except ValueError:
+            continue
+    return {
+        "fields": fields,
+        "conflicts": conflicts[-50:],
+        "stale_fields": sorted(stale),
+        "stale": bool(stale),
+        "sources": sorted({
+            str(meta.get("source"))
+            for meta in fields.values()
+            if isinstance(meta, dict) and meta.get("source")
+        }),
+    }
+
+
+def current_entry_field(entry: PatchCatalogEntry, field: str):
+    if field == "supersedes":
+        return load(entry.supersedes_json, [])
+    if field == "cves":
+        state = load(entry.enrichment_json, {})
+        return state.get("enriched_cves", []) if isinstance(state, dict) else []
+    return getattr(entry, field)
+
+
+def set_entry_field(entry: PatchCatalogEntry, field: str, value: Any):
+    if field == "supersedes":
+        entry.supersedes_json = dump(value or [])
+    elif field == "cves":
+        state = load(entry.enrichment_json, {})
+        state["enriched_cves"] = value or []
+        entry.enrichment_json = dump(state)
+    else:
+        setattr(entry, field, value)
+
+
+def apply_patch_metadata_record(
+    entry: PatchCatalogEntry,
+    payload: dict,
+    source: str,
+    priority: int,
+    observed_at: datetime,
+    expires_at: datetime | None,
+    actor: str,
+    dry_run: bool = False,
+) -> dict:
+    state = load(entry.enrichment_json, {})
+    fields = state.get("fields") if isinstance(state.get("fields"), dict) else {}
+    conflicts = state.get("conflicts") if isinstance(state.get("conflicts"), list) else []
+    changes = []
+    rejected = []
+
+    for field in PATCH_METADATA_FIELDS:
+        if field not in payload:
+            continue
+        incoming = normalize_metadata_value(field, payload.get(field))
+        if incoming in (None, "", []):
+            continue
+        current = current_entry_field(entry, field)
+        current_meta = fields.get(field) if isinstance(fields.get(field), dict) else {}
+        current_priority = int(current_meta.get("priority") or 0)
+        current_observed_raw = current_meta.get("observed_at")
+        try:
+            current_observed = datetime.fromisoformat(str(current_observed_raw).replace("Z", "+00:00")) if current_observed_raw else None
+        except ValueError:
+            current_observed = None
+        if current_observed is not None and current_observed.tzinfo is None:
+            current_observed = current_observed.replace(tzinfo=timezone.utc)
+
+        incoming_json = metadata_value_for_json(incoming)
+        current_json = metadata_value_for_json(current)
+        wins = (
+            priority > current_priority
+            or (
+                priority == current_priority
+                and (current_observed is None or observed_at >= current_observed)
+            )
+            or not current_meta
+        )
+
+        if not wins and incoming_json != current_json:
+            conflict = {
+                "field": field,
+                "incoming": incoming_json,
+                "current": current_json,
+                "incoming_source": source,
+                "current_source": current_meta.get("source", ""),
+                "incoming_priority": priority,
+                "current_priority": current_priority,
+                "observed_at": observed_at.isoformat(),
+            }
+            conflicts.append(conflict)
+            rejected.append(conflict)
+            continue
+
+        if incoming_json != current_json:
+            changes.append({
+                "field": field,
+                "from": current_json,
+                "to": incoming_json,
+            })
+        fields[field] = {
+            "source": source,
+            "priority": priority,
+            "observed_at": observed_at.isoformat(),
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "actor": actor,
+        }
+        if not dry_run:
+            set_entry_field(entry, field, incoming)
+
+    if not dry_run:
+        state["fields"] = fields
+        state["conflicts"] = conflicts[-100:]
+        entry.enrichment_json = dump(state)
+        entry.lifecycle_source = source
+        entry.lifecycle_updated_by = actor
+        entry.lifecycle_updated_at = observed_at
+
+    return {"changes": changes, "rejected": rejected}
+
+
+def import_patch_metadata(
+    db: Session,
+    body: PatchMetadataImportRequest,
+    actor: str,
+) -> dict:
+    reference = body.observed_at or now()
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    expires_at = reference + timedelta(hours=body.ttl_hours) if body.ttl_hours else None
+    source = body.source.strip().lower()
+    stats = {
+        "records": len(body.records),
+        "matched": 0,
+        "missing_catalog_entry": 0,
+        "changed_fields": 0,
+        "rejected_conflicts": 0,
+        "dry_run": body.dry_run,
+    }
+    results = []
+
+    for record in body.records:
+        key = patch_ref_key(record.patch_ref)
+        entry = db.get(PatchCatalogEntry, key)
+        if not entry:
+            stats["missing_catalog_entry"] += 1
+            results.append({"patch_ref": record.patch_ref, "status": "missing_catalog_entry"})
+            continue
+
+        payload = record.model_dump(exclude_none=True)
+        payload.pop("patch_ref", None)
+        payload.pop("source_url", None)
+        applied = apply_patch_metadata_record(
+            entry,
+            payload,
+            source,
+            body.priority,
+            reference,
+            expires_at,
+            actor,
+            dry_run=body.dry_run,
+        )
+        stats["matched"] += 1
+        stats["changed_fields"] += len(applied["changes"])
+        stats["rejected_conflicts"] += len(applied["rejected"])
+
+        if not body.dry_run:
+            evidence = db.query(PatchMetadataEvidence).filter(
+                PatchMetadataEvidence.patch_key == key,
+                PatchMetadataEvidence.source == source,
+            ).first()
+            evidence_payload = record.model_dump(mode="json", exclude_none=True)
+            if evidence:
+                evidence.priority = body.priority
+                evidence.observed_at = reference
+                evidence.expires_at = expires_at
+                evidence.payload_json = dump(evidence_payload)
+                evidence.imported_by = actor
+            else:
+                db.add(PatchMetadataEvidence(
+                    id=str(uuid.uuid4()),
+                    patch_key=key,
+                    source=source,
+                    priority=body.priority,
+                    observed_at=reference,
+                    expires_at=expires_at,
+                    payload_json=dump(evidence_payload),
+                    imported_by=actor,
+                ))
+
+        results.append({
+            "patch_ref": record.patch_ref,
+            "status": "applied" if applied["changes"] else "no_change",
+            **applied,
+        })
+
+    if not body.dry_run:
+        db.commit()
+    return {
+        "source": source,
+        "priority": body.priority,
+        "observed_at": reference.isoformat(),
+        "expires_at": expires_at.isoformat() if expires_at else None,
+        "summary": stats,
+        "results": results[:500],
+    }
+
+
 def patch_release_intelligence(entry: PatchCatalogEntry, reference: datetime | None = None) -> dict:
     reference = reference or now()
     released = entry.release_date
@@ -1516,6 +1784,9 @@ def patch_catalog_report(db: Session, limit: int = 500) -> dict:
         ]
         confidence = confidence_map.get(entry.patch_key)
         threat = by_patch.get(entry.patch_key, {"cves": set(), "finding_count": 0, "kev": 0, "ransomware": 0})
+        enrichment = patch_enrichment_state(entry, reference)
+        enriched_cves = set(load(entry.enrichment_json, {}).get("enriched_cves", []))
+        threat["cves"] = set(threat["cves"]) | enriched_cves
 
         graph_item = graph.get(entry.patch_key, {})
         preferred_replacement = choose_preferred_replacement(entry, graph_item, entries_by_key)
@@ -1560,6 +1831,7 @@ def patch_catalog_report(db: Session, limit: int = 500) -> dict:
             "version": entry.version,
             "reboot_behavior": entry.reboot_behavior,
             "source": entry.source,
+            "enrichment": enrichment,
             "lifecycle": lifecycle,
             "supersedence": {
                 "supersedes": [
@@ -1616,6 +1888,8 @@ def patch_catalog_report(db: Session, limit: int = 500) -> dict:
             "superseded": sum(1 for x in items if x["deployment_readiness"]["status"] == "superseded"),
             "eol": sum(1 for x in items if x["lifecycle"]["eol_state"] == "eol"),
             "patch_tuesday": sum(1 for x in items if x["lifecycle"]["patch_tuesday"]),
+            "stale_metadata": sum(1 for x in items if x["enrichment"]["stale"]),
+            "metadata_conflicts": sum(len(x["enrichment"]["conflicts"]) for x in items),
             "ready": sum(1 for x in items if x["deployment_readiness"]["status"] == "ready"),
             "pilot": sum(1 for x in items if x["deployment_readiness"]["status"] == "pilot"),
         },
@@ -6278,6 +6552,29 @@ def active_threat_watch(
 
 
 
+
+@app.post("/api/admin/patch-catalog/metadata/import")
+def import_patch_catalog_metadata(
+    body: PatchMetadataImportRequest,
+    principal=Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    result = import_patch_metadata(db, body, principal["actor"])
+    audit(
+        db,
+        principal["actor"],
+        "patch_catalog.metadata.imported",
+        "patch_catalog",
+        body.source.strip().lower(),
+        {
+            "priority": body.priority,
+            "dry_run": body.dry_run,
+            "summary": result["summary"],
+        },
+    )
+    return result
+
+
 @app.patch("/api/admin/patch-catalog/{patch_ref}/lifecycle")
 def update_patch_catalog_lifecycle(
     patch_ref: str,
@@ -6330,6 +6627,23 @@ def update_patch_catalog_lifecycle(
     entry.lifecycle_source = body.source.strip().lower()
     entry.lifecycle_updated_by = principal["actor"]
     entry.lifecycle_updated_at = now()
+    manual_payload = {
+        "vendor": entry.vendor,
+        "product": entry.product,
+        "classification": entry.classification,
+        "release_date": entry.release_date,
+        "eol_date": entry.eol_date,
+        "supersedes": load(entry.supersedes_json, []),
+    }
+    apply_patch_metadata_record(
+        entry,
+        manual_payload,
+        source="manual",
+        priority=1000,
+        observed_at=entry.lifecycle_updated_at,
+        expires_at=None,
+        actor=principal["actor"],
+    )
     db.commit()
 
     after = {

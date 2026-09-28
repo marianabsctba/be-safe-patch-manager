@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.30</small>
+          <small>dashboard v0.31</small>
         </div>
       </div>
     </aside>
@@ -390,7 +390,7 @@
               </div>
               <div id="patchCatalogStats" class="integration-details"></div>
               <div class="vuln-note">
-                Catálogo vivo construído pelos heartbeats. Lifecycle e supersedence usam dados explícitos: release date nunca é inferida do first_seen. Patch Tuesday só aparece quando uma release date conhecida cai na janela do segundo Tuesday do mês.
+                Catálogo vivo com provenance por campo. Enrichment registra fonte, prioridade, freshness e conflitos; fonte inferior pode gerar evidência sem sobrescrever dado mais confiável. Release date nunca é inferida do first_seen.
               </div>
               <div class="table-wrap">
                 <table>
