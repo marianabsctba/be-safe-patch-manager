@@ -1251,6 +1251,34 @@ O projeto expõe separadamente:
 
 Finding que continua aberto, mas deixa de casar com a tag dinâmica, aparece como scope departure. Ele **não** é contado como remediado e continua impedindo progresso/conclusão falsos.
 
+### Contextual Scope
+
+Além de `patch_ref` e `scope_tag`, um projeto pode persistir filtros contextuais em `scope_filter_json`:
+
+- `business_service`;
+- `environment`;
+- `owner`;
+- `external`;
+- `min_criticality`.
+
+Esses filtros reutilizam o Asset Accountability / Risk Profile do ativo.
+
+Exemplo conceitual:
+
+```text
+patch = KB5039999
+business_service = ERP
+environment = production
+external = true
+min_criticality = 4
+```
+
+Em `static`, essa regra é usada apenas para construir o snapshot inicial.
+
+Em `dynamic`, a mesma regra é reavaliada continuamente. Se um ativo deixa de pertencer ao business service ou ambiente, o finding ainda aberto vira `scope_departure` e não é tratado como remediado.
+
+Isso permite criar projetos focados por contexto de negócio sem alterar a fórmula de Asset Risk e sem inventar um grafo de ataque que a plataforma ainda não possui.
+
 ### Lifecycle
 
 Estados administrativos:
