@@ -1207,6 +1207,77 @@ A overview executiva combina métricas já existentes do ambiente, sem criar um 
 
 Essa separação é intencional: **Asset Risk continua sendo o score técnico explicável; Program View é uma leitura executiva de métricas observáveis**.
 
+## 13.4. Remediation Projects
+
+Remediation Project é a camada de governança operacional entre uma recomendação de remediação e a execução de uma campanha.
+
+Endpoints:
+
+```http
+GET  /api/admin/remediation-projects
+POST /api/admin/remediation-projects
+PUT  /api/admin/remediation-projects/{project_id}
+```
+
+Um projeto persiste:
+
+- patch reference;
+- owner;
+- prazo;
+- status;
+- baseline de findings e ativos;
+- redução potencial de risco calculada no baseline;
+- snapshot do escopo inicial;
+- motivo;
+- trilha de auditoria.
+
+### Static scope
+
+`static` congela os finding IDs capturados na criação.
+
+Novos findings da mesma patch não entram automaticamente no projeto.
+
+### Dynamic scope
+
+`dynamic` reavalia findings abertos da mesma patch reference e, opcionalmente, da mesma tag.
+
+O projeto expõe separadamente:
+
+- `new_findings_since_baseline`;
+- `scope_departures`;
+- `baseline_open_findings`;
+- `tracked_open_findings`;
+- `current_open_findings`.
+
+Finding que continua aberto, mas deixa de casar com a tag dinâmica, aparece como scope departure. Ele **não** é contado como remediado e continua impedindo progresso/conclusão falsos.
+
+### Lifecycle
+
+Estados administrativos:
+
+```text
+active
+awaiting_verification
+completed
+cancelled
+```
+
+O projeto só pode virar `completed` quando não existem findings rastreados abertos.
+
+Projeto e campanha são objetos diferentes:
+
+```text
+Remediation Hub
+-> Remediation Project
+-> Campaign draft
+-> revisão humana
+-> deploy
+-> health gate / rollback
+-> rescan / evidência
+```
+
+Criar ou atualizar um projeto não cria jobs, não muda findings e não altera evidência.
+
 ## 14. Princípios de segurança
 
 O modelo segue estas regras:
