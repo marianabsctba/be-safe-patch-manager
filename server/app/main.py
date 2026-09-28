@@ -1328,8 +1328,15 @@ def _remediation_project_open_findings(
     db: Session,
     patch_ref: str,
     scope_tag: str = "",
+    scope_filter: dict | None = None,
 ) -> list[VulnerabilityFinding]:
     tag = str(scope_tag or "").strip().lower()
+    scope_filter = scope_filter if isinstance(scope_filter, dict) else {}
+    business_service = str(scope_filter.get("business_service") or "").strip().lower()
+    environment = str(scope_filter.get("environment") or "").strip().lower()
+    asset_owner = str(scope_filter.get("owner") or "").strip().lower()
+    external_filter = scope_filter.get("external")
+    min_criticality = scope_filter.get("min_criticality")
     findings = db.query(VulnerabilityFinding).options(
         selectinload(VulnerabilityFinding.agent).selectinload(Agent.risk_profile),
         selectinload(VulnerabilityFinding.agent).selectinload(Agent.vulnerabilities),
@@ -1350,6 +1357,34 @@ def _remediation_project_open_findings(
             }
             if tag not in tags:
                 continue
+
+        if business_service or environment or asset_owner or external_filter is not None or min_criticality is not None:
+            agent = finding.agent
+            if not agent:
+                continue
+            profile = agent.risk_profile
+            if business_service:
+                current = str(profile.business_service if profile else "").strip().lower()
+                if current != business_service:
+                    continue
+            if environment:
+                current = str(profile.environment if profile else "").strip().lower()
+                if current != environment:
+                    continue
+            if asset_owner:
+                current = str(profile.owner if profile else "").strip().lower()
+                if current != asset_owner:
+                    continue
+            if external_filter is not None:
+                if bool(asset_exposure(agent).get("external")) is not bool(external_filter):
+                    continue
+            if min_criticality is not None:
+                try:
+                    minimum = int(min_criticality)
+                except (TypeError, ValueError):
+                    minimum = 1
+                if int(asset_criticality(agent).get("score") or 0) < minimum:
+                    continue
         items.append(finding)
     return items
 
@@ -1417,6 +1452,7 @@ def serialize_remediation_project(
             db,
             project.patch_ref,
             project.scope_tag,
+            load(project.scope_filter_json, {}),
         )
         current_open_ids = {finding.id for finding in open_findings}
         current_agent_ids = {
@@ -1565,6 +1601,7 @@ def serialize_remediation_project(
         "patch_ref": project.patch_ref,
         "scope_mode": project.scope_mode,
         "scope_tag": project.scope_tag,
+        "scope_filter": load(project.scope_filter_json, {}),
         "owner": project.owner,
         "due_at": due_at.isoformat(),
         "status": project.status,
@@ -5671,6 +5708,19 @@ def create_remediation_project(
     patch_ref = body.patch_ref.strip()
     scope_mode = body.scope_mode.strip().lower()
     scope_tag = body.scope_tag.strip().lower()
+    scope_filter = {}
+    for key, value in (
+        ("business_service", body.scope_business_service),
+        ("environment", body.scope_environment),
+        ("owner", body.scope_owner),
+    ):
+        normalized = str(value or "").strip()
+        if normalized:
+            scope_filter[key] = normalized
+    if body.scope_external is not None:
+        scope_filter["external"] = bool(body.scope_external)
+    if body.scope_min_criticality is not None:
+        scope_filter["min_criticality"] = int(body.scope_min_criticality)
     owner = body.owner.strip()
     reason = body.reason.strip()
     if len(name) < 3:
@@ -5695,7 +5745,12 @@ def create_remediation_project(
     if due_at > reference + timedelta(days=1095):
         raise HTTPException(status_code=400, detail="project due date cannot exceed 3 years")
 
-    findings = _remediation_project_open_findings(db, patch_ref, scope_tag)
+    findings = _remediation_project_open_findings(
+        db,
+        patch_ref,
+        scope_tag,
+        scope_filter,
+    )
     if not findings:
         raise HTTPException(status_code=409, detail="project scope has no open findings for this patch reference")
 
@@ -5714,6 +5769,7 @@ def create_remediation_project(
         patch_ref=patch_ref,
         scope_mode=scope_mode,
         scope_tag=scope_tag,
+        scope_filter_json=dump(scope_filter),
         owner=owner,
         due_at=due_at,
         status="active",
@@ -5724,6 +5780,7 @@ def create_remediation_project(
             "finding_ids": finding_ids,
             "agent_ids": agent_ids,
             "cves": cves,
+            "scope_filter": scope_filter,
             "captured_at": reference.isoformat(),
         }),
         reason=reason,
