@@ -1846,6 +1846,49 @@ function renderActiveThreatWatch() {
 
 
 
+
+window.editPatchLifecycle = async (encodedPatchRef) => {
+  if (!requireRole('admin', 'Somente admin pode alterar lifecycle do catálogo.')) return;
+  const patchRef = decodeURIComponent(encodedPatchRef);
+  const item = ((state.patchCatalog || {}).items || []).find(x => x.patch_ref === patchRef);
+  if (!item) return;
+  const lifecycle = item.lifecycle || {};
+  const supersedence = item.supersedence || {};
+
+  const classification = prompt('Classificação (ex.: cumulative, security, feature, hotfix):', lifecycle.classification || '');
+  if (classification === null) return;
+  const releaseDate = prompt('Release date ISO (YYYY-MM-DD) ou vazio:', lifecycle.release_date ? lifecycle.release_date.slice(0, 10) : '');
+  if (releaseDate === null) return;
+  const eolDate = prompt('EOL date ISO (YYYY-MM-DD) ou vazio:', lifecycle.eol_date ? lifecycle.eol_date.slice(0, 10) : '');
+  if (eolDate === null) return;
+  const supersedes = prompt('Supersedes (separado por vírgula):', (supersedence.supersedes || []).join(', '));
+  if (supersedes === null) return;
+  const reason = prompt('Motivo / fonte da atualização:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe motivo/fonte com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+
+  try {
+    await api('/api/admin/patch-catalog/' + encodeURIComponent(patchRef) + '/lifecycle', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        classification: classification.trim(),
+        release_date: releaseDate.trim() ? new Date(releaseDate.trim() + 'T00:00:00Z').toISOString() : null,
+        eol_date: eolDate.trim() ? new Date(eolDate.trim() + 'T00:00:00Z').toISOString() : null,
+        supersedes: supersedes.split(',').map(x => x.trim()).filter(Boolean),
+        source: 'manual',
+        reason: reason.trim(),
+      }),
+    });
+    toast('Lifecycle atualizado.');
+    await load();
+  } catch (error) {
+    toast('Patch lifecycle: ' + error.message, 'fail');
+  }
+};
+
+
 function renderPatchCatalog() {
   const report = state.patchCatalog || {};
   const summary = report.summary || {};
@@ -1859,6 +1902,9 @@ function renderPatchCatalog() {
     ['Missing', summary.missing_observations || 0],
     ['Installed inferred', summary.installed_inferred || 0],
     ['Bloqueadas', summary.blocked || 0],
+    ['Superseded', summary.superseded || 0],
+    ['EOL', summary.eol || 0],
+    ['Patch Tuesday', summary.patch_tuesday || 0],
     ['Ready', summary.ready || 0],
     ['Pilot', summary.pilot || 0],
   ].map(([label, value]) =>
@@ -1873,6 +1919,7 @@ function renderPatchCatalog() {
   const readinessBadge = (value) => {
     if (value === 'blocked') return badge('BLOCKED', 'fail');
     if (value === 'review') return badge('REVIEW', 'fail');
+    if (value === 'superseded') return badge('SUPERSEDED', 'muted-badge');
     if (value === 'pilot') return badge('PILOT', 'warn');
     if (value === 'ready_with_controls') return badge('READY + CONTROLS', 'warn');
     if (value === 'ready') return badge('READY', 'ok');
@@ -1885,19 +1932,31 @@ function renderPatchCatalog() {
     const readiness = item.deployment_readiness || {};
     const confidence = item.patch_confidence || {};
     const guard = item.guard || {};
+    const lifecycle = item.lifecycle || {};
+    const supersedence = item.supersedence || {};
     const affected = (item.affected_assets || []).slice(0, 3).map(x => esc(x.hostname)).join('<br>');
     return '<tr>' +
       '<td><strong>' + esc(item.patch_ref) + '</strong><br><small class="muted">' + esc(item.title || item.product || '-') + '</small></td>' +
-      '<td><small>' + esc(item.vendor || '-') + '<br>' + esc(item.product || '-') + '</small></td>' +
-      '<td>' + badge(String(item.severity || 'unknown').toUpperCase(), ['critical','important'].includes(String(item.severity || '').toLowerCase()) ? 'fail' : 'info') + '</td>' +
+      '<td><small>' + esc(item.vendor || '-') + '<br>' + esc(item.product || '-') +
+        (lifecycle.classification ? '<br>' + badge(String(lifecycle.classification).toUpperCase(), 'info') : '') + '</small></td>' +
+      '<td>' + badge(String(item.severity || 'unknown').toUpperCase(), ['critical','important'].includes(String(item.severity || '').toLowerCase()) ? 'fail' : 'info') +
+        (lifecycle.patch_tuesday ? '<br>' + badge('PATCH TUESDAY', 'info') : '') +
+        (lifecycle.eol_state === 'eol' ? '<br>' + badge('EOL', 'fail') : lifecycle.eol_state === 'eol_soon' ? '<br>' + badge('EOL SOON', 'warn') : '') + '</td>' +
       '<td><strong>' + esc(states.missing || 0) + '</strong><br><small class="muted">' + affected + '</small></td>' +
       '<td><strong>' + esc(states.installed_inferred || 0) + '</strong><br><small class="muted">' + esc(states.no_longer_reported || 0) + ' não reportado(s)</small></td>' +
       '<td><small>' + esc((threat.cves || []).slice(0, 4).join(', ') || '-') +
         (threat.kev_findings ? '<br>' + badge(threat.kev_findings + ' KEV', 'fail') : '') +
         (threat.ransomware_findings ? ' ' + badge(threat.ransomware_findings + ' ransomware', 'warn') : '') + '</small></td>' +
       '<td><strong>' + esc(confidence.confidence || 'insufficient_data') + '</strong><br><small class="muted">' + esc(confidence.success_rate == null ? '-' : confidence.success_rate + '%') + '</small></td>' +
+      '<td><small>' +
+        (supersedence.obsolete ? badge('OBSOLETA', 'muted-badge') : badge('LEAF', 'ok')) +
+        (supersedence.preferred_replacement ? '<br>→ ' + esc(supersedence.preferred_replacement) : '') +
+        '<br>' + esc(lifecycle.release_age_days == null ? 'idade desconhecida' : lifecycle.release_age_days + 'd') +
+        '</small></td>' +
       '<td>' + (guard.blocked ? badge('PATCH GUARD', 'fail') : badge('livre', 'ok')) + '</td>' +
-      '<td>' + readinessBadge(readiness.status) + '<br><small class="muted">' + esc((readiness.reasons || []).join(' · ')) + '</small></td>' +
+      '<td>' + readinessBadge(readiness.status) + '<br><small class="muted">' + esc((readiness.reasons || []).join(' · ')) + '</small>' +
+        (roleAtLeast('admin') ? '<br><button class="row-action" onclick="editPatchLifecycle(\'' + encodeURIComponent(item.patch_ref).replace(/'/g, '%27') + '\')">Lifecycle</button>' : '') +
+      '</td>' +
     '</tr>';
   }).join('');
 }

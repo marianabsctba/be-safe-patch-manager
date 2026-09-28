@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.29</small>
+          <small>dashboard v0.30</small>
         </div>
       </div>
     </aside>
@@ -390,7 +390,7 @@
               </div>
               <div id="patchCatalogStats" class="integration-details"></div>
               <div class="vuln-note">
-                Catálogo vivo construído pelos heartbeats. “Installed inferred” só é usado quando a patch estava missing e deixa de aparecer após job de instalação bem-sucedido; desaparecimentos sem prova ficam como “no longer reported”.
+                Catálogo vivo construído pelos heartbeats. Lifecycle e supersedence usam dados explícitos: release date nunca é inferida do first_seen. Patch Tuesday só aparece quando uma release date conhecida cai na janela do segundo Tuesday do mês.
               </div>
               <div class="table-wrap">
                 <table>
@@ -403,6 +403,7 @@
                       <th>Installed / Delta</th>
                       <th>CVEs / Threat</th>
                       <th>Confidence</th>
+                      <th>Lifecycle / Supersedence</th>
                       <th>Guard</th>
                       <th>Deployment readiness</th>
                     </tr>

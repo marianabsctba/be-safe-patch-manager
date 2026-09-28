@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.29; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.30; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -39,6 +39,9 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - Approval Gate por campanha com decisão administrativa auditada e segregação de função: quem solicita uma campanha protegida não pode aprovar a própria mudança;
 - Patch Intelligence / Patch Catalog persistente consolida patches observadas nos scans dos agentes, estado por endpoint, Patch Confidence, CVEs/threat context, Patch Guard e deployment readiness explicável;
 - estados por endpoint distinguem `missing`, `installed_inferred` e `no_longer_reported` para não confundir ausência no scan com instalação comprovada;
+- lifecycle por patch registra classificação, release date, EOL e fonte governada; release date não é inferida de `first_seen`;
+- supersedence graph calcula patches obsoletas, cadeia de substituição e leaf replacement preferida; patches superseded deixam de ser tratadas como melhor caminho de deployment;
+- Patch Tuesday intelligence identifica a janela do segundo Tuesday apenas quando existe release date explícita;
 - Active Threat Watch baseado em CISA KEV, EPSS e ransomware known;
 - Patch Confidence a partir do histórico local de deploys;
 - Asset Accountability com owner, business service e environment;

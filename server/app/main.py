@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
 from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -32,7 +32,7 @@ from .observability import metrics_response, prometheus_http_middleware, readine
 from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.29.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.30.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -1336,6 +1336,133 @@ def sync_patch_catalog_for_agent(db: Session, agent: Agent, patch_scan: list[dic
     return {"catalog_created": created, "catalog_updated": updated, "observed": len(observed_keys)}
 
 
+
+def second_tuesday(year: int, month: int) -> datetime:
+    first = datetime(year, month, 1, tzinfo=timezone.utc)
+    days_until_tuesday = (1 - first.weekday()) % 7
+    return first + timedelta(days=days_until_tuesday + 7)
+
+
+def patch_release_intelligence(entry: PatchCatalogEntry, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    released = entry.release_date
+    if released is not None and released.tzinfo is None:
+        released = released.replace(tzinfo=timezone.utc)
+    eol = entry.eol_date
+    if eol is not None and eol.tzinfo is None:
+        eol = eol.replace(tzinfo=timezone.utc)
+
+    release_age_days = max(0, (reference - released).days) if released else None
+    eol_state = "unknown"
+    days_to_eol = None
+    if eol:
+        days_to_eol = (eol - reference).days
+        if days_to_eol < 0:
+            eol_state = "eol"
+        elif days_to_eol <= 90:
+            eol_state = "eol_soon"
+        else:
+            eol_state = "supported"
+
+    patch_tuesday = False
+    patch_tuesday_delta_days = None
+    if released:
+        expected = second_tuesday(released.year, released.month)
+        patch_tuesday_delta_days = abs((released.date() - expected.date()).days)
+        patch_tuesday = patch_tuesday_delta_days <= 1
+
+    return {
+        "release_date": released.isoformat() if released else None,
+        "release_age_days": release_age_days,
+        "patch_tuesday": patch_tuesday,
+        "patch_tuesday_delta_days": patch_tuesday_delta_days,
+        "eol_date": eol.isoformat() if eol else None,
+        "eol_state": eol_state,
+        "days_to_eol": days_to_eol,
+        "classification": entry.classification or "",
+        "lifecycle_source": entry.lifecycle_source or "",
+        "lifecycle_updated_by": entry.lifecycle_updated_by or "",
+        "lifecycle_updated_at": entry.lifecycle_updated_at.isoformat() if entry.lifecycle_updated_at else None,
+    }
+
+
+def patch_supersedence_graph(entries: list[PatchCatalogEntry]) -> dict:
+    by_key = {entry.patch_key: entry for entry in entries}
+    supersedes = {}
+    superseded_by = {}
+    for entry in entries:
+        targets = []
+        for ref in load(entry.supersedes_json, []):
+            key = patch_ref_key(ref)
+            if key and key != entry.patch_key:
+                targets.append(key)
+                superseded_by.setdefault(key, set()).add(entry.patch_key)
+        supersedes[entry.patch_key] = sorted(set(targets))
+
+    def descendants(start: str, limit: int = 50) -> list[str]:
+        seen = set()
+        stack = list(supersedes.get(start, []))
+        ordered = []
+        while stack and len(ordered) < limit:
+            key = stack.pop(0)
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(key)
+            stack.extend(supersedes.get(key, []))
+        return ordered
+
+    def replacers(start: str, limit: int = 50) -> list[str]:
+        seen = set()
+        queue = sorted(superseded_by.get(start, set()))
+        ordered = []
+        while queue and len(ordered) < limit:
+            key = queue.pop(0)
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(key)
+            queue.extend(sorted(superseded_by.get(key, set())))
+        return ordered
+
+    graph = {}
+    for key in by_key:
+        replacing = replacers(key)
+        leaves = [
+            candidate for candidate in replacing
+            if not superseded_by.get(candidate)
+        ]
+        graph[key] = {
+            "supersedes_keys": supersedes.get(key, []),
+            "supersedes_all_keys": descendants(key),
+            "superseded_by_keys": sorted(superseded_by.get(key, set())),
+            "replacement_chain_keys": replacing,
+            "leaf_replacement_keys": leaves,
+            "obsolete": bool(superseded_by.get(key)),
+        }
+    return graph
+
+
+def choose_preferred_replacement(
+    entry: PatchCatalogEntry,
+    graph_item: dict,
+    entries_by_key: dict[str, PatchCatalogEntry],
+) -> PatchCatalogEntry | None:
+    candidates = [
+        entries_by_key[key]
+        for key in graph_item.get("leaf_replacement_keys", [])
+        if key in entries_by_key
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda candidate: (
+        candidate.release_date or datetime.min.replace(tzinfo=timezone.utc),
+        candidate.last_seen or datetime.min.replace(tzinfo=timezone.utc),
+        candidate.patch_ref.lower(),
+    ), reverse=True)
+    return candidates[0]
+
+
 def patch_catalog_report(db: Session, limit: int = 500) -> dict:
     reference = now()
     confidence_map = {
@@ -1361,6 +1488,8 @@ def patch_catalog_report(db: Session, limit: int = 500) -> dict:
     entries = db.query(PatchCatalogEntry).options(
         selectinload(PatchCatalogEntry.observations).selectinload(PatchApplicability.agent)
     ).order_by(PatchCatalogEntry.last_seen.desc()).all()
+    graph = patch_supersedence_graph(entries)
+    entries_by_key = {entry.patch_key: entry for entry in entries}
     items = []
     for entry in entries:
         observations = entry.observations or []
@@ -1388,9 +1517,18 @@ def patch_catalog_report(db: Session, limit: int = 500) -> dict:
         confidence = confidence_map.get(entry.patch_key)
         threat = by_patch.get(entry.patch_key, {"cves": set(), "finding_count": 0, "kev": 0, "ransomware": 0})
 
+        graph_item = graph.get(entry.patch_key, {})
+        preferred_replacement = choose_preferred_replacement(entry, graph_item, entries_by_key)
+        lifecycle = patch_release_intelligence(entry, reference)
         if blocking_rules:
             readiness = "blocked"
             readiness_reasons = ["Patch Guard ativo"]
+        elif lifecycle["eol_state"] == "eol":
+            readiness = "review"
+            readiness_reasons = ["produto/patch marcada como EOL; validar caminho suportado"]
+        elif graph_item.get("obsolete") and preferred_replacement:
+            readiness = "superseded"
+            readiness_reasons = [f"superseded por {preferred_replacement.patch_ref}; preferir patch leaf"]
         elif counts["missing"] == 0:
             readiness = "not_applicable"
             readiness_reasons = ["nenhum endpoint reporta a patch como pendente"]
@@ -1422,6 +1560,23 @@ def patch_catalog_report(db: Session, limit: int = 500) -> dict:
             "version": entry.version,
             "reboot_behavior": entry.reboot_behavior,
             "source": entry.source,
+            "lifecycle": lifecycle,
+            "supersedence": {
+                "supersedes": [
+                    entries_by_key[key].patch_ref if key in entries_by_key else key
+                    for key in graph_item.get("supersedes_keys", [])
+                ],
+                "superseded_by": [
+                    entries_by_key[key].patch_ref if key in entries_by_key else key
+                    for key in graph_item.get("superseded_by_keys", [])
+                ],
+                "replacement_chain": [
+                    entries_by_key[key].patch_ref if key in entries_by_key else key
+                    for key in graph_item.get("replacement_chain_keys", [])
+                ],
+                "obsolete": bool(graph_item.get("obsolete")),
+                "preferred_replacement": preferred_replacement.patch_ref if preferred_replacement else None,
+            },
             "first_seen": entry.first_seen.isoformat() if entry.first_seen else None,
             "last_seen": entry.last_seen.isoformat() if entry.last_seen else None,
             "states": counts,
@@ -1443,7 +1598,7 @@ def patch_catalog_report(db: Session, limit: int = 500) -> dict:
             },
         })
 
-    rank = {"blocked": 0, "review": 1, "pilot": 2, "ready_with_controls": 3, "ready": 4, "not_applicable": 5}
+    rank = {"blocked": 0, "review": 1, "superseded": 2, "pilot": 3, "ready_with_controls": 4, "ready": 5, "not_applicable": 6}
     items.sort(key=lambda x: (
         rank.get(x["deployment_readiness"]["status"], 9),
         -x["threat"]["kev_findings"],
@@ -1458,6 +1613,9 @@ def patch_catalog_report(db: Session, limit: int = 500) -> dict:
             "missing_observations": sum(x["states"]["missing"] for x in items),
             "installed_inferred": sum(x["states"]["installed_inferred"] for x in items),
             "blocked": sum(1 for x in items if x["deployment_readiness"]["status"] == "blocked"),
+            "superseded": sum(1 for x in items if x["deployment_readiness"]["status"] == "superseded"),
+            "eol": sum(1 for x in items if x["lifecycle"]["eol_state"] == "eol"),
+            "patch_tuesday": sum(1 for x in items if x["lifecycle"]["patch_tuesday"]),
             "ready": sum(1 for x in items if x["deployment_readiness"]["status"] == "ready"),
             "pilot": sum(1 for x in items if x["deployment_readiness"]["status"] == "pilot"),
         },
@@ -6117,6 +6275,84 @@ def active_threat_watch(
 ):
     return active_threat_watch_report(db, limit=limit)
 
+
+
+
+@app.patch("/api/admin/patch-catalog/{patch_ref}/lifecycle")
+def update_patch_catalog_lifecycle(
+    patch_ref: str,
+    body: PatchCatalogLifecycleUpdate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    key = patch_ref_key(patch_ref)
+    entry = db.get(PatchCatalogEntry, key)
+    if not entry:
+        raise HTTPException(status_code=404, detail="patch catalog entry not found")
+
+    supersedes = []
+    for value in body.supersedes:
+        ref = normalize_patch_ref(value)
+        ref_key = patch_ref_key(ref)
+        if not ref_key or ref_key == key:
+            continue
+        supersedes.append(ref)
+    supersedes = list(dict.fromkeys(supersedes))
+
+    release_date = body.release_date
+    if release_date is not None and release_date.tzinfo is None:
+        release_date = release_date.replace(tzinfo=timezone.utc)
+    eol_date = body.eol_date
+    if eol_date is not None and eol_date.tzinfo is None:
+        eol_date = eol_date.replace(tzinfo=timezone.utc)
+    if release_date and eol_date and eol_date < release_date:
+        raise HTTPException(status_code=400, detail="eol_date cannot be before release_date")
+
+    before = {
+        "vendor": entry.vendor,
+        "product": entry.product,
+        "classification": entry.classification,
+        "release_date": entry.release_date.isoformat() if entry.release_date else None,
+        "eol_date": entry.eol_date.isoformat() if entry.eol_date else None,
+        "supersedes": load(entry.supersedes_json, []),
+        "lifecycle_source": entry.lifecycle_source,
+    }
+
+    if body.vendor is not None:
+        entry.vendor = body.vendor.strip()
+    if body.product is not None:
+        entry.product = body.product.strip()
+    if body.classification is not None:
+        entry.classification = body.classification.strip().lower()
+    entry.release_date = release_date
+    entry.eol_date = eol_date
+    entry.supersedes_json = dump(supersedes)
+    entry.lifecycle_source = body.source.strip().lower()
+    entry.lifecycle_updated_by = principal["actor"]
+    entry.lifecycle_updated_at = now()
+    db.commit()
+
+    after = {
+        "vendor": entry.vendor,
+        "product": entry.product,
+        "classification": entry.classification,
+        "release_date": entry.release_date.isoformat() if entry.release_date else None,
+        "eol_date": entry.eol_date.isoformat() if entry.eol_date else None,
+        "supersedes": load(entry.supersedes_json, []),
+        "lifecycle_source": entry.lifecycle_source,
+    }
+    audit(
+        db,
+        principal["actor"],
+        "patch_catalog.lifecycle.updated",
+        "patch_catalog",
+        entry.patch_key,
+        {"before": before, "after": after, "reason": body.reason.strip()},
+    )
+    return {"ok": True, "patch": next(
+        item for item in patch_catalog_report(db, limit=2000)["items"]
+        if item["patch_key"] == entry.patch_key
+    )}
 
 
 @app.get("/api/admin/reports/patch-catalog")

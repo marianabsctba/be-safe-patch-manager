@@ -293,6 +293,17 @@ class AssetRiskProfileUpdate(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
 
 
+class PatchCatalogLifecycleUpdate(BaseModel):
+    vendor: Optional[str] = Field(default=None, max_length=128)
+    product: Optional[str] = Field(default=None, max_length=255)
+    classification: Optional[str] = Field(default=None, max_length=64)
+    release_date: Optional[datetime] = None
+    eol_date: Optional[datetime] = None
+    supersedes: List[str] = Field(default_factory=list, max_length=100)
+    source: str = Field(default="manual", min_length=2, max_length=64)
+    reason: str = Field(min_length=5, max_length=1000)
+
+
 class PatchBlockRuleCreate(BaseModel):
     name: str = Field(min_length=3, max_length=128)
     patch_ref: str = Field(min_length=1, max_length=255)

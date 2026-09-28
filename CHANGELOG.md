@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.30.0
+
+- control plane e dashboard passam para versão 0.30.0; agente permanece em 0.16.0;
+- Patch Catalog ganha lifecycle governado: classificação, release date, EOL, fonte e auditoria;
+- adicionada migration 0022_patch_lifecycle;
+- supersedence passa a formar grafo com `supersedes`, `superseded_by`, replacement chain, leaf replacement e estado obsolete;
+- deployment readiness ganha estado `superseded` e recomenda a leaf patch em vez da atualização obsoleta;
+- patches EOL entram em review, sem serem classificadas automaticamente como seguras para deploy;
+- Patch Tuesday intelligence calcula a janela do segundo Tuesday somente a partir de release date explícita;
+- console exibe Patch Tuesday, EOL, idade, supersedence e permite manutenção administrativa auditada do lifecycle;
+- adicionados testes de Patch Tuesday, grafo de supersedence, leaf selection, EOL e update de lifecycle.
+
 ## 0.29.0
 
 - control plane e dashboard passam para versão 0.29.0; agente permanece em 0.16.0;
