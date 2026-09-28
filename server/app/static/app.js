@@ -322,6 +322,13 @@ function renderAll() {
 
 function renderSummary(summary) {
   const release = state.agentRelease || {};
+  const threatSummary = (state.activeThreatWatch || {}).summary || {};
+  const hubSummary = (state.remediationHub || {}).summary || {};
+  const confidenceSummary = (state.patchConfidence || {}).summary || {};
+  const riskSummary = (state.assetRisk || {}).summary || {};
+  const ownerCoverage = riskSummary.assets
+    ? Math.round((Number(riskSummary.assets_with_owner || 0) / Number(riskSummary.assets)) * 100)
+    : 0;
   const entries = [
     { label: 'Endpoints', value: summary.agents || 0, hint: `${summary.online || 0} online`, cls: 'neutral' },
     { label: 'Compliance', value: `${summary.compliance_percent || 0}%`, hint: `${summary.compliant || 0} compliant`, cls: 'accent' },
@@ -341,6 +348,10 @@ function renderSummary(summary) {
     { label: 'Em tratamento', value: summary.assets_risk_in_treatment || 0, hint: 'planos ativos acima do appetite', cls: summary.assets_risk_in_treatment ? 'warn' : 'ok' },
     { label: 'Tratamento vencido', value: summary.assets_risk_treatment_overdue || 0, hint: 'prazo de treatment excedido', cls: summary.assets_risk_treatment_overdue ? 'danger' : 'ok' },
     { label: 'Risco sem ação', value: summary.assets_risk_untreated || 0, hint: 'acima do appetite sem aceite/plano', cls: summary.assets_risk_untreated ? 'danger' : 'ok' },
+    { label: 'Threat Watch', value: threatSummary.cves || 0, hint: (threatSummary.kev || 0) + ' KEV · ' + (threatSummary.ransomware || 0) + ' ransomware', cls: threatSummary.cves ? 'danger' : 'ok' },
+    { label: 'Remediation groups', value: hubSummary.remediation_groups || 0, hint: (hubSummary.assets_covered || 0) + ' ativos cobertos', cls: hubSummary.remediation_groups ? 'accent' : 'ok' },
+    { label: 'Patch confidence baixa', value: confidenceSummary.low_confidence || 0, hint: (confidenceSummary.insufficient_data || 0) + ' sem amostra suficiente', cls: confidenceSummary.low_confidence ? 'danger' : 'ok' },
+    { label: 'Owner coverage', value: ownerCoverage + '%', hint: (riskSummary.critical_high_without_owner || 0) + ' críticos/altos sem owner', cls: riskSummary.critical_high_without_owner ? 'warn' : 'ok' },
     { label: 'Agentes incompatíveis', value: Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0), hint: summary.compatibility_enforced ? 'enforcement ativo' : 'somente observação', cls: (Number(summary.agent_outdated || 0) + Number(summary.agent_unknown || 0) + Number(summary.agent_protocol_unsupported || 0)) ? 'danger' : 'ok' },
     { label: 'Jobs bloqueados', value: summary.blocked_jobs || 0, hint: 'aguardando upgrade do agente', cls: summary.blocked_jobs ? 'danger' : 'ok' },
     { label: 'Update staged', value: summary.agent_update_staged || 0, hint: 'assinado e aguardando ativação', cls: summary.agent_update_staged ? 'accent' : 'ok' },
