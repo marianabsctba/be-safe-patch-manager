@@ -786,6 +786,7 @@ function renderAssetRisk() {
       '<td>' + (
         roleAtLeast('admin')
           ? '<button class="row-action" onclick="editAssetRiskProfile(\'' + item.agent_id + '\')">Perfil de risco</button>' +
+            ' <button class="row-action" onclick="showRiskReductionPlan(\'' + item.agent_id + '\')">Plano de redução</button>' +
             (treatment && treatment.active
               ? ' <button class="row-action" onclick="editAssetRiskTreatment(\'' + item.agent_id + '\', \'' + treatment.id + '\')">Atualizar plano</button>'
               : risk.above_risk_appetite
@@ -905,6 +906,45 @@ window.editRiskPolicy = async (policyId) => {
     await load();
   } catch (error) {
     toast('Política de risco: ' + error.message, 'fail');
+  }
+};
+
+
+window.showRiskReductionPlan = async (agentId) => {
+  try {
+    const result = await api('/api/admin/agents/' + agentId + '/risk-reduction-plan?max_steps=25');
+    const target = $('#riskReductionPlanResult');
+    if (!target) return;
+    const steps = Array.isArray(result.steps) ? result.steps : [];
+
+    const header =
+      '<div><span>Ativo</span><strong>' + esc((result.asset || {}).hostname || agentId) + '</strong></div>' +
+      '<div><span>Score atual</span><strong>' + esc(result.initial_score) + '</strong></div>' +
+      '<div><span>Score projetado</span><strong>' + esc(result.projected_score) + '</strong></div>' +
+      '<div><span>Apetite</span><strong>' + esc(result.risk_appetite) + '</strong></div>' +
+      '<div><span>Meta atingida</span><strong>' + esc(result.target_reached ? 'sim' : 'não') + '</strong></div>';
+
+    const body = steps.length
+      ? '<div class="table-wrap"><table><thead><tr>' +
+          '<th>#</th><th>Finding</th><th>Ação</th><th>Score</th><th>Marginal</th><th>Cumulativa</th>' +
+        '</tr></thead><tbody>' +
+        steps.map((step) =>
+          '<tr>' +
+            '<td><strong>' + esc(step.step) + '</strong></td>' +
+            '<td><strong>' + esc(step.cve || step.finding_id) + '</strong><br><small class="muted">' + esc(step.title || '') + '</small></td>' +
+            '<td><small>' + esc(step.action || '-') + '</small></td>' +
+            '<td><strong>' + esc(step.before_score) + ' → ' + esc(step.after_score) + '</strong></td>' +
+            '<td><strong>-' + esc(step.marginal_reduction) + '</strong></td>' +
+            '<td><strong>-' + esc(step.cumulative_reduction) + '</strong></td>' +
+          '</tr>'
+        ).join('') +
+        '</tbody></table></div>'
+      : '<div class="empty-state">Nenhuma remediação necessária para atingir o appetite ou não há findings abertos.</div>';
+
+    target.innerHTML = header + body;
+    toast('Plano de redução recalculado.');
+  } catch (error) {
+    toast('Plano de redução: ' + error.message, 'fail');
   }
 };
 
