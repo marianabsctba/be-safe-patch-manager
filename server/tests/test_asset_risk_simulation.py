@@ -254,3 +254,28 @@ def test_risk_reduction_plan_is_read_only(db, monkeypatch):
     db.refresh(finding)
 
     assert finding.status == "open"
+
+
+
+def test_risk_reduction_plan_exposes_campaign_eligibility(db, monkeypatch):
+    agent = make_agent()
+    finding = make_finding("plan-campaign", "critical", 9.8, 0.95, True)
+    finding.agent = agent
+    finding.patch_refs_json = main.dump(["KB5039999"])
+    db.add_all([agent, finding])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 1)
+
+    report = main.risk_reduction_plan_report(
+        db,
+        agent_id=agent.id,
+        reference=REFERENCE,
+        max_steps=1,
+    )
+
+    assert report["steps"]
+    step = report["steps"][0]
+    assert step["finding_id"] == finding.id
+    assert "eligible_for_campaign" in step
+    assert step["patch_refs"] == ["KB5039999"]
