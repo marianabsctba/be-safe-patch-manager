@@ -1441,8 +1441,9 @@ def serialize_remediation_project(
     baseline_count = int(project.baseline_findings or 0)
     current_count = len(current_open_ids)
     closed_from_baseline = max(0, baseline_count - len(baseline_open_ids))
+    tracked_open_count = len(baseline_open_ids) + len(new_findings)
     progress = (
-        max(0.0, min(100.0, ((baseline_count - current_count) / baseline_count) * 100.0))
+        max(0.0, min(100.0, ((baseline_count - tracked_open_count) / baseline_count) * 100.0))
         if baseline_count > 0
         else 100.0
     )
@@ -1450,7 +1451,7 @@ def serialize_remediation_project(
     due_at = project.due_at
     if due_at.tzinfo is None:
         due_at = due_at.replace(tzinfo=timezone.utc)
-    achieved = current_count == 0
+    achieved = tracked_open_count == 0
     if project.status == "completed":
         pace_status = "completed"
     elif project.status == "cancelled":
@@ -1479,6 +1480,7 @@ def serialize_remediation_project(
         "baseline_assets": int(project.baseline_assets or 0),
         "baseline_risk_reduction": round(float(project.baseline_risk_reduction or 0.0), 1),
         "current_open_findings": current_count,
+        "tracked_open_findings": tracked_open_count,
         "current_assets": len(current_agent_ids),
         "closed_from_baseline": closed_from_baseline,
         "baseline_open_findings": len(baseline_open_ids),
@@ -5525,8 +5527,8 @@ def update_remediation_project(
         if status not in {"active", "awaiting_verification", "completed", "cancelled"}:
             raise HTTPException(status_code=400, detail="unsupported remediation project status")
         current = serialize_remediation_project(db, project)
-        if status == "completed" and current["current_open_findings"] > 0:
-            raise HTTPException(status_code=409, detail="project cannot be completed while scoped findings remain open")
+        if status == "completed" and current["tracked_open_findings"] > 0:
+            raise HTTPException(status_code=409, detail="project cannot be completed while tracked findings remain open")
         if status == "completed":
             project.completed_at = now()
         elif status in {"active", "awaiting_verification"}:
