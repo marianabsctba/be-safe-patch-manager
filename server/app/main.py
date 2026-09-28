@@ -901,6 +901,8 @@ def patch_confidence_report(
                 elif job.status not in {"pending", "claimed", "running"}:
                     bucket["other"] += 1
                 executed_at = job.finished_at or job.started_at or job.created_at
+                if executed_at and executed_at.tzinfo is None:
+                    executed_at = executed_at.replace(tzinfo=timezone.utc)
                 if executed_at and (
                     bucket["last_execution_at"] is None
                     or executed_at > bucket["last_execution_at"]
