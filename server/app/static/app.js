@@ -786,6 +786,7 @@ function renderAssetRisk() {
       '<td>' + (
         roleAtLeast('admin')
           ? '<button class="row-action" onclick="editAssetRiskProfile(\'' + item.agent_id + '\')">Perfil de risco</button>' +
+            ' <button class="row-action" onclick="showAssetRiskTimeline(\'' + item.agent_id + '\')">Timeline</button>' +
             ' <button class="row-action" onclick="showRiskReductionPlan(\'' + item.agent_id + '\')">Plano de redução</button>' +
             (treatment && treatment.active
               ? ' <button class="row-action" onclick="editAssetRiskTreatment(\'' + item.agent_id + '\', \'' + treatment.id + '\')">Atualizar plano</button>'
@@ -906,6 +907,55 @@ window.editRiskPolicy = async (policyId) => {
     await load();
   } catch (error) {
     toast('Política de risco: ' + error.message, 'fail');
+  }
+};
+
+
+window.showAssetRiskTimeline = async (agentId) => {
+  try {
+    const result = await api('/api/admin/reports/asset-risk/history?agent_id=' + encodeURIComponent(agentId) + '&limit=50');
+    const items = Array.isArray(result.items) ? result.items.slice().reverse() : [];
+    const target = $('#assetRiskTimeline');
+    if (!target) return;
+
+    if (!items.length) {
+      target.innerHTML = '<div class="empty-state">Sem snapshots para este ativo.</div>';
+      return;
+    }
+
+    let previous = null;
+    const rows = items.map((item) => {
+      const delta = previous == null ? null : Number(item.score || 0) - Number(previous.score || 0);
+      const direction = delta == null ? 'novo' : delta > 0 ? '↑ +' + delta.toFixed(1) : delta < 0 ? '↓ ' + delta.toFixed(1) : '→ 0';
+      previous = item;
+      const policy = item.risk_policy || {};
+      const policyData = policy.policy || {};
+      const policyName = policy.source === 'policy' ? (policyData.name || 'policy') : 'global';
+      return '<tr>' +
+        '<td>' + esc(shortWhen(item.captured_at)) + '</td>' +
+        '<td><strong>' + esc(Number(item.score || 0).toFixed(1)) + '</strong><br><small class="muted">' + esc(item.level || '-') + '</small></td>' +
+        '<td>' + esc(direction) + '</td>' +
+        '<td><strong>' + esc(item.risk_appetite == null ? '-' : item.risk_appetite) + '</strong><br><small class="muted">' + esc(policyName) + '</small></td>' +
+        '<td>' + esc(item.governance_status || '-') + '</td>' +
+        '<td><small>' + esc(item.model_version || '-') + '</small></td>' +
+        '<td><small>' + esc(item.source || '-') + '</small></td>' +
+      '</tr>';
+    }).join('');
+
+    const latest = items[items.length - 1] || {};
+    const calc = latest.calculation || {};
+    target.innerHTML =
+      '<div><span>Ativo</span><strong>' + esc(latest.hostname || agentId) + '</strong></div>' +
+      '<div><span>Snapshots</span><strong>' + esc(items.length) + '</strong></div>' +
+      '<div><span>Modelo atual salvo</span><strong>' + esc(latest.model_version || '-') + '</strong></div>' +
+      '<div><span>Raw score</span><strong>' + esc(calc.raw_score == null ? '-' : calc.raw_score) + '</strong></div>' +
+      '<div class="table-wrap"><table><thead><tr>' +
+        '<th>Data</th><th>Score</th><th>Delta</th><th>Apetite / Policy</th><th>Governança</th><th>Modelo</th><th>Origem</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+
+    toast('Timeline de Asset Risk carregada.');
+  } catch (error) {
+    toast('Timeline de risco: ' + error.message, 'fail');
   }
 };
 
