@@ -104,6 +104,37 @@
           <section class="panel">
             <div class="panel-head">
               <div>
+                <p class="section-kicker">RISK PROGRAM</p>
+                <h2>Risk Reduction Goals</h2>
+              </div>
+              <button class="row-action" data-min-role="operator" hidden onclick="createRiskGoal()">Nova meta</button>
+            </div>
+            <div id="riskGoalStats" class="integration-details"></div>
+            <div class="vuln-note">
+              Metas usam baseline congelado na criação e escopo dinâmico por tag. O valor atual é recalculado com o Asset Risk vivo.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Meta</th>
+                    <th>Escopo</th>
+                    <th>Baseline → Atual → Target</th>
+                    <th>Progresso</th>
+                    <th>Pace</th>
+                    <th>Owner</th>
+                    <th>Prazo</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="riskGoalTable"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
                 <p class="section-kicker">ATIVIDADE</p>
                 <h2>Campanhas recentes</h2>
               </div>
