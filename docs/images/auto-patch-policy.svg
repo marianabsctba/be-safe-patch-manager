@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+<style>.bg{fill:#09090b}.panel{fill:#15151a;stroke:#2b2b33;stroke-width:2}.txt{fill:#f5f5f7;font-family:Arial}.muted{fill:#9c9ca8;font-family:Arial}.pink{fill:#ff2d84}.green{fill:#55d47b}.yellow{fill:#ffcc4d}.red{fill:#ff646f}.h1{font-size:40px;font-weight:800}.h2{font-size:25px;font-weight:700}.body{font-size:18px}.small{font-size:14px}.tiny{font-size:12px}</style>
+<rect width="1600" height="900" class="bg"/><text x="70" y="80" class="txt h1">Auto Patch Policy Engine</text><text x="70" y="118" class="muted body">decisão explicável · simulation · decision ledger · draft governado</text>
+<rect x="70" y="165" width="1460" height="200" rx="20" class="panel"/><text x="100" y="205" class="pink small">POLICY</text><text x="100" y="245" class="txt h2">KEV external production</text>
+<text x="100" y="292" class="muted small">Mode</text><text x="165" y="292" class="txt body">draft</text><text x="330" y="292" class="muted small">OS</text><text x="370" y="292" class="txt body">windows</text><text x="520" y="292" class="muted small">Tag</text><text x="565" y="292" class="txt body">production</text><text x="760" y="292" class="muted small">Signals</text><text x="835" y="292" class="txt body">KEV + external</text><text x="1080" y="292" class="muted small">Confidence</text><text x="1180" y="292" class="txt body">≥ medium</text><text x="1340" y="292" class="muted small">Ring</text><text x="1390" y="292" class="txt body">5%</text>
+<rect x="70" y="400" width="720" height="370" rx="20" class="panel"/><text x="100" y="445" class="pink h2">Simulation</text>
+<text x="100" y="495" class="muted small">Missing total</text><text x="300" y="495" class="txt body">137</text>
+<text x="100" y="535" class="muted small">Excluded OS</text><text x="300" y="535" class="txt body">4</text>
+<text x="100" y="575" class="muted small">Excluded tag</text><text x="300" y="575" class="txt body">21</text>
+<text x="100" y="615" class="muted small">Excluded external</text><text x="300" y="615" class="txt body">78</text>
+<text x="100" y="655" class="muted small">Selected</text><text x="300" y="655" class="green body">34</text>
+<text x="440" y="495" class="muted small">Blast radius</text><text x="570" y="495" class="txt body">2 endpoints</text>
+<text x="440" y="535" class="muted small">Approval</text><text x="570" y="535" class="txt body">required</text>
+<text x="440" y="575" class="muted small">Health Gate</text><text x="570" y="575" class="txt body">required</text>
+<text x="440" y="615" class="muted small">Rollback</text><text x="570" y="615" class="txt body">required</text>
+<text x="100" y="720" class="pink body">Decision: DRAFT_READY</text>
+<rect x="825" y="400" width="705" height="370" rx="20" class="panel"/><text x="855" y="445" class="pink h2">Decision Ledger</text>
+<text x="855" y="495" class="muted small">16:22</text><text x="950" y="495" class="txt body">user:operator</text><text x="1190" y="495" class="green small">SIMULATION</text>
+<text x="855" y="540" class="muted small">16:28</text><text x="950" y="540" class="txt body">user:operator</text><text x="1190" y="540" class="yellow small">DRAFT RUN</text>
+<text x="855" y="600" class="muted small">Ready</text><text x="980" y="600" class="txt body">7</text><text x="1100" y="600" class="muted small">Blocked</text><text x="1210" y="600" class="txt body">2</text><text x="1320" y="600" class="muted small">Holds</text><text x="1410" y="600" class="txt body">3</text>
+<text x="855" y="655" class="muted small">Drafts created</text><text x="1030" y="655" class="txt h2">4</text>
+<text x="855" y="720" class="muted small">Snapshots imutáveis: ator, policies, decisões, motivos e estado daquele momento.</text>
+</svg>
