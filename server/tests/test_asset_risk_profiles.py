@@ -351,3 +351,44 @@ def test_risk_profile_persists_accountability_context(db, monkeypatch):
     report = main.asset_risk_report(db, REFERENCE)
     assert report["summary"]["assets_with_owner"] == 1
     assert report["summary"]["assets_without_owner"] == 0
+
+
+
+def test_business_context_segments_assets_without_new_risk_multiplier(db):
+    owned = make_agent("context-owned", ["prod"])
+    unowned = make_agent("context-unowned", ["lab"])
+    owned_profile = AssetRiskProfile(
+        agent=owned,
+        criticality_override=4,
+        owner="Equipe ERP",
+        business_service="Financeiro",
+        environment="prod",
+        reason="Contexto operacional",
+        updated_by="user:admin",
+        updated_at=REFERENCE,
+    )
+    unowned_profile = AssetRiskProfile(
+        agent=unowned,
+        criticality_override=2,
+        owner="",
+        business_service="Laboratório",
+        environment="lab",
+        reason="Contexto operacional",
+        updated_by="user:admin",
+        updated_at=REFERENCE,
+    )
+    db.add_all([owned, unowned, owned_profile, unowned_profile])
+    db.commit()
+
+    report = main.business_context_report(db, REFERENCE)
+
+    assert report["summary"]["assets"] == 2
+    assert report["summary"]["owner_coverage_percent"] == 50.0
+    owners = {item["name"]: item for item in report["by_owner"]}
+    assert "Equipe ERP" in owners
+    assert "sem owner" in owners
+    services = {item["name"]: item for item in report["by_business_service"]}
+    assert services["Financeiro"]["asset_count"] == 1
+    environments = {item["name"]: item for item in report["by_environment"]}
+    assert environments["prod"]["asset_count"] == 1
+    assert environments["lab"]["asset_count"] == 1
