@@ -12,6 +12,7 @@ const state = {
   threatIntel: null,
   remediationQueue: null,
   remediationHub: null,
+  remediationProjects: null,
   activeThreatWatch: null,
   patchConfidence: null,
   businessContext: null,
@@ -243,7 +244,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, activeThreatWatch, patchConfidence, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -251,6 +252,7 @@ async function load() {
       api('/api/admin/integrations/threat-intel'),
       api('/api/admin/reports/remediation-queue'),
       api('/api/admin/reports/remediation-hub'),
+      api('/api/admin/remediation-projects'),
       api('/api/admin/reports/active-threat-watch'),
       api('/api/admin/reports/patch-confidence'),
       api('/api/admin/reports/business-context'),
@@ -273,6 +275,7 @@ async function load() {
     state.threatIntel = threatIntel;
     state.remediationQueue = remediationQueue;
     state.remediationHub = remediationHub;
+    state.remediationProjects = remediationProjects;
     state.activeThreatWatch = activeThreatWatch;
     state.patchConfidence = patchConfidence;
     state.businessContext = businessContext;
@@ -316,6 +319,7 @@ function renderAll() {
   renderThreatIntelIntegration();
   renderRemediationQueue();
   renderRemediationHub();
+  renderRemediationProjects();
   renderActiveThreatWatch();
   renderPatchConfidence();
   renderBusinessContext();
@@ -1909,8 +1913,10 @@ function renderRemediationHub() {
     const topAssets = assets.slice(0, 3).map((asset) =>
       esc(asset.hostname) + ' (-' + esc(asset.risk_reduction) + ')'
     ).join('<br>');
+    const encodedPatchRef = encodeURIComponent(item.patch_ref).replace(/'/g, '%27');
     const campaignButton = roleAtLeast('operator')
-      ? '<button class="row-action" onclick="prepareCampaignFromRemediationGroup(\'' + encodeURIComponent(item.patch_ref).replace(/'/g, '%27') + '\')">Preparar campanha</button>'
+      ? '<button class="row-action" onclick="prepareCampaignFromRemediationGroup(\'' + encodedPatchRef + '\')">Preparar campanha</button>' +
+        ' <button class="row-action" onclick="createRemediationProjectFromHub(\'' + encodedPatchRef + '\')">Criar projeto</button>'
       : '<small class="muted">somente análise</small>';
 
     return '<tr>' +
@@ -1929,6 +1935,60 @@ function renderRemediationHub() {
       '<td>' + campaignButton + '</td>' +
     '</tr>';
   }).join('');
+}
+
+
+function remediationProjectBadge(status) {
+  if (status === 'completed' || status === 'achieved') return badge('CONCLUÍDO', 'ok');
+  if (status === 'awaiting_verification') return badge('AGUARDANDO VERIFICAÇÃO', 'warn');
+  if (status === 'overdue') return badge('VENCIDO', 'fail');
+  if (status === 'cancelled') return badge('CANCELADO', 'muted-badge');
+  return badge('EM ANDAMENTO', 'info');
+}
+
+function renderRemediationProjects() {
+  const report = state.remediationProjects || {};
+  const summary = report.summary || {};
+  const items = Array.isArray(report.items) ? report.items : [];
+  const stats = $('#remediationProjectStats');
+  const table = $('#remediationProjectTable');
+  if (!stats || !table) return;
+
+  stats.innerHTML = [
+    ['Ativos', summary.active || 0],
+    ['Aguardando verificação', summary.awaiting_verification || 0],
+    ['Atingidos', summary.achieved || 0],
+    ['Vencidos', summary.overdue || 0],
+    ['Findings abertos', summary.open_findings || 0],
+  ].map(([label, value]) =>
+    '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+  ).join('');
+
+  if (!items.length) {
+    table.innerHTML = '<tr><td colspan="9"><div class="empty-state">Nenhum Remediation Project criado.</div></td></tr>';
+    return;
+  }
+
+  table.innerHTML = items.map((project) =>
+    '<tr>' +
+      '<td><strong>' + esc(project.name) + '</strong><br><small class="muted">' + esc(project.patch_ref) + '</small></td>' +
+      '<td>' + esc(project.scope_mode) + (project.scope_tag ? '<br><small class="muted">tag:' + esc(project.scope_tag) + '</small>' : '') + '</td>' +
+      '<td><strong>' + esc(project.current_open_findings) + ' / ' + esc(project.baseline_findings) + '</strong><br><small class="muted">' + esc(project.new_findings_since_baseline) + ' novos desde baseline</small></td>' +
+      '<td><strong>' + esc(project.current_assets) + ' / ' + esc(project.baseline_assets) + '</strong></td>' +
+      '<td><strong>' + esc(project.progress_percent) + '%</strong><br><small class="muted">baseline impact -' + esc(project.baseline_risk_reduction) + '</small></td>' +
+      '<td>' + remediationProjectBadge(project.pace_status) + '</td>' +
+      '<td><strong>' + esc(project.owner) + '</strong></td>' +
+      '<td>' + esc(when(project.due_at)) + '</td>' +
+      '<td>' +
+        (roleAtLeast('operator')
+          ? '<button class="row-action" onclick="editRemediationProject(\'' + project.id + '\')">Gerenciar</button>' +
+            (project.campaign_ready && project.current_open_findings > 0
+              ? ' <button class="row-action" onclick="prepareCampaignFromRemediationProject(\'' + project.id + '\')">Preparar campanha</button>'
+              : '')
+          : '') +
+      '</td>' +
+    '</tr>'
+  ).join('');
 }
 
 
@@ -2193,6 +2253,153 @@ window.retryRemediationRescan = async (evidenceId) => {
     toast('Rescan: ' + error.message, 'fail');
   }
 };
+
+window.createRemediationProjectFromHub = async (encodedPatchRef) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+  const patchRef = decodeURIComponent(encodedPatchRef);
+  const group = ((state.remediationHub || {}).items || []).find((item) => item.patch_ref === patchRef);
+  if (!group) {
+    toast('Grupo de remediação não encontrado.', 'fail');
+    return;
+  }
+  const due = new Date(Date.now() + 30 * 86400000);
+  const localDue = new Date(due.getTime() - due.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+
+  openGovernanceModal({
+    kicker: 'REMEDIATION PROJECT',
+    title: 'Criar projeto · ' + patchRef,
+    context: String(group.finding_count || 0) + ' findings · ' + String(group.asset_count || 0) + ' ativos · redução projetada ' + String(group.risk_reduction || 0),
+    submitLabel: 'Criar projeto',
+    fields: [
+      { name: 'name', label: 'Nome', type: 'text', value: 'Remediação · ' + patchRef, required: true, minLength: 3 },
+      {
+        name: 'scope_mode',
+        label: 'Escopo',
+        type: 'select',
+        value: 'static',
+        options: [
+          { value: 'static', label: 'Static · congela findings atuais' },
+          { value: 'dynamic', label: 'Dynamic · inclui novos findings da mesma patch/tag' },
+        ],
+      },
+      { name: 'scope_tag', label: 'Tag adicional', type: 'text', hint: 'Opcional. Restringe o projeto aos ativos com essa tag.' },
+      { name: 'owner', label: 'Owner', type: 'text', required: true, minLength: 2 },
+      { name: 'due_at', label: 'Prazo', type: 'datetime-local', value: localDue, required: true },
+      { name: 'reason', label: 'Objetivo / contexto', type: 'textarea', required: true, minLength: 5, wide: true },
+    ],
+    onSubmit: async (values) => {
+      await api('/api/admin/remediation-projects', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: String(values.name || '').trim(),
+          patch_ref: patchRef,
+          scope_mode: String(values.scope_mode || 'static'),
+          scope_tag: String(values.scope_tag || '').trim().toLowerCase(),
+          owner: String(values.owner || '').trim(),
+          due_at: new Date(values.due_at).toISOString(),
+          reason: String(values.reason || '').trim(),
+        }),
+      });
+      toast('Remediation Project criado.');
+      await load();
+    },
+  });
+};
+
+window.editRemediationProject = async (projectId) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+  const project = ((state.remediationProjects || {}).items || []).find((item) => item.id === projectId);
+  if (!project) return;
+  const due = new Date(project.due_at);
+  const localDue = new Date(due.getTime() - due.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+
+  openGovernanceModal({
+    kicker: 'REMEDIATION PROJECT',
+    title: 'Gerenciar · ' + project.name,
+    context: project.patch_ref + ' · ' + project.current_open_findings + ' findings abertos · ' + project.progress_percent + '% concluído',
+    submitLabel: 'Salvar projeto',
+    fields: [
+      { name: 'owner', label: 'Owner', type: 'text', value: project.owner, required: true, minLength: 2 },
+      { name: 'due_at', label: 'Prazo', type: 'datetime-local', value: localDue, required: true },
+      {
+        name: 'status',
+        label: 'Status',
+        type: 'select',
+        value: project.status,
+        options: [
+          { value: 'active', label: 'Em andamento' },
+          { value: 'awaiting_verification', label: 'Aguardando verificação' },
+          { value: 'completed', label: 'Concluído (exige zero findings abertos)' },
+          { value: 'cancelled', label: 'Cancelado' },
+        ],
+      },
+      { name: 'reason', label: 'Motivo da alteração', type: 'textarea', required: true, minLength: 5, wide: true },
+    ],
+    onSubmit: async (values) => {
+      await api('/api/admin/remediation-projects/' + projectId, {
+        method: 'PUT',
+        body: JSON.stringify({
+          owner: String(values.owner || '').trim(),
+          due_at: new Date(values.due_at).toISOString(),
+          status: String(values.status || 'active'),
+          reason: String(values.reason || '').trim(),
+        }),
+      });
+      toast('Remediation Project atualizado.');
+      await load();
+    },
+  });
+};
+
+window.prepareCampaignFromRemediationProject = (projectId) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+  const project = ((state.remediationProjects || {}).items || []).find((item) => item.id === projectId);
+  if (!project || !project.campaign_ready) {
+    toast('Projeto sem população elegível para campanha.', 'fail');
+    return;
+  }
+  const agentIds = Array.isArray(project.current_agent_ids) ? project.current_agent_ids : [];
+  if (!agentIds.length || agentIds.length > 500) {
+    toast('Projeto sem snapshot de até 500 endpoints elegíveis.', 'fail');
+    return;
+  }
+
+  const form = $('#campaignForm');
+  state.campaignTargetAgentIds = [...agentIds];
+  form.elements.target_agent_id.value = '';
+  form.elements.target_finding_id.value = '';
+  form.elements.name.value = project.name + ' · campanha';
+  const families = [...new Set(agentIds.map((id) => {
+    const agent = state.agents.find((item) => item.id === id);
+    return agent ? agent.os_family : null;
+  }).filter(Boolean))];
+  form.elements.target_os.value = families.length === 1 ? families[0] : 'all';
+  form.elements.target_tag.value = '';
+  const group = ((state.remediationHub || {}).items || []).find((item) => item.patch_ref === project.patch_ref);
+  const guidance = group ? (group.deployment_guidance || {}) : {};
+  form.elements.ring_percent.value = Number(guidance.suggested_ring_percent || (agentIds.length > 10 ? 10 : 100));
+  form.elements.action.value = 'install_updates';
+  form.elements.packages.value = project.patch_ref;
+  form.elements.description.value =
+    'Remediation Project ' + project.name +
+    ' · ' + project.scope_mode + ' scope' +
+    ' · ' + String(project.current_open_findings || 0) + ' findings abertos' +
+    ' · ' + String(agentIds.length) + ' endpoints exatos' +
+    ' · owner ' + project.owner +
+    ' · revisão humana obrigatória antes do deploy';
+
+  const context = $('#campaignSourceContext');
+  context.hidden = false;
+  context.innerHTML =
+    '<strong>Origem da campanha</strong>' +
+    '<span>Remediation Project · ' + esc(project.name) +
+    ' · ' + esc(agentIds.length) + ' endpoints exatos · patch ' + esc(project.patch_ref) + '</span>';
+
+  setView('campaigns');
+  form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  toast('Draft pré-preenchido a partir do projeto. Revise ring, janela e health gate.');
+};
+
 
 window.prepareCampaignFromRemediationGroup = (encodedPatchRef) => {
   if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
