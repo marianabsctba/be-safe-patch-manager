@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.23; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.24; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -42,6 +42,9 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - Remediation Projects persistentes por patch/ação, com owner, prazo, baseline, escopo `static` ou `dynamic`, scope drift explícito, progresso e lifecycle separado de campanha/deploy;
 - Remediation Projects podem nascer do Remediation Hub e preparar um draft de campanha multi-asset exato, mantendo revisão humana e health gates antes do deploy;
 - burndown histórico de Remediation Projects com backlog rastreado, novos findings, scope drift, progresso e origem de cada snapshot;
+- Project Intelligence em Remediation Projects com risco restante/reduzido, progresso esperado x realizado, KEV, SLA vencido, exposição externa, aging, EPSS e attention state explicável;
+- histórico de projeto passa a persistir burndown de risco além do backlog, permitindo acompanhar redução efetiva e desvio de cronograma;
+- Prometheus/Grafana passam a expor projetos críticos, risco restante/reduzido e SLA vencido em projetos ativos;
 - Prometheus/alerting para Remediation Projects e Risk Reduction Goals vencidos, evitando depender de inspeção manual da console;
 - etapas elegíveis do plano podem pré-preencher um draft de campanha, mantendo criação e deploy sob controle explícito do operador;
 - criação de campanha a partir de finding correlacionado;
