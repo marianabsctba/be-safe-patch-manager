@@ -29,6 +29,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - estados executivos de governança por ativo: dentro do appetite, acima sem ação, em tratamento, tratamento vencido ou risco aceito;
 - Risk Reduction Simulation por finding, mostrando score atual, score projetado, delta e impacto sobre o appetite sem alterar evidência ou estado real;
 - ranking de Risk Reduction Opportunities para priorizar findings pela redução projetada de Asset Risk, sem somar deltas independentes;
+- Risk Reduction Plan por ativo, recalculando ganho marginal passo a passo até atingir o appetite ou o limite de etapas;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
 - rescan Greenbone automático após patch validado;
