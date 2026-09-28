@@ -21,8 +21,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -746,6 +746,161 @@ def _median(values: list[float]) -> float | None:
     if len(ordered) % 2:
         return ordered[middle]
     return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+RISK_REDUCTION_GOAL_TYPES = {
+    "average_asset_risk_max": "Average Asset Risk",
+    "assets_above_appetite_max": "Assets Above Appetite",
+    "open_findings_max": "Open Findings",
+    "critical_high_assets_max": "Critical/High Risk Assets",
+}
+
+
+def _goal_scope_agent_ids(db: Session, scope_tag: str) -> set[str] | None:
+    tag = str(scope_tag or "").strip().lower()
+    if not tag:
+        return None
+    return agent_ids_matching_risk_tags(db, {tag})
+
+
+def _goal_metric_value(
+    db: Session,
+    goal_type: str,
+    scope_tag: str = "",
+    reference: datetime | None = None,
+) -> tuple[float, int]:
+    reference = reference or now()
+    if goal_type not in RISK_REDUCTION_GOAL_TYPES:
+        raise HTTPException(status_code=400, detail="unsupported risk reduction goal type")
+
+    scoped_ids = _goal_scope_agent_ids(db, scope_tag)
+    if scoped_ids is not None and not scoped_ids:
+        return 0.0, 0
+
+    report = asset_risk_report(
+        db,
+        reference,
+        agent_ids=scoped_ids,
+    )
+    assets = report["assets"]
+    if goal_type == "average_asset_risk_max":
+        value = float(report["summary"]["average_score"])
+    elif goal_type == "assets_above_appetite_max":
+        value = float(report["summary"]["above_risk_appetite"])
+    elif goal_type == "open_findings_max":
+        value = float(sum(int(row["risk"].get("open_findings") or 0) for row in assets))
+    else:
+        value = float(
+            report["summary"]["critical"] + report["summary"]["high"]
+        )
+    return round(value, 1), len(assets)
+
+
+def serialize_risk_reduction_goal(
+    db: Session,
+    goal: RiskReductionGoal,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    current_value, scoped_assets = _goal_metric_value(
+        db,
+        goal.goal_type,
+        goal.scope_tag,
+        reference,
+    )
+    baseline = float(goal.baseline_value)
+    target = float(goal.target_value)
+    denominator = baseline - target
+    progress = (
+        max(0.0, min(100.0, ((baseline - current_value) / denominator) * 100.0))
+        if denominator > 0
+        else 100.0
+    )
+    achieved = current_value <= target
+
+    created_at = goal.created_at or reference
+    due_at = goal.due_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    if due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=timezone.utc)
+
+    total_seconds = max(1.0, (due_at - created_at).total_seconds())
+    elapsed_fraction = max(
+        0.0,
+        min(1.0, (reference - created_at).total_seconds() / total_seconds),
+    )
+    expected_value = baseline - (denominator * elapsed_fraction)
+
+    if goal.status == "cancelled":
+        pace_status = "cancelled"
+    elif goal.status == "completed":
+        pace_status = "completed"
+    elif achieved:
+        pace_status = "achieved"
+    elif reference > due_at:
+        pace_status = "overdue"
+    elif current_value <= expected_value:
+        pace_status = "on_track"
+    else:
+        pace_status = "at_risk"
+
+    return {
+        "id": goal.id,
+        "name": goal.name,
+        "scope_tag": goal.scope_tag,
+        "scope": "all_managed_assets" if not goal.scope_tag else f"tag:{goal.scope_tag}",
+        "scoped_assets": scoped_assets,
+        "goal_type": goal.goal_type,
+        "goal_label": RISK_REDUCTION_GOAL_TYPES.get(goal.goal_type, goal.goal_type),
+        "baseline_value": round(baseline, 1),
+        "target_value": round(target, 1),
+        "current_value": current_value,
+        "remaining_to_target": round(max(0.0, current_value - target), 1),
+        "progress_percent": round(progress, 1),
+        "expected_value_now": round(expected_value, 1),
+        "pace_status": pace_status,
+        "achieved": achieved,
+        "owner": goal.owner,
+        "due_at": due_at.isoformat(),
+        "status": goal.status,
+        "reason": goal.reason,
+        "created_by": goal.created_by,
+        "updated_by": goal.updated_by,
+        "completed_at": goal.completed_at.isoformat() if goal.completed_at else None,
+        "created_at": created_at.isoformat(),
+        "updated_at": goal.updated_at.isoformat() if goal.updated_at else None,
+    }
+
+
+def risk_reduction_goals_report(
+    db: Session,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    goals = db.query(RiskReductionGoal).order_by(
+        RiskReductionGoal.status.asc(),
+        RiskReductionGoal.due_at.asc(),
+        RiskReductionGoal.name.asc(),
+    ).all()
+    items = [
+        serialize_risk_reduction_goal(db, goal, reference)
+        for goal in goals
+    ]
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": {
+            "total": len(items),
+            "active": sum(1 for item in items if item["status"] == "active"),
+            "achieved": sum(1 for item in items if item["pace_status"] in {"achieved", "completed"}),
+            "on_track": sum(1 for item in items if item["pace_status"] == "on_track"),
+            "at_risk": sum(1 for item in items if item["pace_status"] == "at_risk"),
+            "overdue": sum(1 for item in items if item["pace_status"] == "overdue"),
+        },
+        "items": items,
+        "goal_types": RISK_REDUCTION_GOAL_TYPES,
+        "note": "Goal baselines are frozen at creation. Current values are recalculated from the live managed-asset scope.",
+    }
 
 
 def business_context_report(
@@ -4842,6 +4997,154 @@ def risk_reduction_plan(
     db: Session = Depends(get_db),
 ):
     return risk_reduction_plan_report(db, agent_id=agent_id, max_steps=max_steps)
+
+
+@app.get("/api/admin/risk-goals")
+def list_risk_reduction_goals(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return risk_reduction_goals_report(db)
+
+
+@app.post("/api/admin/risk-goals")
+def create_risk_reduction_goal(
+    body: RiskReductionGoalCreate,
+    principal=Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    name = body.name.strip()
+    owner = body.owner.strip()
+    scope_tag = body.scope_tag.strip().lower()
+    reason = body.reason.strip()
+    goal_type = body.goal_type.strip().lower()
+    if len(name) < 3:
+        raise HTTPException(status_code=400, detail="goal name must contain at least 3 non-space characters")
+    if len(owner) < 2:
+        raise HTTPException(status_code=400, detail="goal owner must contain at least 2 non-space characters")
+    if len(reason) < 5:
+        raise HTTPException(status_code=400, detail="goal reason must contain at least 5 non-space characters")
+    if goal_type not in RISK_REDUCTION_GOAL_TYPES:
+        raise HTTPException(status_code=400, detail="unsupported risk reduction goal type")
+    if db.query(RiskReductionGoal).filter(RiskReductionGoal.name == name).first():
+        raise HTTPException(status_code=409, detail="risk reduction goal name already exists")
+
+    due_at = body.due_at
+    if due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=timezone.utc)
+    current = now()
+    if due_at <= current:
+        raise HTTPException(status_code=400, detail="goal due date must be in the future")
+    if due_at > current + timedelta(days=1095):
+        raise HTTPException(status_code=400, detail="goal due date cannot exceed 3 years")
+
+    baseline, scoped_assets = _goal_metric_value(db, goal_type, scope_tag, current)
+    if scoped_assets < 1:
+        raise HTTPException(status_code=409, detail="goal scope does not contain managed assets")
+    if baseline <= float(body.target_value):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "goal target must be lower than the current baseline",
+                "baseline_value": baseline,
+                "target_value": body.target_value,
+            },
+        )
+
+    goal = RiskReductionGoal(
+        id=str(uuid.uuid4()),
+        name=name,
+        scope_tag=scope_tag,
+        goal_type=goal_type,
+        target_value=float(body.target_value),
+        baseline_value=baseline,
+        owner=owner,
+        due_at=due_at,
+        status="active",
+        reason=reason,
+        created_by=principal["actor"],
+        updated_by=principal["actor"],
+    )
+    db.add(goal)
+    db.commit()
+    db.refresh(goal)
+    result = serialize_risk_reduction_goal(db, goal, current)
+    audit(
+        db,
+        principal["actor"],
+        "risk_reduction.goal.created",
+        "risk_reduction_goal",
+        goal.id,
+        result,
+    )
+    return {"ok": True, "goal": result}
+
+
+@app.put("/api/admin/risk-goals/{goal_id}")
+def update_risk_reduction_goal(
+    goal_id: str,
+    body: RiskReductionGoalUpdate,
+    principal=Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    goal = db.query(RiskReductionGoal).filter(
+        RiskReductionGoal.id == goal_id
+    ).with_for_update().first()
+    if not goal:
+        raise HTTPException(status_code=404, detail="risk reduction goal not found")
+
+    before = serialize_risk_reduction_goal(db, goal)
+    reason = body.reason.strip()
+    if len(reason) < 5:
+        raise HTTPException(status_code=400, detail="goal reason must contain at least 5 non-space characters")
+    if body.owner is not None:
+        owner = body.owner.strip()
+        if len(owner) < 2:
+            raise HTTPException(status_code=400, detail="goal owner must contain at least 2 non-space characters")
+        goal.owner = owner
+    if body.target_value is not None:
+        if float(body.target_value) >= float(goal.baseline_value):
+            raise HTTPException(status_code=409, detail="goal target must remain below its baseline")
+        goal.target_value = float(body.target_value)
+    if body.due_at is not None:
+        due_at = body.due_at
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+        if due_at <= now() and (body.status or goal.status) == "active":
+            raise HTTPException(status_code=400, detail="active goal due date must be in the future")
+        goal.due_at = due_at
+    if body.status is not None:
+        status = body.status.strip().lower()
+        if status not in {"active", "completed", "cancelled"}:
+            raise HTTPException(status_code=400, detail="unsupported goal status")
+        if status == "completed":
+            current_value, _ = _goal_metric_value(db, goal.goal_type, goal.scope_tag)
+            if current_value > float(goal.target_value):
+                raise HTTPException(status_code=409, detail="goal cannot be completed before the target is achieved")
+            goal.completed_at = now()
+        elif status == "active":
+            if goal.due_at <= now():
+                raise HTTPException(status_code=409, detail="expired goal cannot be reactivated without a future due date")
+            goal.completed_at = None
+        else:
+            goal.completed_at = None
+        goal.status = status
+
+    goal.reason = reason
+    goal.updated_by = principal["actor"]
+    goal.updated_at = now()
+    db.commit()
+    db.refresh(goal)
+    after = serialize_risk_reduction_goal(db, goal)
+    audit(
+        db,
+        principal["actor"],
+        "risk_reduction.goal.updated",
+        "risk_reduction_goal",
+        goal.id,
+        {"before": before, "after": after},
+    )
+    return {"ok": True, "goal": after}
 
 
 @app.get("/api/admin/reports/business-context")
