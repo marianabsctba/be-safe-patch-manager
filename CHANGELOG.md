@@ -58,6 +58,8 @@
 - adicionado Risk Reduction Plan por ativo com seleção gulosa de maior ganho marginal e recálculo a cada etapa;
 - plano informa score antes/depois, redução marginal, redução acumulada e cruzamento do appetite;
 - console ganhou ação `Plano de redução` e painel de sequência projetada;
+- etapas do Risk Reduction Plan agora expõem elegibilidade de campanha e referências de patch;
+- console permite `Preparar campanha` a partir de uma etapa elegível, apenas pré-preenchendo o draft; deploy continua separado;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
