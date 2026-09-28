@@ -1126,6 +1126,87 @@ Decisões de Asset Risk são validadas no backend:
 - motivos, owners, ações e nomes relevantes são validados após trim;
 - mudanças de governança geram audit event e snapshot histórico.
 
+## 13.2. Risk Reduction Goals
+
+O Be Safe trata redução de risco também como programa operacional, não apenas como ranking de findings.
+
+Endpoints:
+
+```http
+GET  /api/admin/risk-goals
+POST /api/admin/risk-goals
+PUT  /api/admin/risk-goals/{goal_id}
+```
+
+Cada goal persiste:
+
+- nome;
+- owner;
+- tipo de métrica;
+- tag de escopo opcional;
+- baseline congelado no momento da criação;
+- target máximo;
+- prazo;
+- status;
+- motivo;
+- ator de criação/alteração;
+- trilha de auditoria.
+
+Métricas suportadas:
+
+```text
+average_asset_risk_max
+assets_above_appetite_max
+open_findings_max
+critical_high_assets_max
+```
+
+O escopo vazio representa todos os ativos gerenciados. Quando `scope_tag` é informado, a população é dinâmica: ativos que entram ou saem da tag passam a participar da medição corrente.
+
+O baseline, porém, não é recalculado. Isso preserva a referência histórica da decisão.
+
+### Progresso
+
+Para metas de redução:
+
+```text
+progress = (baseline - current) / (baseline - target)
+```
+
+limitado a 0–100%.
+
+O sistema também calcula o valor esperado no momento atual por trajetória linear entre criação e prazo.
+
+Estados de pace:
+
+- `on_track`: valor atual igual ou melhor que a trajetória esperada;
+- `at_risk`: valor atual pior que o esperado para o tempo transcorrido;
+- `overdue`: prazo venceu e target não foi atingido;
+- `achieved`: target já foi atingido;
+- `completed`: target atingido e goal encerrado formalmente;
+- `cancelled`: goal cancelado.
+
+Um goal não pode ser marcado como `completed` enquanto o valor corrente estiver acima do target.
+
+## 13.3. Risk Program Overview
+
+A overview executiva combina métricas já existentes do ambiente, sem criar um score composto oculto:
+
+- ativos acima do appetite;
+- backlog acima do appetite sem ação;
+- threat-active assets;
+- exposição externa;
+- owner coverage;
+- Critical/High sem owner;
+- MTTR mediano;
+- taxa de evidência verificada;
+- patch job success rate;
+- goals em risco ou vencidos;
+- grupos do Remediation Hub;
+- maior redução potencial do grupo prioritário.
+
+Essa separação é intencional: **Asset Risk continua sendo o score técnico explicável; Program View é uma leitura executiva de métricas observáveis**.
+
 ## 14. Princípios de segurança
 
 O modelo segue estas regras:
