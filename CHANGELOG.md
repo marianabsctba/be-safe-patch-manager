@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.25.0
+
+- control plane e dashboard passam para versão 0.25.0; agente permanece em 0.16.0;
+- migration `0018_project_scope` adiciona filtros contextuais persistentes aos Remediation Projects;
+- escopo pode combinar patch reference com tag, business service, environment, asset owner, exposição externa/interna e criticidade mínima;
+- filtros usam o mesmo Asset Accountability / Risk Profile já existente, evitando taxonomia paralela;
+- projetos `static` aplicam o filtro na criação e congelam os finding IDs resultantes;
+- projetos `dynamic` reavaliam continuamente os filtros contextuais e deixam entradas/saídas explícitas como novos findings ou scope drift;
+- mudança de business service/environment/owner/exposure/criticalidade não é contada falsamente como remediação;
+- API de criação de projeto passa a aceitar filtros contextuais opcionais;
+- console ganhou filtros contextuais no modal de criação e passa a mostrar a regra efetiva de escopo em cada projeto;
+- adicionados testes cobrindo combinação de business context, exposição, criticidade e mudança dinâmica de contexto.
+
 ## 0.24.0
 
 - control plane e dashboard passam para versão 0.24.0; agente permanece em 0.16.0;
