@@ -129,6 +129,29 @@ class VulnerabilitySlaException(Base):
     finding = relationship("VulnerabilityFinding", back_populates="sla_exceptions")
 
 
+class RemediationProject(Base):
+    __tablename__ = "remediation_projects"
+
+    id = Column(String(36), primary_key=True)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    patch_ref = Column(String(255), nullable=False, index=True)
+    scope_mode = Column(String(32), nullable=False, default="static")
+    scope_tag = Column(String(128), nullable=False, default="", index=True)
+    owner = Column(String(255), nullable=False)
+    due_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    baseline_findings = Column(Integer, nullable=False, default=0)
+    baseline_assets = Column(Integer, nullable=False, default=0)
+    baseline_risk_reduction = Column(Float, nullable=False, default=0.0)
+    scope_snapshot_json = Column(Text, nullable=False, default="{}")
+    reason = Column(Text, nullable=False, default="")
+    created_by = Column(String(255), nullable=False)
+    updated_by = Column(String(255), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class RemediationEvidence(Base):
     __tablename__ = "remediation_evidence"
     __table_args__ = (
