@@ -19,7 +19,7 @@ os.environ["THREAT_INTEL_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine
 from app import main
-from app.models import Agent, AuditEvent, RemediationProject, VulnerabilityFinding
+from app.models import Agent, AssetRiskProfile, AuditEvent, RemediationProject, VulnerabilityFinding
 from app.schemas import RemediationProjectCreate, RemediationProjectUpdate
 
 
@@ -374,3 +374,104 @@ def test_project_history_persists_intelligence_fields(db, monkeypatch):
     assert item["sla_breached"] == 1
     assert item["external_assets"] == 1
     assert item["attention_status"] in {"critical", "needs_attention", "watch", "on_track"}
+
+
+
+def test_contextual_scope_filters_business_environment_external_and_criticality(db, monkeypatch):
+    prod = make_agent("ctx-prod", ["prod", "internet-facing", "critical"])
+    lab = make_agent("ctx-lab", ["lab"])
+    prod_profile = AssetRiskProfile(
+        agent=prod,
+        business_service="ERP",
+        environment="production",
+        owner="Infra ERP",
+        reason="Contexto de negócio",
+        updated_by="user:test",
+        updated_at=REFERENCE,
+    )
+    lab_profile = AssetRiskProfile(
+        agent=lab,
+        business_service="ERP",
+        environment="lab",
+        owner="Lab Team",
+        reason="Contexto de laboratório",
+        updated_by="user:test",
+        updated_at=REFERENCE,
+    )
+    db.add_all([
+        prod, lab, prod_profile, lab_profile,
+        make_finding("ctx-prod-f", prod),
+        make_finding("ctx-lab-f", lab),
+    ])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    result = main.create_remediation_project(
+        RemediationProjectCreate(
+            name="Contextual project",
+            patch_ref="KB5039999",
+            scope_mode="dynamic",
+            scope_tag="",
+            scope_business_service="ERP",
+            scope_environment="production",
+            scope_external=True,
+            scope_min_criticality=4,
+            owner="SecOps",
+            due_at=REFERENCE + timedelta(days=30),
+            reason="Priorizar ERP produtivo e exposto",
+        ),
+        principal={"actor": "user:operator", "role": "operator"},
+        db=db,
+    )
+
+    project = result["project"]
+    assert project["baseline_findings"] == 1
+    assert project["baseline_assets"] == 1
+    assert project["scope_filter"]["business_service"] == "ERP"
+    assert project["scope_filter"]["environment"] == "production"
+    assert project["scope_filter"]["external"] is True
+    assert project["scope_filter"]["min_criticality"] == 4
+    assert project["current_agent_ids"] == [prod.id]
+
+
+def test_dynamic_contextual_scope_reacts_to_business_context_change(db, monkeypatch):
+    agent = make_agent("ctx-dynamic", ["prod", "internet-facing", "critical"])
+    profile = AssetRiskProfile(
+        agent=agent,
+        business_service="Payments",
+        environment="production",
+        owner="Payments Team",
+        reason="Contexto inicial",
+        updated_by="user:test",
+        updated_at=REFERENCE,
+    )
+    finding = make_finding("ctx-dynamic-f", agent)
+    db.add_all([agent, profile, finding])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    result = main.create_remediation_project(
+        RemediationProjectCreate(
+            name="Dynamic contextual project",
+            patch_ref="KB5039999",
+            scope_mode="dynamic",
+            scope_business_service="Payments",
+            owner="SecOps",
+            due_at=REFERENCE + timedelta(days=30),
+            reason="Escopo dinâmico por serviço",
+        ),
+        principal={"actor": "user:operator", "role": "operator"},
+        db=db,
+    )
+    project_id = result["project"]["id"]
+
+    profile.business_service = "ERP"
+    db.commit()
+
+    project = db.get(RemediationProject, project_id)
+    data = main.serialize_remediation_project(db, project, REFERENCE)
+
+    assert data["current_open_findings"] == 0
+    assert data["scope_departures"] == 1
+    assert data["tracked_open_findings"] == 1
+    assert data["progress_percent"] == 0.0
