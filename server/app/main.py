@@ -6352,6 +6352,29 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
         if not target_agent:
             raise HTTPException(status_code=404, detail="target agent not found")
 
+    target_agent_ids = list(dict.fromkeys(
+        str(agent_id).strip()
+        for agent_id in body.target_agent_ids
+        if str(agent_id).strip()
+    ))
+    if body.target_agent_id and target_agent_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="use target_agent_id or target_agent_ids, not both",
+        )
+    target_agents = []
+    if target_agent_ids:
+        target_agents = db.query(Agent).filter(Agent.id.in_(target_agent_ids)).all()
+        found_ids = {agent.id for agent in target_agents}
+        missing_ids = [agent_id for agent_id in target_agent_ids if agent_id not in found_ids]
+        if missing_ids:
+            raise HTTPException(
+                status_code=404,
+                detail={"message": "one or more target agents were not found", "agent_ids": missing_ids[:20]},
+            )
+        if len(target_agents) != len(target_agent_ids):
+            raise HTTPException(status_code=409, detail="target agent snapshot could not be resolved")
+
     target_finding = None
     if body.target_finding_id:
         target_finding = db.get(VulnerabilityFinding, body.target_finding_id)
@@ -6359,6 +6382,13 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             raise HTTPException(status_code=404, detail="source vulnerability finding not found")
         if target_agent and target_finding.agent_id and target_finding.agent_id != target_agent.id:
             raise HTTPException(status_code=400, detail="vulnerability finding does not belong to target agent")
+        if len(target_agent_ids) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="a single source finding cannot be attached to a multi-asset campaign",
+            )
+        if target_agent_ids and target_finding.agent_id and target_finding.agent_id not in set(target_agent_ids):
+            raise HTTPException(status_code=400, detail="vulnerability finding does not belong to campaign target snapshot")
 
     if body.rollback_required and not body.prepare_rollback:
         raise HTTPException(status_code=400, detail="rollback_required requires prepare_rollback")
@@ -6382,6 +6412,8 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
         "rollback_required": body.rollback_required,
         "target_agent_id": target_agent.id if target_agent else "",
         "target_agent_hostname": target_agent.hostname if target_agent else "",
+        "target_agent_ids": target_agent_ids,
+        "target_agent_count": len(target_agent_ids),
         "source_finding_id": target_finding.id if target_finding else "",
         "source_cve": target_finding.cve if target_finding else "",
     }
@@ -6419,6 +6451,8 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             "prepare_rollback": body.prepare_rollback,
             "rollback_required": body.rollback_required,
             "target_agent_id": target_agent.id if target_agent else "",
+            "target_agent_count": len(target_agent_ids),
+            "target_agent_ids": target_agent_ids[:50],
             "source_finding_id": target_finding.id if target_finding else "",
         },
     )
