@@ -220,3 +220,25 @@ def test_project_creation_is_audited(db, monkeypatch):
         AuditEvent.event_type == "remediation_project.created"
     ).one()
     assert event.object_id == result["project"]["id"]
+
+
+
+def test_dynamic_project_separates_scope_departure_from_remediation(db, monkeypatch):
+    agent = make_agent("scope-drift-agent", ["prod"])
+    finding = make_finding("scope-drift-f", agent)
+    db.add_all([agent, finding])
+    db.commit()
+
+    result = create_project(db, monkeypatch, name="Scope drift project", scope_mode="dynamic")
+    project_id = result["project"]["id"]
+
+    agent.tags = main.dump(["lab"])
+    db.commit()
+
+    project = db.get(RemediationProject, project_id)
+    data = main.serialize_remediation_project(db, project, REFERENCE)
+
+    assert data["current_open_findings"] == 0
+    assert data["baseline_open_findings"] == 1
+    assert data["closed_from_baseline"] == 0
+    assert data["scope_departures"] == 1
