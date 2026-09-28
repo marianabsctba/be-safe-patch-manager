@@ -1304,6 +1304,44 @@ Capturas administrativas de criação/alteração são imediatas. Capturas autom
 
 A timeline permite distinguir **redução real de backlog** de mudanças de população/escopo ao longo do tempo.
 
+### Project Intelligence
+
+A partir da v0.24, Remediation Projects acompanham também a qualidade da remediação, não apenas a contagem de findings.
+
+O projeto calcula:
+
+- `remaining_risk_reduction`: redução de Asset Risk ainda disponível se os findings atuais forem remediados;
+- `realized_risk_reduction`: diferença entre a redução potencial do baseline e a redução ainda restante;
+- `risk_reduction_progress_percent`;
+- `expected_progress_percent`: progresso linear esperado entre criação e prazo;
+- `schedule_variance_percent`: progresso real menos progresso esperado;
+- findings em CISA KEV;
+- findings com SLA vencido, próximo ou em exceção;
+- quantidade de ativos externos;
+- aging médio e máximo;
+- EPSS médio e máximo quando disponível;
+- business services e owners envolvidos.
+
+O `attention_status` não é um novo score de risco. É uma classificação operacional explicável:
+
+```text
+critical
+needs_attention
+watch
+on_track
+```
+
+Exemplos de sinais que elevam atenção:
+
+- projeto vencido;
+- SLA vencido;
+- KEV em ativo externo;
+- atraso relevante contra o progresso esperado;
+- novos findings surgindo em escopo dynamic.
+
+A migration `0017_remediation_project_intelligence` persiste esses sinais nos snapshots históricos, permitindo acompanhar backlog e risk burndown separadamente.
+
+
 ## 14. Princípios de segurança
 
 O modelo segue estas regras:
