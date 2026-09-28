@@ -1331,7 +1331,8 @@ def _remediation_project_open_findings(
 ) -> list[VulnerabilityFinding]:
     tag = str(scope_tag or "").strip().lower()
     findings = db.query(VulnerabilityFinding).options(
-        selectinload(VulnerabilityFinding.agent),
+        selectinload(VulnerabilityFinding.agent).selectinload(Agent.risk_profile),
+        selectinload(VulnerabilityFinding.agent).selectinload(Agent.vulnerabilities),
     ).filter(
         VulnerabilityFinding.status == "open",
     ).all()
@@ -1397,7 +1398,8 @@ def serialize_remediation_project(
 
     baseline_rows = (
         db.query(VulnerabilityFinding).options(
-            selectinload(VulnerabilityFinding.agent),
+            selectinload(VulnerabilityFinding.agent).selectinload(Agent.risk_profile),
+            selectinload(VulnerabilityFinding.agent).selectinload(Agent.vulnerabilities),
         ).filter(
             VulnerabilityFinding.id.in_(baseline_ids)
         ).all()
