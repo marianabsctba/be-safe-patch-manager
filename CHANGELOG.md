@@ -63,6 +63,8 @@
 - migration `0012_risk_snapshot_details` enriquece snapshots de Asset Risk com model version, decomposition, cálculo, policy/appetite e governança;
 - histórico passa a explicar o score histórico sem depender de recálculo com regras futuras;
 - Asset Risk agora expõe `calculation` com base, multiplicadores, raw score e cap aplicado;
+- console ganhou Asset Risk Timeline por ativo com score, delta, appetite/policy, governança, model version e origem de cada snapshot;
+- Timeline e Risk Reduction Plan passam a ficar visíveis também para viewer, mantendo alterações de governança restritas;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
