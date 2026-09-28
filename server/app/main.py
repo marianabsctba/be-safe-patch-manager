@@ -721,10 +721,6 @@ def risk_reduction_opportunities_report(
                 1 for item in opportunities
                 if item["crosses_below_appetite"]
             ),
-            "total_simulated_reduction": round(
-                sum(item["risk_reduction"] for item in opportunities),
-                1,
-            ),
         },
         "items": opportunities,
         "note": "Each opportunity is an independent single-finding simulation. Reductions are not additive across rows.",
