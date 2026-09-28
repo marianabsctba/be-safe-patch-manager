@@ -724,6 +724,9 @@ function renderAssetRisk() {
     ['Em tratamento', summary.in_treatment_above_appetite || 0],
     ['Tratamento vencido', summary.overdue_treatment_above_appetite || 0],
     ['Sem ação', summary.untreated_above_appetite || summary.unaccepted_above_appetite || 0],
+    ['Com owner', summary.assets_with_owner || 0],
+    ['Sem owner', summary.assets_without_owner || 0],
+    ['Crít./alto sem owner', summary.critical_high_without_owner || 0],
   ].map(([label, value]) =>
     '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
   ).join('');
@@ -778,6 +781,9 @@ function renderAssetRisk() {
       '<td><strong>' + esc(crit.score == null ? '-' : crit.score) + '/5</strong></td>' +
       '<td>' + (exposure.external ? badge('externo', 'fail') : badge('interno', 'ok')) + '</td>' +
       '<td><strong>' + esc(risk.open_findings == null ? 0 : risk.open_findings) + '</strong></td>' +
+      '<td><small><strong>' + esc(((item.risk_profile || {}).owner) || 'sem owner') + '</strong>' +
+        '<br>' + esc(((item.risk_profile || {}).business_service) || 'sem serviço') +
+        '<br><span class="muted">' + esc(((item.risk_profile || {}).environment) || 'sem ambiente') + '</span></small></td>' +
       '<td><small>' + esc(factors.join(' · ') || '-') + '</small></td>' +
       '<td><small>' + esc(
         Array.isArray(risk.decomposition) && risk.decomposition.length
@@ -1215,6 +1221,13 @@ window.editAssetRiskProfile = async (agentId) => {
       .filter(Boolean);
   }
 
+  const ownerRaw = prompt('Owner responsável pelo ativo (opcional):', profile.owner || '');
+  if (ownerRaw === null) return;
+  const businessServiceRaw = prompt('Business service / aplicação (opcional):', profile.business_service || '');
+  if (businessServiceRaw === null) return;
+  const environmentRaw = prompt('Environment (ex.: prod, staging, dev, lab) (opcional):', profile.environment || '');
+  if (environmentRaw === null) return;
+
   const reason = prompt('Motivo da alteração do perfil de risco:');
   if (!reason || reason.trim().length < 5) {
     toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
@@ -1228,6 +1241,9 @@ window.editAssetRiskProfile = async (agentId) => {
         criticality,
         external,
         compensating_controls: compensatingControls,
+        owner: ownerRaw.trim(),
+        business_service: businessServiceRaw.trim(),
+        environment: environmentRaw.trim().toLowerCase(),
         reason: reason.trim(),
       }),
     });
