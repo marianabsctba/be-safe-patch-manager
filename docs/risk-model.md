@@ -603,6 +603,53 @@ Por isso, os valores de redução **não são aditivos entre linhas**. Remover d
 
 Esse relatório é somente leitura e não altera findings, evidência, campanhas, snapshots ou histórico.
 
+## 7.6. Risk Reduction Plan
+
+O Risk Reduction Plan monta uma sequência de remediação por ativo usando ganho marginal recalculado a cada passo.
+
+Endpoint:
+
+```http
+GET /api/admin/agents/{agent_id}/risk-reduction-plan?max_steps=25
+```
+
+Fluxo:
+
+```text
+score atual
+-> simula remover cada finding restante
+-> escolhe o maior ganho marginal
+-> recalcula o score
+-> repete sobre o conjunto restante
+-> para ao cruzar abaixo do appetite ou atingir max_steps
+```
+
+Cada passo retorna:
+
+- finding/CVE;
+- ação recomendada;
+- score antes;
+- score depois;
+- redução marginal;
+- redução acumulada;
+- indicação de cruzamento abaixo do appetite.
+
+A redução acumulada é calculada contra o score inicial do plano, e não pela soma cega de oportunidades independentes.
+
+O algoritmo é **guloso**: escolhe a melhor redução marginal disponível em cada etapa. Ele não afirma encontrar o ótimo global para todas as combinações possíveis de findings.
+
+O plano é somente leitura. Ele não altera:
+
+- status de finding;
+- evidência;
+- campanha;
+- Treatment Plan;
+- Risk Acceptance;
+- snapshot;
+- histórico.
+
+A finalidade é apoiar a ordem operacional de remediação com base no modelo de risco atual.
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
