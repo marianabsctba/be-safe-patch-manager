@@ -566,6 +566,43 @@ cruza abaixo do appetite: sim
 
 A intenção é apoiar priorização de remediação antes da execução.
 
+## 7.5. Risk Reduction Opportunities
+
+Além da simulação pontual, o Be Safe calcula oportunidades de redução de risco para findings abertos correlacionados a ativos gerenciados.
+
+Endpoint:
+
+```http
+GET /api/admin/reports/risk-reduction-opportunities
+```
+
+Para cada finding, a plataforma calcula de forma independente:
+
+- Asset Risk atual;
+- Asset Risk projetado sem aquele finding;
+- redução absoluta;
+- percentual de redução;
+- appetite efetivo;
+- se a remediação projetada cruza abaixo do appetite;
+- risco do finding;
+- estado de SLA;
+- ação recomendada pela fila de remediação.
+
+O ranking prioriza:
+
+```text
+maior redução absoluta
+> maior redução percentual
+> maior prioridade da recomendação
+> maior CVSS
+```
+
+Cada linha é uma simulação independente de um único finding.
+
+Por isso, os valores de redução **não são aditivos entre linhas**. Remover dois findings simultaneamente pode produzir um resultado diferente da soma dos deltas individuais, pois o modelo recalcula buckets, médias e multiplicadores sobre o conjunto restante.
+
+Esse relatório é somente leitura e não altera findings, evidência, campanhas, snapshots ou histórico.
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
