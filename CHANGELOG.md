@@ -40,6 +40,10 @@
 - aceite não reduz score nem altera evidência; apenas muda o estado de governança para `accepted` enquanto válido;
 - aceitações exigem admin, motivo e validade de até 365 dias, com revogação e auditoria;
 - console separa ativos acima do appetite em aceitos e não aceitos;
+- adicionado `AssetRiskTreatment` e migration `0011_risk_treatment`;
+- Treatment Plans possuem owner, ação, prazo, estados `planned/in_progress/completed/cancelled` e evidência obrigatória na conclusão;
+- relatório distingue `in_treatment`, `treatment_overdue`, `accepted` e `above_appetite`;
+- console permite criar e atualizar planos de tratamento por ativo;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
