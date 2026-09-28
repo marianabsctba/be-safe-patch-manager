@@ -872,40 +872,46 @@ function renderRiskPolicies() {
 
 window.createRiskPolicy = async () => {
   if (!requireRole('admin', 'Somente admin pode criar política de risco.')) return;
-  const name = prompt('Nome da política:');
-  if (!name || name.trim().length < 3) return;
-  const targetTag = prompt('Tag alvo (ex.: tier0, prod, lab):');
-  if (!targetTag || !targetTag.trim()) return;
-  const appetite = Number(prompt('Risk appetite 1–1000:', '700'));
-  if (!Number.isInteger(appetite) || appetite < 1 || appetite > 1000) {
-    toast('Risk appetite deve estar entre 1 e 1000.', 'fail');
-    return;
-  }
-  const priority = Number(prompt('Prioridade da política (maior vence):', '100'));
-  if (!Number.isInteger(priority) || priority < 1 || priority > 10000) {
-    toast('Prioridade inválida.', 'fail');
-    return;
-  }
-  const reason = prompt('Motivo da política:');
-  if (!reason || reason.trim().length < 5) return;
 
-  try {
-    await api('/api/admin/risk-policies', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: name.trim(),
-        target_tag: targetTag.trim().toLowerCase(),
-        risk_appetite: appetite,
-        priority,
-        enabled: true,
-        reason: reason.trim(),
-      }),
-    });
-    toast('Política de risco criada.');
-    await load();
-  } catch (error) {
-    toast('Política de risco: ' + error.message, 'fail');
-  }
+  openGovernanceModal({
+    kicker: 'RISK APPETITE POLICY',
+    title: 'Nova política de appetite',
+    context: 'A política altera o limite operacional dos ativos que casam com a tag. Ela não altera o Asset Risk.',
+    submitLabel: 'Criar política',
+    fields: [
+      { name: 'name', label: 'Nome', type: 'text', required: true, minLength: 3 },
+      { name: 'target_tag', label: 'Tag alvo', type: 'text', required: true, hint: 'Ex.: tier0, prod, lab.' },
+      { name: 'risk_appetite', label: 'Risk appetite', type: 'number', value: 700, min: 1, max: 1000, step: 1, required: true },
+      { name: 'priority', label: 'Prioridade', type: 'number', value: 100, min: 1, max: 10000, step: 1, required: true, hint: 'Maior prioridade vence quando mais de uma policy casa.' },
+      { name: 'reason', label: 'Motivo / decisão', type: 'textarea', required: true, minLength: 5, wide: true },
+    ],
+    onSubmit: async (values) => {
+      const name = String(values.name || '').trim();
+      const targetTag = String(values.target_tag || '').trim().toLowerCase();
+      const appetite = Number(values.risk_appetite);
+      const priority = Number(values.priority);
+      const reason = String(values.reason || '').trim();
+      if (name.length < 3) throw new Error('Nome precisa ter pelo menos 3 caracteres.');
+      if (!targetTag) throw new Error('Informe a tag alvo.');
+      if (!Number.isInteger(appetite) || appetite < 1 || appetite > 1000) throw new Error('Risk appetite deve ficar entre 1 e 1000.');
+      if (!Number.isInteger(priority) || priority < 1 || priority > 10000) throw new Error('Prioridade inválida.');
+      if (reason.length < 5) throw new Error('Informe um motivo com pelo menos 5 caracteres.');
+
+      await api('/api/admin/risk-policies', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          target_tag: targetTag,
+          risk_appetite: appetite,
+          priority,
+          enabled: true,
+          reason,
+        }),
+      });
+      toast('Política de risco criada.');
+      await load();
+    },
+  });
 };
 
 window.editRiskPolicy = async (policyId) => {
@@ -913,45 +919,55 @@ window.editRiskPolicy = async (policyId) => {
   const policy = (state.riskPolicies || []).find((item) => item.id === policyId);
   if (!policy) return;
 
-  const name = prompt('Nome:', policy.name);
-  if (name === null || name.trim().length < 3) return;
-  const tag = prompt('Tag alvo:', policy.target_tag);
-  if (tag === null || !tag.trim()) return;
-  const appetite = Number(prompt('Risk appetite 1–1000:', String(policy.risk_appetite)));
-  if (!Number.isInteger(appetite) || appetite < 1 || appetite > 1000) {
-    toast('Risk appetite inválido.', 'fail');
-    return;
-  }
-  const priority = Number(prompt('Prioridade (maior vence):', String(policy.priority)));
-  if (!Number.isInteger(priority) || priority < 1 || priority > 10000) {
-    toast('Prioridade inválida.', 'fail');
-    return;
-  }
-  const enabledRaw = prompt('Status: on ou off', policy.enabled ? 'on' : 'off');
-  if (enabledRaw === null || !['on', 'off'].includes(enabledRaw.trim().toLowerCase())) {
-    toast('Use on ou off.', 'fail');
-    return;
-  }
-  const reason = prompt('Motivo da alteração:');
-  if (!reason || reason.trim().length < 5) return;
+  openGovernanceModal({
+    kicker: 'RISK APPETITE POLICY',
+    title: 'Editar · ' + policy.name,
+    context: 'Tag ' + policy.target_tag + ' · appetite atual ' + policy.risk_appetite + ' · prioridade ' + policy.priority,
+    submitLabel: 'Salvar política',
+    fields: [
+      { name: 'name', label: 'Nome', type: 'text', value: policy.name, required: true, minLength: 3 },
+      { name: 'target_tag', label: 'Tag alvo', type: 'text', value: policy.target_tag, required: true },
+      { name: 'risk_appetite', label: 'Risk appetite', type: 'number', value: policy.risk_appetite, min: 1, max: 1000, step: 1, required: true },
+      { name: 'priority', label: 'Prioridade', type: 'number', value: policy.priority, min: 1, max: 10000, step: 1, required: true },
+      {
+        name: 'enabled',
+        label: 'Status',
+        type: 'select',
+        value: policy.enabled ? 'on' : 'off',
+        options: [
+          { value: 'on', label: 'Ativa' },
+          { value: 'off', label: 'Desativada' },
+        ],
+      },
+      { name: 'reason', label: 'Motivo da alteração', type: 'textarea', required: true, minLength: 5, wide: true },
+    ],
+    onSubmit: async (values) => {
+      const name = String(values.name || '').trim();
+      const targetTag = String(values.target_tag || '').trim().toLowerCase();
+      const appetite = Number(values.risk_appetite);
+      const priority = Number(values.priority);
+      const reason = String(values.reason || '').trim();
+      if (name.length < 3) throw new Error('Nome precisa ter pelo menos 3 caracteres.');
+      if (!targetTag) throw new Error('Informe a tag alvo.');
+      if (!Number.isInteger(appetite) || appetite < 1 || appetite > 1000) throw new Error('Risk appetite inválido.');
+      if (!Number.isInteger(priority) || priority < 1 || priority > 10000) throw new Error('Prioridade inválida.');
+      if (reason.length < 5) throw new Error('Informe um motivo com pelo menos 5 caracteres.');
 
-  try {
-    await api('/api/admin/risk-policies/' + policyId, {
-      method: 'PUT',
-      body: JSON.stringify({
-        name: name.trim(),
-        target_tag: tag.trim().toLowerCase(),
-        risk_appetite: appetite,
-        priority,
-        enabled: enabledRaw.trim().toLowerCase() === 'on',
-        reason: reason.trim(),
-      }),
-    });
-    toast('Política de risco atualizada.');
-    await load();
-  } catch (error) {
-    toast('Política de risco: ' + error.message, 'fail');
-  }
+      await api('/api/admin/risk-policies/' + policyId, {
+        method: 'PUT',
+        body: JSON.stringify({
+          name,
+          target_tag: targetTag,
+          risk_appetite: appetite,
+          priority,
+          enabled: String(values.enabled || 'on') === 'on',
+          reason,
+        }),
+      });
+      toast('Política de risco atualizada.');
+      await load();
+    },
+  });
 };
 
 
@@ -1050,32 +1066,52 @@ window.showRiskReductionPlan = async (agentId) => {
 
 window.createAssetRiskTreatment = async (agentId) => {
   if (!requireRole('admin', 'Somente admin pode criar plano de tratamento.')) return;
+  const item = state.assetRisk && Array.isArray(state.assetRisk.assets)
+    ? state.assetRisk.assets.find((asset) => asset.agent_id === agentId)
+    : null;
+  const profile = item ? (item.risk_profile || {}) : {};
 
-  const owner = prompt('Owner do plano de tratamento:');
-  if (!owner || owner.trim().length < 2) return;
-  const action = prompt('Ação planejada:');
-  if (!action || action.trim().length < 5) return;
-  const daysRaw = prompt('Prazo em dias:', '30');
-  const days = Number(daysRaw);
-  if (!Number.isInteger(days) || days < 1 || days > 3650) {
-    toast('Prazo inválido.', 'fail');
-    return;
-  }
+  openGovernanceModal({
+    kicker: 'RISK TREATMENT',
+    title: 'Novo plano de tratamento',
+    context:
+      (item ? item.hostname : agentId) +
+      ' · Asset Risk ' + (item && item.risk ? item.risk.score : '-') +
+      ' · owner ' + (profile.owner || 'não definido'),
+    submitLabel: 'Criar plano',
+    fields: [
+      { name: 'owner', label: 'Owner do plano', type: 'text', value: profile.owner || '', required: true, minLength: 2 },
+      { name: 'days', label: 'Prazo (dias)', type: 'number', value: 30, min: 1, max: 3650, step: 1, required: true },
+      {
+        name: 'action',
+        label: 'Ação planejada',
+        type: 'textarea',
+        required: true,
+        minLength: 5,
+        wide: true,
+        hint: 'Descreva a ação concreta de redução do risco.',
+      },
+    ],
+    onSubmit: async (values) => {
+      const owner = String(values.owner || '').trim();
+      const action = String(values.action || '').trim();
+      const days = Number(values.days);
+      if (owner.length < 2) throw new Error('Informe o owner do plano.');
+      if (action.length < 5) throw new Error('Descreva a ação planejada.');
+      if (!Number.isInteger(days) || days < 1 || days > 3650) throw new Error('Prazo inválido.');
 
-  try {
-    await api('/api/admin/agents/' + agentId + '/risk-treatments', {
-      method: 'POST',
-      body: JSON.stringify({
-        owner: owner.trim(),
-        action: action.trim(),
-        due_at: new Date(Date.now() + days * 86400000).toISOString(),
-      }),
-    });
-    toast('Plano de tratamento criado.');
-    await load();
-  } catch (error) {
-    toast('Plano de tratamento: ' + error.message, 'fail');
-  }
+      await api('/api/admin/agents/' + agentId + '/risk-treatments', {
+        method: 'POST',
+        body: JSON.stringify({
+          owner,
+          action,
+          due_at: new Date(Date.now() + days * 86400000).toISOString(),
+        }),
+      });
+      toast('Plano de tratamento criado.');
+      await load();
+    },
+  });
 };
 
 window.editAssetRiskTreatment = async (agentId, treatmentId) => {
@@ -1089,44 +1125,61 @@ window.editAssetRiskTreatment = async (agentId, treatmentId) => {
     return;
   }
 
-  const owner = prompt('Owner:', treatment.owner || '');
-  if (owner === null || owner.trim().length < 2) return;
-  const action = prompt('Ação:', treatment.action || '');
-  if (action === null || action.trim().length < 5) return;
-  const status = prompt(
-    'Status: planned, in_progress, completed ou cancelled',
-    treatment.status || 'planned'
-  );
-  if (status === null || !['planned', 'in_progress', 'completed', 'cancelled'].includes(status.trim())) {
-    toast('Status inválido.', 'fail');
-    return;
-  }
+  openGovernanceModal({
+    kicker: 'RISK TREATMENT',
+    title: 'Atualizar plano · ' + (item.hostname || agentId),
+    context:
+      'Prazo ' + when(treatment.due_at) +
+      ' · status ' + treatment.status +
+      (treatment.overdue ? ' · VENCIDO' : ''),
+    submitLabel: 'Salvar plano',
+    fields: [
+      { name: 'owner', label: 'Owner', type: 'text', value: treatment.owner || '', required: true, minLength: 2 },
+      {
+        name: 'status',
+        label: 'Status',
+        type: 'select',
+        value: treatment.status || 'planned',
+        options: [
+          { value: 'planned', label: 'Planned' },
+          { value: 'in_progress', label: 'In progress' },
+          { value: 'completed', label: 'Completed' },
+          { value: 'cancelled', label: 'Cancelled' },
+        ],
+      },
+      { name: 'action', label: 'Ação', type: 'textarea', value: treatment.action || '', required: true, minLength: 5, wide: true },
+      {
+        name: 'completion_evidence',
+        label: 'Evidência de conclusão',
+        type: 'textarea',
+        value: treatment.completion_evidence || '',
+        wide: true,
+        hint: 'Obrigatória quando o status for completed.',
+      },
+    ],
+    onSubmit: async (values) => {
+      const owner = String(values.owner || '').trim();
+      const action = String(values.action || '').trim();
+      const status = String(values.status || '').trim();
+      const evidence = String(values.completion_evidence || '').trim();
+      if (owner.length < 2) throw new Error('Informe o owner.');
+      if (action.length < 5) throw new Error('Descreva a ação.');
+      if (!['planned', 'in_progress', 'completed', 'cancelled'].includes(status)) throw new Error('Status inválido.');
+      if (status === 'completed' && evidence.length < 5) throw new Error('Informe evidência de conclusão.');
 
-  let evidence = treatment.completion_evidence || '';
-  if (status.trim() === 'completed') {
-    const entered = prompt('Evidência de conclusão (obrigatória):', evidence);
-    if (!entered || entered.trim().length < 5) {
-      toast('Informe evidência de conclusão.', 'fail');
-      return;
-    }
-    evidence = entered.trim();
-  }
-
-  try {
-    await api('/api/admin/agents/' + agentId + '/risk-treatments/' + treatmentId, {
-      method: 'PUT',
-      body: JSON.stringify({
-        owner: owner.trim(),
-        action: action.trim(),
-        status: status.trim(),
-        completion_evidence: evidence,
-      }),
-    });
-    toast('Plano de tratamento atualizado.');
-    await load();
-  } catch (error) {
-    toast('Plano de tratamento: ' + error.message, 'fail');
-  }
+      await api('/api/admin/agents/' + agentId + '/risk-treatments/' + treatmentId, {
+        method: 'PUT',
+        body: JSON.stringify({
+          owner,
+          action,
+          status,
+          completion_evidence: evidence,
+        }),
+      });
+      toast('Plano de tratamento atualizado.');
+      await load();
+    },
+  });
 };
 
 
