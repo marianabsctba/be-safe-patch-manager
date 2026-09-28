@@ -1448,9 +1448,86 @@ def serialize_remediation_project(
         else 100.0
     )
 
+    remaining_risk_reduction = _remediation_project_risk_reduction(open_findings, reference)
+    baseline_risk_reduction = round(float(project.baseline_risk_reduction or 0.0), 1)
+    realized_risk_reduction = round(
+        max(0.0, baseline_risk_reduction - remaining_risk_reduction),
+        1,
+    )
+    risk_reduction_progress_percent = (
+        round(
+            max(
+                0.0,
+                min(100.0, (realized_risk_reduction / baseline_risk_reduction) * 100.0),
+            ),
+            1,
+        )
+        if baseline_risk_reduction > 0
+        else (100.0 if tracked_open_count == 0 else 0.0)
+    )
+
+    age_days = []
+    kev_findings = 0
+    sla_breached = 0
+    sla_due_soon = 0
+    sla_exception = 0
+    epss_values = []
+    external_agent_ids = set()
+    business_services = set()
+    business_owners = set()
+
+    for finding in open_findings:
+        first_seen = finding.first_seen
+        if first_seen:
+            if first_seen.tzinfo is None:
+                first_seen = first_seen.replace(tzinfo=timezone.utc)
+            age_days.append(max(0.0, (reference - first_seen).total_seconds() / 86400.0))
+
+        risk = finding_detection_risk(finding, reference)
+        if risk.get("kev"):
+            kev_findings += 1
+        epss = risk.get("epss")
+        if epss is not None:
+            epss_values.append(float(epss))
+
+        sla = vulnerability_sla(finding, reference)
+        if sla.get("state") == "breached":
+            sla_breached += 1
+        elif sla.get("state") == "due_soon":
+            sla_due_soon += 1
+        elif sla.get("state") == "exception":
+            sla_exception += 1
+
+        agent = finding.agent
+        if agent:
+            if asset_exposure(agent).get("external"):
+                external_agent_ids.add(agent.id)
+            profile = agent.risk_profile
+            if profile:
+                if str(profile.business_service or "").strip():
+                    business_services.add(str(profile.business_service).strip())
+                if str(profile.owner or "").strip():
+                    business_owners.add(str(profile.owner).strip())
+
+    average_age_days = round(sum(age_days) / len(age_days), 1) if age_days else 0.0
+    oldest_age_days = round(max(age_days), 1) if age_days else 0.0
+    average_epss = round(sum(epss_values) / len(epss_values), 4) if epss_values else None
+    max_epss = round(max(epss_values), 4) if epss_values else None
+
     due_at = project.due_at
     if due_at.tzinfo is None:
         due_at = due_at.replace(tzinfo=timezone.utc)
+    created_at = project.created_at
+    if created_at and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    schedule_duration = max(1.0, (due_at - created_at).total_seconds()) if created_at else 1.0
+    elapsed = max(0.0, (reference - created_at).total_seconds()) if created_at else 0.0
+    expected_progress_percent = round(
+        max(0.0, min(100.0, (elapsed / schedule_duration) * 100.0)),
+        1,
+    )
+    schedule_variance_percent = round(progress - expected_progress_percent, 1)
+
     achieved = tracked_open_count == 0
     if project.status == "completed":
         pace_status = "completed"
@@ -1465,6 +1542,21 @@ def serialize_remediation_project(
     else:
         pace_status = "in_progress"
 
+    if project.status == "completed":
+        attention_status = "completed"
+    elif project.status == "cancelled":
+        attention_status = "cancelled"
+    elif pace_status == "overdue":
+        attention_status = "critical"
+    elif sla_breached > 0 or (kev_findings > 0 and len(external_agent_ids) > 0):
+        attention_status = "critical"
+    elif schedule_variance_percent <= -20.0 or len(new_findings) > 0:
+        attention_status = "needs_attention"
+    elif schedule_variance_percent <= -10.0 or kev_findings > 0 or sla_due_soon > 0:
+        attention_status = "watch"
+    else:
+        attention_status = "on_track"
+
     return {
         "id": project.id,
         "name": project.name,
@@ -1478,7 +1570,10 @@ def serialize_remediation_project(
         "achieved": achieved,
         "baseline_findings": baseline_count,
         "baseline_assets": int(project.baseline_assets or 0),
-        "baseline_risk_reduction": round(float(project.baseline_risk_reduction or 0.0), 1),
+        "baseline_risk_reduction": baseline_risk_reduction,
+        "remaining_risk_reduction": remaining_risk_reduction,
+        "realized_risk_reduction": realized_risk_reduction,
+        "risk_reduction_progress_percent": risk_reduction_progress_percent,
         "current_open_findings": current_count,
         "tracked_open_findings": tracked_open_count,
         "current_assets": len(current_agent_ids),
@@ -1487,6 +1582,20 @@ def serialize_remediation_project(
         "scope_departures": len(scope_departures),
         "new_findings_since_baseline": len(new_findings),
         "progress_percent": round(progress, 1),
+        "expected_progress_percent": expected_progress_percent,
+        "schedule_variance_percent": schedule_variance_percent,
+        "attention_status": attention_status,
+        "sla_breached": sla_breached,
+        "sla_due_soon": sla_due_soon,
+        "sla_exception": sla_exception,
+        "kev_findings": kev_findings,
+        "external_assets": len(external_agent_ids),
+        "average_age_days": average_age_days,
+        "oldest_age_days": oldest_age_days,
+        "average_epss": average_epss,
+        "max_epss": max_epss,
+        "business_services": sorted(business_services),
+        "business_owners": sorted(business_owners),
         "campaign_ready": 0 < len(current_agent_ids) <= 500,
         "current_agent_ids": sorted(current_agent_ids) if len(current_agent_ids) <= 500 else [],
         "current_finding_ids": sorted(current_open_ids) if len(current_open_ids) <= 1000 else [],
@@ -1536,6 +1645,17 @@ def capture_remediation_project_snapshots(
             new_findings_since_baseline=data["new_findings_since_baseline"],
             scope_departures=data["scope_departures"],
             progress_percent=data["progress_percent"],
+            remaining_risk_reduction=data["remaining_risk_reduction"],
+            realized_risk_reduction=data["realized_risk_reduction"],
+            risk_reduction_progress_percent=data["risk_reduction_progress_percent"],
+            expected_progress_percent=data["expected_progress_percent"],
+            schedule_variance_percent=data["schedule_variance_percent"],
+            sla_breached=data["sla_breached"],
+            kev_findings=data["kev_findings"],
+            external_assets=data["external_assets"],
+            average_age_days=data["average_age_days"],
+            oldest_age_days=data["oldest_age_days"],
+            attention_status=data["attention_status"],
             pace_status=data["pace_status"],
             source=source,
             captured_at=reference,
@@ -1574,6 +1694,17 @@ def remediation_project_history(
             "new_findings_since_baseline": row.new_findings_since_baseline,
             "scope_departures": row.scope_departures,
             "progress_percent": row.progress_percent,
+            "remaining_risk_reduction": row.remaining_risk_reduction,
+            "realized_risk_reduction": row.realized_risk_reduction,
+            "risk_reduction_progress_percent": row.risk_reduction_progress_percent,
+            "expected_progress_percent": row.expected_progress_percent,
+            "schedule_variance_percent": row.schedule_variance_percent,
+            "sla_breached": row.sla_breached,
+            "kev_findings": row.kev_findings,
+            "external_assets": row.external_assets,
+            "average_age_days": row.average_age_days,
+            "oldest_age_days": row.oldest_age_days,
+            "attention_status": row.attention_status,
             "pace_status": row.pace_status,
             "source": row.source,
             "captured_at": row.captured_at.isoformat() if row.captured_at else None,
@@ -1608,6 +1739,33 @@ def remediation_projects_report(
                 for item in items
                 if item["status"] in {"active", "awaiting_verification"}
             ),
+            "critical_attention": sum(
+                1 for item in items
+                if item["attention_status"] == "critical"
+            ),
+            "needs_attention": sum(
+                1 for item in items
+                if item["attention_status"] == "needs_attention"
+            ),
+            "kev_findings": sum(
+                item["kev_findings"]
+                for item in items
+                if item["status"] in {"active", "awaiting_verification"}
+            ),
+            "sla_breached": sum(
+                item["sla_breached"]
+                for item in items
+                if item["status"] in {"active", "awaiting_verification"}
+            ),
+            "remaining_risk_reduction": round(sum(
+                item["remaining_risk_reduction"]
+                for item in items
+                if item["status"] in {"active", "awaiting_verification"}
+            ), 1),
+            "realized_risk_reduction": round(sum(
+                item["realized_risk_reduction"]
+                for item in items
+            ), 1),
         },
         "items": items,
         "note": "Projects govern remediation work. They do not deploy patches or mutate vulnerability evidence.",
