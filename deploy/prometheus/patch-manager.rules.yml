@@ -64,6 +64,24 @@ groups:
           summary: Enriquecimento EPSS/KEV sem sync utilizável
           description: A integração de threat intel está habilitada, mas nenhuma fonte produziu um sync utilizável recentemente.
 
+      - alert: PatchManagerThreatIntelStale
+        expr: patch_manager_threat_intel_enabled == 1 and patch_manager_threat_intel_stale == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Threat Intel desatualizada
+          description: O último sync utilizável de EPSS/KEV ultrapassou a janela de freshness configurada.
+
+      - alert: PatchManagerThreatIntelDegraded
+        expr: patch_manager_threat_intel_enabled == 1 and patch_manager_threat_intel_degraded == 1
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: Threat Intel operando em modo degradado
+          description: Apenas parte das fontes de Threat Intel respondeu no último sync utilizável.
+
       - alert: PatchManagerHighOfflineRatio
         expr: |
           (patch_manager_agents_offline / (patch_manager_agents_online + patch_manager_agents_offline)) > 0.10
