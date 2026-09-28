@@ -1261,6 +1261,9 @@ def serialize_asset_risk_profile(profile: AssetRiskProfile | None) -> dict | Non
             if profile.controls_json is not None
             else None
         ),
+        "owner": profile.owner,
+        "business_service": profile.business_service,
+        "environment": profile.environment,
         "reason": profile.reason,
         "updated_by": profile.updated_by,
         "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
@@ -1812,6 +1815,23 @@ def asset_risk_report(
         "average_score": round(
             sum(row["risk"]["score"] for row in rows) / len(rows), 1
         ) if rows else 0.0,
+        "assets_with_owner": sum(
+            1 for row in rows
+            if (row.get("risk_profile") or {}).get("owner")
+        ),
+        "assets_without_owner": sum(
+            1 for row in rows
+            if not (row.get("risk_profile") or {}).get("owner")
+        ),
+        "assets_with_business_service": sum(
+            1 for row in rows
+            if (row.get("risk_profile") or {}).get("business_service")
+        ),
+        "critical_high_without_owner": sum(
+            1 for row in rows
+            if row["risk"]["level"] in {"critical", "high"}
+            and not (row.get("risk_profile") or {}).get("owner")
+        ),
     }
     return {
         "generated_at": reference.isoformat(),
@@ -4939,6 +4959,9 @@ def update_asset_risk_profile(
         if normalized_controls is not None
         else None
     )
+    profile.owner = (body.owner or "").strip()
+    profile.business_service = (body.business_service or "").strip()
+    profile.environment = (body.environment or "").strip().lower()
     reason = body.reason.strip()
     if len(reason) < 5:
         raise HTTPException(status_code=400, detail="risk profile reason must contain at least 5 non-space characters")
