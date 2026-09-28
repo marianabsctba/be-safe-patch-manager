@@ -16,6 +16,7 @@ const state = {
   patchConfidence: null,
   businessContext: null,
   remediationPerformance: null,
+  riskGoals: null,
   campaignTargetAgentIds: [],
   riskReduction: null,
   assetRisk: null,
@@ -242,7 +243,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, activeThreatWatch, patchConfidence, businessContext, remediationPerformance, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, activeThreatWatch, patchConfidence, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -254,6 +255,7 @@ async function load() {
       api('/api/admin/reports/patch-confidence'),
       api('/api/admin/reports/business-context'),
       api('/api/admin/reports/remediation-performance'),
+      api('/api/admin/risk-goals'),
       api('/api/admin/reports/risk-reduction-opportunities'),
       api('/api/admin/reports/asset-risk'),
       api('/api/admin/risk-policies'),
@@ -275,6 +277,7 @@ async function load() {
     state.patchConfidence = patchConfidence;
     state.businessContext = businessContext;
     state.remediationPerformance = remediationPerformance;
+    state.riskGoals = riskGoals;
     state.riskReduction = riskReduction;
     state.assetRisk = assetRisk;
     state.riskPolicies = riskPolicies;
@@ -317,6 +320,7 @@ function renderAll() {
   renderPatchConfidence();
   renderBusinessContext();
   renderRemediationPerformance();
+  renderRiskGoals();
   renderRiskReductionOpportunities();
   renderAssetRisk();
   renderVulnerabilities();
@@ -335,6 +339,7 @@ function renderSummary(summary) {
   const hubSummary = (state.remediationHub || {}).summary || {};
   const confidenceSummary = (state.patchConfidence || {}).summary || {};
   const riskSummary = (state.assetRisk || {}).summary || {};
+  const goalSummary = (state.riskGoals || {}).summary || {};
   const ownerCoverage = riskSummary.assets
     ? Math.round((Number(riskSummary.assets_with_owner || 0) / Number(riskSummary.assets)) * 100)
     : 0;
@@ -353,6 +358,8 @@ function renderSummary(summary) {
     { label: 'Ativos risco crítico', value: summary.critical_risk_assets || 0, hint: 'score 850–1000', cls: summary.critical_risk_assets ? 'danger' : 'ok' },
     { label: 'Risco médio ativos', value: summary.average_asset_risk || 0, hint: 'escala 0–1000', cls: 'neutral' },
     { label: 'Acima do apetite', value: summary.assets_above_risk_appetite || 0, hint: 'policy efetiva / global', cls: summary.assets_above_risk_appetite ? 'danger' : 'ok' },
+    { label: 'Goals em risco', value: goalSummary.at_risk || 0, hint: 'fora do pace esperado', cls: goalSummary.at_risk ? 'warn' : 'ok' },
+    { label: 'Goals vencidos', value: goalSummary.overdue || 0, hint: 'prazo excedido', cls: goalSummary.overdue ? 'danger' : 'ok' },
     { label: 'Risco aceito', value: summary.assets_risk_accepted || 0, hint: 'aceites ativos', cls: summary.assets_risk_accepted ? 'accent' : 'ok' },
     { label: 'Em tratamento', value: summary.assets_risk_in_treatment || 0, hint: 'planos ativos acima do appetite', cls: summary.assets_risk_in_treatment ? 'warn' : 'ok' },
     { label: 'Tratamento vencido', value: summary.assets_risk_treatment_overdue || 0, hint: 'prazo de treatment excedido', cls: summary.assets_risk_treatment_overdue ? 'danger' : 'ok' },
@@ -381,6 +388,53 @@ function renderSummary(summary) {
     </article>
   `).join('');
 }
+
+function riskGoalPaceBadge(status) {
+  if (status === 'achieved' || status === 'completed') return badge('ATINGIDA', 'ok');
+  if (status === 'on_track') return badge('ON TRACK', 'ok');
+  if (status === 'at_risk') return badge('AT RISK', 'warn');
+  if (status === 'overdue') return badge('OVERDUE', 'fail');
+  if (status === 'cancelled') return badge('CANCELADA', 'muted-badge');
+  return badge(status || '-', 'info');
+}
+
+function renderRiskGoals() {
+  const report = state.riskGoals || {};
+  const summary = report.summary || {};
+  const items = Array.isArray(report.items) ? report.items : [];
+  const stats = $('#riskGoalStats');
+  const table = $('#riskGoalTable');
+  if (!stats || !table) return;
+
+  stats.innerHTML = [
+    ['Ativas', summary.active || 0],
+    ['Atingidas', summary.achieved || 0],
+    ['On track', summary.on_track || 0],
+    ['At risk', summary.at_risk || 0],
+    ['Overdue', summary.overdue || 0],
+  ].map(([label, value]) =>
+    '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+  ).join('');
+
+  if (!items.length) {
+    table.innerHTML = '<tr><td colspan="8"><div class="empty-state">Nenhuma meta de redução de risco criada.</div></td></tr>';
+    return;
+  }
+
+  table.innerHTML = items.map((goal) =>
+    '<tr>' +
+      '<td><strong>' + esc(goal.name) + '</strong><br><small class="muted">' + esc(goal.goal_label || goal.goal_type) + '</small></td>' +
+      '<td>' + esc(goal.scope_tag ? 'tag:' + goal.scope_tag : 'todos os ativos') + '<br><small class="muted">' + esc(goal.scoped_assets || 0) + ' ativos</small></td>' +
+      '<td><strong>' + esc(goal.baseline_value) + ' → ' + esc(goal.current_value) + ' → ' + esc(goal.target_value) + '</strong></td>' +
+      '<td><strong>' + esc(goal.progress_percent) + '%</strong><br><small class="muted">esperado agora ≤ ' + esc(goal.expected_value_now) + '</small></td>' +
+      '<td>' + riskGoalPaceBadge(goal.pace_status) + '</td>' +
+      '<td><strong>' + esc(goal.owner) + '</strong></td>' +
+      '<td>' + esc(when(goal.due_at)) + '</td>' +
+      '<td>' + (roleAtLeast('operator') ? '<button class="row-action" onclick="editRiskGoal(\'' + goal.id + '\')">Gerenciar</button>' : '') + '</td>' +
+    '</tr>'
+  ).join('');
+}
+
 
 function renderCompliance(summary) {
   const pct = Math.max(0, Math.min(100, Number(summary.compliance_percent || 0)));
@@ -869,6 +923,104 @@ function renderRiskPolicies() {
       ).join('')
     : '<div class="empty-state">Nenhuma política por tag. Vale o appetite global.</div>';
 }
+
+window.createRiskGoal = async () => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+  const due = new Date(Date.now() + 30 * 86400000);
+  const localDue = new Date(due.getTime() - due.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+
+  openGovernanceModal({
+    kicker: 'RISK REDUCTION GOAL',
+    title: 'Nova meta de redução',
+    context: 'O baseline será congelado agora. O valor atual será recalculado continuamente sobre o escopo dinâmico.',
+    submitLabel: 'Criar meta',
+    fields: [
+      { name: 'name', label: 'Nome', type: 'text', required: true, minLength: 3 },
+      {
+        name: 'goal_type',
+        label: 'Métrica',
+        type: 'select',
+        value: 'assets_above_appetite_max',
+        options: [
+          { value: 'assets_above_appetite_max', label: 'Ativos acima do appetite' },
+          { value: 'average_asset_risk_max', label: 'Asset Risk médio' },
+          { value: 'open_findings_max', label: 'Findings abertos' },
+          { value: 'critical_high_assets_max', label: 'Ativos Critical/High' },
+        ],
+      },
+      { name: 'scope_tag', label: 'Tag de escopo', type: 'text', hint: 'Vazio = todos os ativos gerenciados.' },
+      { name: 'target_value', label: 'Target máximo', type: 'number', min: 0, step: 0.1, required: true },
+      { name: 'owner', label: 'Owner', type: 'text', required: true, minLength: 2 },
+      { name: 'due_at', label: 'Prazo', type: 'datetime-local', value: localDue, required: true },
+      { name: 'reason', label: 'Objetivo / justificativa', type: 'textarea', required: true, minLength: 5, wide: true },
+    ],
+    onSubmit: async (values) => {
+      const target = Number(values.target_value);
+      if (!Number.isFinite(target) || target < 0) throw new Error('Target inválido.');
+      await api('/api/admin/risk-goals', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: String(values.name || '').trim(),
+          goal_type: String(values.goal_type || ''),
+          scope_tag: String(values.scope_tag || '').trim().toLowerCase(),
+          target_value: target,
+          owner: String(values.owner || '').trim(),
+          due_at: new Date(values.due_at).toISOString(),
+          reason: String(values.reason || '').trim(),
+        }),
+      });
+      toast('Meta de redução criada com baseline congelado.');
+      await load();
+    },
+  });
+};
+
+window.editRiskGoal = async (goalId) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+  const goal = ((state.riskGoals || {}).items || []).find((item) => item.id === goalId);
+  if (!goal) return;
+  const due = new Date(goal.due_at);
+  const localDue = new Date(due.getTime() - due.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+
+  openGovernanceModal({
+    kicker: 'RISK REDUCTION GOAL',
+    title: 'Gerenciar · ' + goal.name,
+    context: 'Baseline ' + goal.baseline_value + ' · atual ' + goal.current_value + ' · target ' + goal.target_value + ' · ' + goal.progress_percent + '%',
+    submitLabel: 'Salvar meta',
+    fields: [
+      { name: 'target_value', label: 'Target máximo', type: 'number', value: goal.target_value, min: 0, step: 0.1, required: true },
+      { name: 'owner', label: 'Owner', type: 'text', value: goal.owner, required: true, minLength: 2 },
+      { name: 'due_at', label: 'Prazo', type: 'datetime-local', value: localDue, required: true },
+      {
+        name: 'status',
+        label: 'Status',
+        type: 'select',
+        value: goal.status,
+        options: [
+          { value: 'active', label: 'Ativa' },
+          { value: 'completed', label: 'Concluída (exige target atingido)' },
+          { value: 'cancelled', label: 'Cancelada' },
+        ],
+      },
+      { name: 'reason', label: 'Motivo da alteração', type: 'textarea', required: true, minLength: 5, wide: true },
+    ],
+    onSubmit: async (values) => {
+      await api('/api/admin/risk-goals/' + goalId, {
+        method: 'PUT',
+        body: JSON.stringify({
+          target_value: Number(values.target_value),
+          owner: String(values.owner || '').trim(),
+          due_at: new Date(values.due_at).toISOString(),
+          status: String(values.status || 'active'),
+          reason: String(values.reason || '').trim(),
+        }),
+      });
+      toast('Meta de redução atualizada.');
+      await load();
+    },
+  });
+};
+
 
 window.createRiskPolicy = async () => {
   if (!requireRole('admin', 'Somente admin pode criar política de risco.')) return;
