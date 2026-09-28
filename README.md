@@ -32,6 +32,11 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - Risk Reduction Plan por ativo, recalculando ganho marginal passo a passo até atingir o appetite ou o limite de etapas;
 - histórico auditável de Asset Risk com model version, decomposition, cálculo intermediário, policy/appetite e estado de governança persistidos por snapshot;
 - timeline por ativo na console, mostrando evolução de score, appetite/policy, governança e versão do modelo ao longo do tempo;
+- Remediation Hub por patch/action com impacto agregado recalculado por ativo;
+- Active Threat Watch baseado em CISA KEV, EPSS e ransomware known;
+- Patch Confidence a partir do histórico local de deploys;
+- Asset Accountability com owner, business service e environment;
+- Business Context Segments e Remediation Performance com MTTR, evidência e patch success;
 - etapas elegíveis do plano podem pré-preencher um draft de campanha, mantendo criação e deploy sob controle explícito do operador;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
