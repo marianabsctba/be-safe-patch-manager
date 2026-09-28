@@ -21,7 +21,7 @@ os.environ["GREENBONE_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine
 from app.main import app, now
-from app.models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
+from app.models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RiskReductionGoal, VulnerabilityFinding
 from app import observability
 
 
@@ -319,3 +319,51 @@ def test_threat_intel_metrics_distinguish_degraded_and_stale(monkeypatch):
         if line.startswith("patch_manager_threat_intel_age_seconds ")
     )
     assert float(age_line.split()[-1]) >= 3600
+
+
+
+def test_metrics_expose_overdue_risk_programs():
+    db = SessionLocal()
+    try:
+        project = RemediationProject(
+            id="obs-project-overdue",
+            name="Obs Project Overdue",
+            patch_ref="KB5099999",
+            scope_mode="static",
+            scope_tag="",
+            owner="SecOps",
+            due_at=now() - timedelta(hours=2),
+            status="active",
+            baseline_findings=1,
+            baseline_assets=1,
+            baseline_risk_reduction=10.0,
+            scope_snapshot_json='{"finding_ids":[]}',
+            reason="Teste de observabilidade",
+            created_by="user:test",
+            updated_by="user:test",
+        )
+        goal = RiskReductionGoal(
+            id="obs-goal-overdue",
+            name="Obs Goal Overdue",
+            scope_tag="",
+            goal_type="open_findings_max",
+            target_value=0.0,
+            baseline_value=1.0,
+            owner="SecOps",
+            due_at=now() - timedelta(hours=1),
+            status="active",
+            reason="Teste de observabilidade",
+            created_by="user:test",
+            updated_by="user:test",
+        )
+        db.add_all([project, goal])
+        db.commit()
+    finally:
+        db.close()
+
+    body = TestClient(app).get("/metrics").text
+
+    assert 'patch_manager_remediation_projects{status="active"} 1.0' in body
+    assert "patch_manager_remediation_projects_overdue 1.0" in body
+    assert 'patch_manager_risk_goals{status="active"} 1.0' in body
+    assert "patch_manager_risk_goals_overdue 1.0" in body
