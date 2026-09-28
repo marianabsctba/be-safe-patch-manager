@@ -279,3 +279,68 @@ def test_risk_reduction_plan_exposes_campaign_eligibility(db, monkeypatch):
     assert step["finding_id"] == finding.id
     assert "eligible_for_campaign" in step
     assert step["patch_refs"] == ["KB5039999"]
+
+
+
+def test_remediation_hub_groups_findings_by_patch_reference(db, monkeypatch):
+    a1 = make_agent("hub-a1")
+    a2 = make_agent("hub-a2")
+    f1 = make_finding("hub-f1", "critical", 9.8, 0.95, True)
+    f2 = make_finding("hub-f2", "high", 8.0, 0.6, False)
+    f1.agent = a1
+    f2.agent = a2
+    f1.patch_refs_json = main.dump(["KB-HUB-001"])
+    f2.patch_refs_json = main.dump(["KB-HUB-001"])
+    db.add_all([a1, a2, f1, f2])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    report = main.remediation_hub_report(db, REFERENCE)
+
+    assert report["mode"] == "simulation_only"
+    assert report["summary"]["remediation_groups"] == 1
+    item = report["items"][0]
+    assert item["patch_ref"] == "KB-HUB-001"
+    assert item["finding_count"] == 2
+    assert item["asset_count"] == 2
+    assert item["risk_reduction"] >= 0
+    assert len(item["affected_assets"]) == 2
+
+
+def test_remediation_hub_recalculates_group_impact_per_asset(db, monkeypatch):
+    agent = make_agent("hub-one")
+    f1 = make_finding("hub-one-f1", "critical", 9.8, 0.95, True)
+    f2 = make_finding("hub-one-f2", "high", 8.0, 0.6, False)
+    f3 = make_finding("hub-one-other", "medium", 5.0, 0.1, False)
+    for finding in (f1, f2, f3):
+        finding.agent = agent
+    f1.patch_refs_json = main.dump(["PKG-SECURITY"])
+    f2.patch_refs_json = main.dump(["PKG-SECURITY"])
+    f3.patch_refs_json = main.dump(["OTHER"])
+    db.add_all([agent, f1, f2, f3])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    report = main.remediation_hub_report(db, REFERENCE)
+    item = next(row for row in report["items"] if row["patch_ref"] == "PKG-SECURITY")
+
+    assert item["finding_count"] == 2
+    assert item["asset_count"] == 1
+    assert item["single_asset_campaign_ready"] is True
+    asset = item["affected_assets"][0]
+    assert asset["projected_score"] <= asset["before_score"]
+
+
+def test_remediation_hub_is_read_only(db, monkeypatch):
+    agent = make_agent("hub-readonly")
+    finding = make_finding("hub-readonly-f", "critical", 9.8, 0.95, True)
+    finding.agent = agent
+    finding.patch_refs_json = main.dump(["KB-READONLY"])
+    db.add_all([agent, finding])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    main.remediation_hub_report(db, REFERENCE)
+    db.refresh(finding)
+
+    assert finding.status == "open"
