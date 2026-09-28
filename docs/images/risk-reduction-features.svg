@@ -20,4 +20,11 @@
 <rect x="1060" y="500" width="380" height="210" rx="22" class="panel"/>
 <text x="1088" y="544" class="txt h2">Asset Accountability</text><text x="1088" y="582" class="muted small">owner · business service · environment</text>
 <text x="1088" y="624" class="txt small">contexto sem alterar score</text><text x="1088" y="654" class="yellow small">governança continua explícita</text>
+
+<g id="remediation-projects">
+  <rect x="1030" y="735" width="500" height="105" rx="20" class="panel"/>
+  <text x="1058" y="776" class="txt h2">Remediation Project</text>
+  <text x="1058" y="808" class="muted small">owner · prazo · static/dynamic scope · progresso · drift</text>
+  <text x="1058" y="833" class="pink small">governança → campaign draft → deploy explícito</text>
+</g>
 </svg>
