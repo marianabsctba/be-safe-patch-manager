@@ -139,3 +139,33 @@ def test_matched_finding_without_patch_reference_recommends_triage(db):
     assert rec["action"] == "scan_or_manual_triage"
     assert rec["eligible_for_campaign"] is True
     assert rec["patchable"] is False
+
+
+
+def test_vulnerability_list_applies_limit_after_risk_sort(db):
+    agent = make_agent()
+    older_urgent = make_finding(
+        "older-urgent",
+        agent=agent,
+        cvss=9.8,
+        age_hours=240,
+        raw={"threat_intel": {"epss": 0.95, "kev": True}},
+    )
+    newer_lower = make_finding(
+        "newer-lower",
+        agent=agent,
+        cvss=7.0,
+        age_hours=1,
+        raw={"threat_intel": {"epss": 0.01, "kev": False}},
+    )
+    db.add_all([agent, older_urgent, newer_lower])
+    db.commit()
+
+    items = main.list_vulnerabilities(
+        limit=1,
+        _={"actor": "viewer"},
+        db=db,
+    )
+
+    assert len(items) == 1
+    assert items[0]["id"] == older_urgent.id
