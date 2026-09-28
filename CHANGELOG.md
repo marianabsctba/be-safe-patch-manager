@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.28.0
+
+- control plane e dashboard passam para versão 0.28.0; agente permanece em 0.16.0;
+- adicionado Approval Gate persistente por campanha com migration 0020_campaign_approvals;
+- campanhas podem exigir aprovação administrativa antes do primeiro deploy, com motivo da solicitação e decisão auditada;
+- segregação de função impede o solicitante de aprovar a própria campanha;
+- deploy falha fechado enquanto aprovação obrigatória estiver pending, rejected ou ausente;
+- Remediation Decision Engine passa a recomendar Approval Gate automaticamente para P0 ou change risk alto;
+- drafts preparados pelo Remediation Hub herdam a exigência e o motivo sugerido, mantendo decisão humana separada do deploy;
+- console mostra estado de aprovação por campanha e permite approve/reject para admins;
+- adicionados testes para pending gate, aprovação por segundo ator e bloqueio de self-approval.
+
 ## 0.27.0
 
 - control plane e dashboard passam para versão 0.27.0; agente permanece em 0.16.0;

@@ -103,6 +103,12 @@ class CampaignCreate(BaseModel):
     target_agent_id: str = ""
     target_agent_ids: List[str] = Field(default_factory=list, max_length=500)
     target_finding_id: str = ""
+    approval_required: bool = False
+    approval_reason: str = Field(default="", max_length=1000)
+
+
+class CampaignApprovalDecision(BaseModel):
+    reason: str = Field(min_length=5, max_length=1000)
 
 
 class VulnerabilityFindingInput(BaseModel):

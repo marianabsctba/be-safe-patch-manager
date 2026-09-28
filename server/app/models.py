@@ -54,6 +54,23 @@ class Campaign(Base):
 
     jobs = relationship("PatchJob", back_populates="campaign", cascade="all, delete-orphan")
     remediation_evidence = relationship("RemediationEvidence", back_populates="campaign")
+    approval = relationship("CampaignApproval", back_populates="campaign", uselist=False, cascade="all, delete-orphan")
+
+
+class CampaignApproval(Base):
+    __tablename__ = "campaign_approvals"
+
+    id = Column(String(36), primary_key=True)
+    campaign_id = Column(String(36), ForeignKey("campaigns.id"), nullable=False, unique=True, index=True)
+    status = Column(String(32), nullable=False, default="pending", index=True)
+    request_reason = Column(Text, nullable=False)
+    requested_by = Column(String(255), nullable=False, index=True)
+    requested_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    decided_by = Column(String(255), nullable=False, default="")
+    decision_reason = Column(Text, nullable=False, default="")
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+
+    campaign = relationship("Campaign", back_populates="approval")
 
 
 class PatchJob(Base):

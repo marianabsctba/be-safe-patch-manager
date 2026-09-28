@@ -2563,6 +2563,10 @@ window.prepareCampaignFromRemediationGroup = (encodedPatchRef) => {
   form.elements.health_gate_require_telemetry.checked = guidance.health_gate_required !== false;
   form.elements.prepare_rollback.checked = guidance.rollback_checkpoint_recommended !== false;
   form.elements.rollback_required.checked = guidance.rollback_checkpoint_required === true;
+  form.elements.approval_required.checked = guidance.approval_required === true;
+  form.elements.approval_reason.value = guidance.approval_required
+    ? 'Remediação ' + String((group.priority || {}).tier || 'P0') + ' / change-risk ' + String((group.change_risk || {}).level || 'high')
+    : '';
   form.elements.action.value = 'install_updates';
   form.elements.packages.value = patchRef;
   form.elements.description.value =
@@ -2964,6 +2968,7 @@ function campaignCard(campaign, compact = false) {
   const payload = campaign.payload || {};
   const healthPolicy = payload.health_policy || {};
   const isAgentRollout = payload.rollout_type === 'agent_update' || campaign.action === 'activate_agent_update';
+  const approval = campaign.approval || { required: false, status: 'not_required' };
   const healthIssues = (health.validation_details || [])
     .flatMap((item) => item && item.health_validation && Array.isArray(item.health_validation.issues)
       ? item.health_validation.issues
@@ -2978,7 +2983,16 @@ function campaignCard(campaign, compact = false) {
   let action = '';
   const canControlCampaign = isAgentRollout ? roleAtLeast('admin') : roleAtLeast('operator');
   if (canControlCampaign && campaign.status === 'draft') {
-    action = '<button onclick="deploy(\'' + campaign.id + '\')">Implantar ' + esc(campaign.ring_percent) + '%</button>';
+    if (approval.required && approval.status !== 'approved') {
+      if (roleAtLeast('admin') && approval.status === 'pending') {
+        action = '<button onclick="decideCampaignApproval(\'' + campaign.id + '\',\'approve\')">Aprovar</button>' +
+          ' <button class="secondary" onclick="decideCampaignApproval(\'' + campaign.id + '\',\'reject\')">Rejeitar</button>';
+      } else {
+        action = '<button disabled>Aprovação ' + esc(approval.status || 'pendente') + '</button>';
+      }
+    } else {
+      action = '<button onclick="deploy(\'' + campaign.id + '\')">Implantar ' + esc(campaign.ring_percent) + '%</button>';
+    }
   } else if (canControlCampaign && campaign.status === 'deployed' && nextRing) {
     action = ringReady
       ? '<button onclick="advanceCampaign(\'' + campaign.id + '\',' + nextRing + ')">Avançar para ' + nextRing + '%</button>'
@@ -3002,6 +3016,7 @@ function campaignCard(campaign, compact = false) {
           ${payload.target_agent_hostname ? badge('endpoint: ' + payload.target_agent_hostname, 'info') : ''}
           ${payload.source_cve ? badge(payload.source_cve, 'warn') : ''}
           ${isAgentRollout ? badge('AGENT v' + (payload.expected_version || '?'), 'info') : ''}
+          ${approval.required ? badge('APPROVAL ' + String(approval.status || 'pending').toUpperCase(), approval.status === 'approved' ? 'ok' : approval.status === 'rejected' ? 'fail' : 'warn') : ''}
           <span>Ring atual <strong>${esc(campaign.ring_percent)}%</strong></span>
           <span>${esc(actionLabel(campaign.action))}</span>
           ${campaign.not_before ? `<span>Após ${esc(shortWhen(campaign.not_before))}</span>` : ''}
@@ -3277,6 +3292,28 @@ window.toggleUser = async (userId, active) => {
     toast('Usuário: ' + error.message, 'fail');
   }
 };
+
+
+window.decideCampaignApproval = async (campaignId, decision) => {
+  if (!requireRole('admin', 'Somente admin pode decidir aprovação de campanha.')) return;
+  const verb = decision === 'approve' ? 'aprovar' : 'rejeitar';
+  const reason = prompt('Motivo para ' + verb + ' esta campanha:');
+  if (!reason || reason.trim().length < 5) {
+    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
+    return;
+  }
+  try {
+    await api('/api/admin/campaigns/' + campaignId + '/approval/' + decision, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    toast(decision === 'approve' ? 'Campanha aprovada.' : 'Campanha rejeitada.');
+    await load();
+  } catch (error) {
+    toast('Approval gate: ' + error.message, 'fail');
+  }
+};
+
 
 window.deploy = async (id) => {
   if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
@@ -3878,6 +3915,8 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     application_health_checks: parseApplicationHealthChecks(form.get('application_health_urls')),
     prepare_rollback: form.get('prepare_rollback') === 'on',
     rollback_required: form.get('rollback_required') === 'on',
+    approval_required: form.get('approval_required') === 'on',
+    approval_reason: String(form.get('approval_reason') || '').trim(),
     target_agent_id: form.get('target_agent_id') || '',
     target_agent_ids: Array.isArray(state.campaignTargetAgentIds) ? state.campaignTargetAgentIds : [],
     target_finding_id: form.get('target_finding_id') || '',
@@ -3900,6 +3939,8 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     event.target.elements.health_gate_enabled.checked = true;
     event.target.elements.health_gate_require_telemetry.checked = true;
     event.target.elements.prepare_rollback.checked = true;
+    event.target.elements.approval_required.checked = false;
+    event.target.elements.approval_reason.value = '';
     state.campaignTargetAgentIds = [];
     $('#campaignSourceContext').hidden = true;
     $('#campaignSourceContext').innerHTML = '';

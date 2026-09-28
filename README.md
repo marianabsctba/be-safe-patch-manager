@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.27; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.28; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -36,6 +36,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - Remediation Decision Engine com prioridade P0–P3 explicável, sinais de KEV/ransomware/EPSS/SLA/exposição/criticidade, change risk separado e rollout sugerido por rings;
 - drafts preparados pelo Remediation Hub já carregam health gate e política de rollback coerentes com o risco da mudança, sem executar deploy automaticamente;
 - Patch Guard persistente permite bloquear uma patch reference globalmente ou por SO/tag; deploy e avanço de ring falham antes de criar jobs quando uma regra ativa casa com o escopo;
+- Approval Gate por campanha com decisão administrativa auditada e segregação de função: quem solicita uma campanha protegida não pode aprovar a própria mudança;
 - Active Threat Watch baseado em CISA KEV, EPSS e ransomware known;
 - Patch Confidence a partir do histórico local de deploys;
 - Asset Accountability com owner, business service e environment;

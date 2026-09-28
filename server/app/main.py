@@ -21,8 +21,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, PatchBlockRule, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -32,7 +32,7 @@ from .observability import metrics_response, prometheus_http_middleware, readine
 from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.27.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.28.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -1931,6 +1931,7 @@ def remediation_group_decision(
             "rollback_checkpoint_recommended": True,
             "rollback_checkpoint_required": change_level == "high" and critical_assets > 0,
             "maintenance_window_recommended": critical_assets > 0 or asset_count >= 50,
+            "approval_required": priority == "P0" or change_level == "high",
             "reason": (
                 f"{priority} / change-risk {change_level}; "
                 f"patch-confidence {confidence}; rollout progressivo com validação entre rings"
@@ -4538,6 +4539,26 @@ def campaign_health(c: Campaign):
     }
 
 
+def serialize_campaign_approval(c: Campaign) -> dict:
+    payload = load(c.payload_json, {})
+    required = bool(payload.get("approval_required", False))
+    approval = c.approval
+    if not required:
+        return {"required": False, "status": "not_required"}
+    if not approval:
+        return {"required": True, "status": "missing"}
+    return {
+        "required": True,
+        "status": approval.status,
+        "request_reason": approval.request_reason,
+        "requested_by": approval.requested_by,
+        "requested_at": approval.requested_at.isoformat() if approval.requested_at else None,
+        "decided_by": approval.decided_by,
+        "decision_reason": approval.decision_reason,
+        "decided_at": approval.decided_at.isoformat() if approval.decided_at else None,
+    }
+
+
 def serialize_campaign(c: Campaign):
     counts = {"pending": 0, "blocked": 0, "claimed": 0, "running": 0, "success": 0, "failed": 0, "skipped": 0}
     for j in c.jobs:
@@ -4559,6 +4580,7 @@ def serialize_campaign(c: Campaign):
         "jobs_total": len(c.jobs),
         "health": campaign_health(c),
         "rollout_complete": c.ring_percent >= 100,
+        "approval": serialize_campaign_approval(c),
     }
 
 
@@ -7533,6 +7555,77 @@ def create_agent_update_rollout(
 
 
 
+
+@app.post("/api/admin/campaigns/{campaign_id}/approval/approve")
+def approve_campaign(
+    campaign_id: str,
+    body: CampaignApprovalDecision,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    approval = campaign.approval
+    if not approval or not serialize_campaign_approval(campaign)["required"]:
+        raise HTTPException(status_code=409, detail="campaign does not require approval")
+    if campaign.status != "draft":
+        raise HTTPException(status_code=409, detail="only draft campaigns can be approved")
+    if approval.status != "pending":
+        raise HTTPException(status_code=409, detail=f"campaign approval is {approval.status}")
+    if approval.requested_by == principal["actor"]:
+        raise HTTPException(status_code=409, detail="requester cannot approve their own campaign")
+
+    approval.status = "approved"
+    approval.decided_by = principal["actor"]
+    approval.decision_reason = body.reason.strip()
+    approval.decided_at = now()
+    db.commit()
+    audit(
+        db,
+        principal["actor"],
+        "campaign.approval.approved",
+        "campaign",
+        campaign.id,
+        serialize_campaign_approval(campaign),
+    )
+    return {"ok": True, "campaign": serialize_campaign(campaign)}
+
+
+@app.post("/api/admin/campaigns/{campaign_id}/approval/reject")
+def reject_campaign(
+    campaign_id: str,
+    body: CampaignApprovalDecision,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    approval = campaign.approval
+    if not approval or not serialize_campaign_approval(campaign)["required"]:
+        raise HTTPException(status_code=409, detail="campaign does not require approval")
+    if campaign.status != "draft":
+        raise HTTPException(status_code=409, detail="only draft campaigns can be rejected")
+    if approval.status != "pending":
+        raise HTTPException(status_code=409, detail=f"campaign approval is {approval.status}")
+
+    approval.status = "rejected"
+    approval.decided_by = principal["actor"]
+    approval.decision_reason = body.reason.strip()
+    approval.decided_at = now()
+    db.commit()
+    audit(
+        db,
+        principal["actor"],
+        "campaign.approval.rejected",
+        "campaign",
+        campaign.id,
+        serialize_campaign_approval(campaign),
+    )
+    return {"ok": True, "campaign": serialize_campaign(campaign)}
+
+
 @app.get("/api/admin/patch-block-rules")
 def list_patch_block_rules(_=Depends(require_viewer), db: Session = Depends(get_db)):
     reference = now()
@@ -7680,6 +7773,9 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
 
     if body.rollback_required and not body.prepare_rollback:
         raise HTTPException(status_code=400, detail="rollback_required requires prepare_rollback")
+    approval_reason = body.approval_reason.strip()
+    if body.approval_required and len(approval_reason) < 5:
+        raise HTTPException(status_code=400, detail="approval_reason is required when approval_required is true")
 
     reboot_policy = body.reboot_policy
     if body.allow_reboot and reboot_policy == "never":
@@ -7704,6 +7800,8 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
         "target_agent_count": len(target_agent_ids),
         "source_finding_id": target_finding.id if target_finding else "",
         "source_cve": target_finding.cve if target_finding else "",
+        "approval_required": body.approval_required,
+        "approval_reason": approval_reason if body.approval_required else "",
     }
 
     campaign = Campaign(
@@ -7720,6 +7818,15 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
         status="draft",
     )
     db.add(campaign)
+    db.flush()
+    if body.approval_required:
+        db.add(CampaignApproval(
+            id=str(uuid.uuid4()),
+            campaign_id=campaign.id,
+            status="pending",
+            request_reason=approval_reason,
+            requested_by=principal["actor"],
+        ))
     db.commit()
     audit(
         db,
@@ -7742,6 +7849,8 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             "target_agent_count": len(target_agent_ids),
             "target_agent_ids": target_agent_ids[:50],
             "source_finding_id": target_finding.id if target_finding else "",
+            "approval_required": body.approval_required,
+            "approval_reason": approval_reason if body.approval_required else "",
         },
     )
     return serialize_campaign(campaign)
@@ -7914,6 +8023,16 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
         raise HTTPException(status_code=404, detail="campaign not found")
     if campaign.status != "draft":
         raise HTTPException(status_code=409, detail="campaign already deployed")
+
+    approval_state = serialize_campaign_approval(campaign)
+    if approval_state["required"] and approval_state["status"] != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "campaign requires administrative approval before deploy",
+                "approval": approval_state,
+            },
+        )
 
     selected = agents_for_ring(db, campaign, campaign.ring_percent)
     if not selected:

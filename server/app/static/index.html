@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.27</small>
+          <small>dashboard v0.28</small>
         </div>
       </div>
     </aside>
@@ -866,6 +866,16 @@
                 <label class="check wide">
                   <input name="prepare_rollback" type="checkbox" checked />
                   <span>Criar checkpoint de rollback antes de instalar, quando suportado</span>
+                </label>
+
+                <label class="check wide">
+                  <input name="approval_required" type="checkbox" />
+                  <span>Exigir aprovação administrativa antes do deploy (com segregação de função)</span>
+                </label>
+
+                <label class="wide">
+                  <span>Motivo da aprovação</span>
+                  <textarea name="approval_reason" placeholder="Ex.: mudança em ativos Tier 0 / rollout P0"></textarea>
                 </label>
 
                 <label class="check wide">
