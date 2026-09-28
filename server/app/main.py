@@ -1354,6 +1354,16 @@ def asset_risk_score(agent: Agent, findings: list[VulnerabilityFinding], referen
         "open_findings": len(open_findings),
         "buckets": bucket_breakdown,
         "decomposition": decomposition,
+        "calculation": {
+            "base_weighted": round(base_weighted, 4),
+            "criticality_multiplier": criticality["score"],
+            "exposure_multiplier": exposure["multiplier"],
+            "compensating_multiplier": compensating["multiplier"],
+            "pre_compensation": round(pre_compensation, 4),
+            "raw_score": round(raw_score, 4),
+            "score_cap": 1000,
+            "capped": raw_score > 1000.0,
+        },
         "top_factors": sorted(set(top_factors)),
     }
 
@@ -1391,6 +1401,12 @@ def capture_asset_risk_snapshots(
             external=risk["exposure"]["external"],
             open_findings=risk["open_findings"],
             factors_json=dump(risk["top_factors"]),
+            model_version=report["model"],
+            decomposition_json=dump(risk.get("decomposition", [])),
+            calculation_json=dump(risk.get("calculation", {})),
+            risk_policy_json=dump(item.get("risk_policy", {})),
+            risk_appetite=int(risk.get("risk_appetite") or ASSET_RISK_APPETITE),
+            governance_status=str(risk.get("governance_status") or ""),
             source=source,
             captured_at=reference,
         ))
@@ -1423,6 +1439,12 @@ def asset_risk_history(db: Session, agent_id: str | None = None, limit: int = 50
             "external": row.external,
             "open_findings": row.open_findings,
             "top_factors": load(row.factors_json, []),
+            "model_version": row.model_version,
+            "decomposition": load(row.decomposition_json, []),
+            "calculation": load(row.calculation_json, {}),
+            "risk_policy": load(row.risk_policy_json, {}),
+            "risk_appetite": row.risk_appetite,
+            "governance_status": row.governance_status,
             "source": row.source,
             "captured_at": row.captured_at.isoformat() if row.captured_at else None,
         })
