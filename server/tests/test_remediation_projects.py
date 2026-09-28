@@ -242,3 +242,6 @@ def test_dynamic_project_separates_scope_departure_from_remediation(db, monkeypa
     assert data["baseline_open_findings"] == 1
     assert data["closed_from_baseline"] == 0
     assert data["scope_departures"] == 1
+    assert data["tracked_open_findings"] == 1
+    assert data["progress_percent"] == 0.0
+    assert data["achieved"] is False
