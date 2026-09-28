@@ -246,6 +246,35 @@
             </div>
             <div id="remediationQueueStats" class="integration-details"></div>
             <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">RISK REDUCTION OPPORTUNITIES</p>
+                  <h3>Maior redução de risco primeiro</h3>
+                </div>
+              </div>
+              <div id="riskReductionStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Cada linha é uma simulação independente de um único finding. Os deltas não são aditivos entre si.
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Ativo / Finding</th>
+                      <th>Risco</th>
+                      <th>Score</th>
+                      <th>Redução</th>
+                      <th>Cruza appetite</th>
+                      <th>Ação</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="riskReductionTable"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel-subsection">
               <p class="section-kicker">RISK REDUCTION SIMULATION</p>
               <div id="riskSimulationResult" class="integration-details">
                 <div class="empty-state">Clique em “Simular impacto” em um finding correlacionado.</div>
