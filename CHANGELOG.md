@@ -55,6 +55,9 @@
 - oportunidades incluem impacto individual, appetite, SLA e ação recomendada, sem mutar o estado real;
 - removido agregado de redução total porque simulações individuais não são matematicamente aditivas;
 - console ganhou tabela de oportunidades priorizadas por maior redução de risco;
+- adicionado Risk Reduction Plan por ativo com seleção gulosa de maior ganho marginal e recálculo a cada etapa;
+- plano informa score antes/depois, redução marginal, redução acumulada e cruzamento do appetite;
+- console ganhou ação `Plano de redução` e painel de sequência projetada;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
