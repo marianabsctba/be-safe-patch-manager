@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
@@ -1954,10 +1955,34 @@ def asset_risk_report(
 
     rows.sort(key=lambda row: (-row["risk"]["score"], row["hostname"].lower()))
 
+    snapshots_by_agent: dict[str, list[AssetRiskSnapshot]] = {}
+    agent_ids = [row["agent_id"] for row in rows]
+    if agent_ids:
+        ranked_snapshots = db.query(
+            AssetRiskSnapshot.id.label("snapshot_id"),
+            AssetRiskSnapshot.agent_id.label("agent_id"),
+            func.row_number().over(
+                partition_by=AssetRiskSnapshot.agent_id,
+                order_by=AssetRiskSnapshot.captured_at.desc(),
+            ).label("rn"),
+        ).filter(
+            AssetRiskSnapshot.agent_id.in_(agent_ids)
+        ).subquery()
+
+        latest_snapshots = db.query(AssetRiskSnapshot).join(
+            ranked_snapshots,
+            AssetRiskSnapshot.id == ranked_snapshots.c.snapshot_id,
+        ).filter(
+            ranked_snapshots.c.rn <= 2
+        ).order_by(
+            AssetRiskSnapshot.agent_id.asc(),
+            AssetRiskSnapshot.captured_at.desc(),
+        ).all()
+        for snapshot in latest_snapshots:
+            snapshots_by_agent.setdefault(snapshot.agent_id, []).append(snapshot)
+
     for row in rows:
-        snapshots = db.query(AssetRiskSnapshot).filter(
-            AssetRiskSnapshot.agent_id == row["agent_id"]
-        ).order_by(AssetRiskSnapshot.captured_at.desc()).limit(2).all()
+        snapshots = snapshots_by_agent.get(row["agent_id"], [])
         current = row["risk"]["score"]
         if not snapshots:
             trend = {"delta": 0.0, "direction": "new", "previous_score": None}
