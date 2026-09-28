@@ -724,7 +724,8 @@ function renderAssetRisk() {
   $('#assetRiskContributors').innerHTML = topContributors.length
     ? topContributors.map((item, index) =>
         '<div class="risk-contributor">' +
-          '<span>' + esc(String(index + 1) + '. ' + item.name) + '</span>' +
+          '<span>' + esc(String(index + 1) + '. ' + item.name) +
+            '<br><small class="muted">' + esc((item.assets_affected || 0) + ' ativos · ' + (item.share_percent || 0) + '%') + '</small></span>' +
           '<strong>' + esc(Number(item.raw || 0).toFixed(1)) + '</strong>' +
         '</div>'
       ).join('')
