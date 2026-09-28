@@ -12,6 +12,8 @@ const state = {
   threatIntel: null,
   remediationQueue: null,
   remediationHub: null,
+  activeThreatWatch: null,
+  patchConfidence: null,
   riskReduction: null,
   assetRisk: null,
   riskPolicies: [],
@@ -237,7 +239,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, activeThreatWatch, patchConfidence, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -245,6 +247,8 @@ async function load() {
       api('/api/admin/integrations/threat-intel'),
       api('/api/admin/reports/remediation-queue'),
       api('/api/admin/reports/remediation-hub'),
+      api('/api/admin/reports/active-threat-watch'),
+      api('/api/admin/reports/patch-confidence'),
       api('/api/admin/reports/risk-reduction-opportunities'),
       api('/api/admin/reports/asset-risk'),
       api('/api/admin/risk-policies'),
@@ -262,6 +266,8 @@ async function load() {
     state.threatIntel = threatIntel;
     state.remediationQueue = remediationQueue;
     state.remediationHub = remediationHub;
+    state.activeThreatWatch = activeThreatWatch;
+    state.patchConfidence = patchConfidence;
     state.riskReduction = riskReduction;
     state.assetRisk = assetRisk;
     state.riskPolicies = riskPolicies;
@@ -300,6 +306,8 @@ function renderAll() {
   renderThreatIntelIntegration();
   renderRemediationQueue();
   renderRemediationHub();
+  renderActiveThreatWatch();
+  renderPatchConfidence();
   renderRiskReductionOpportunities();
   renderAssetRisk();
   renderVulnerabilities();
@@ -1255,6 +1263,90 @@ window.editAssetRiskProfile = async (agentId) => {
 };
 
 
+function renderActiveThreatWatch() {
+  const report = state.activeThreatWatch || {};
+  const summary = report.summary || {};
+  const items = Array.isArray(report.items) ? report.items.slice(0, 20) : [];
+  const stats = $('#activeThreatStats');
+  if (stats) {
+    stats.innerHTML = [
+      ['CVEs', summary.cves || 0],
+      ['CISA KEV', summary.kev || 0],
+      ['Ransomware', summary.ransomware || 0],
+      ['Ativos afetados', summary.affected_assets || 0],
+      ['Exposição externa', summary.external_asset_exposures || 0],
+    ].map(([label, value]) =>
+      '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+    ).join('');
+  }
+
+  const table = $('#activeThreatTable');
+  if (!table) return;
+  if (!items.length) {
+    table.innerHTML = '<tr><td colspan="8"><div class="empty-state">Nenhuma ameaça ativa pelos sinais configurados.</div></td></tr>';
+    return;
+  }
+
+  table.innerHTML = items.map((item) =>
+    '<tr>' +
+      '<td><strong>' + esc(item.cve) + '</strong></td>' +
+      '<td>' + (item.kev ? badge('KEV', 'fail') : '') + ' ' + (item.ransomware ? badge('RANSOMWARE', 'warn') : '') + '</td>' +
+      '<td><strong>' + esc(item.max_risk_score) + '/100</strong><br><small class="muted">CVSS ' + esc(item.max_cvss) + '</small></td>' +
+      '<td><strong>' + esc(item.max_epss == null ? '-' : (Number(item.max_epss) * 100).toFixed(1) + '%') + '</strong></td>' +
+      '<td><strong>' + esc(item.asset_count) + '</strong><br><small class="muted">' + esc(item.external_asset_count) + ' externos · ' + esc(item.critical_asset_count) + ' críticos</small></td>' +
+      '<td><strong>' + esc(item.finding_count) + '</strong></td>' +
+      '<td><small>' + esc((item.patch_refs || []).slice(0, 4).join(', ') || 'sem patch ref') + '</small></td>' +
+      '<td><small>' + esc((item.signals || []).join(' · ')) + '</small></td>' +
+    '</tr>'
+  ).join('');
+}
+
+
+function renderPatchConfidence() {
+  const report = state.patchConfidence || {};
+  const summary = report.summary || {};
+  const items = Array.isArray(report.items) ? report.items.slice(0, 25) : [];
+  const stats = $('#patchConfidenceStats');
+  if (stats) {
+    stats.innerHTML = [
+      ['Patches observados', summary.patches_observed || 0],
+      ['Alta confiança', summary.high_confidence || 0],
+      ['Baixa confiança', summary.low_confidence || 0],
+      ['Dados insuficientes', summary.insufficient_data || 0],
+    ].map(([label, value]) =>
+      '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+    ).join('');
+  }
+
+  const table = $('#patchConfidenceTable');
+  if (!table) return;
+  if (!items.length) {
+    table.innerHTML = '<tr><td colspan="8"><div class="empty-state">Ainda não há histórico suficiente de install_updates.</div></td></tr>';
+    return;
+  }
+
+  const confidenceBadge = (value) => {
+    if (value === 'high') return badge('ALTA', 'ok');
+    if (value === 'medium') return badge('MÉDIA', 'warn');
+    if (value === 'low') return badge('BAIXA', 'fail');
+    return badge('DADOS INSUFICIENTES', 'muted-badge');
+  };
+
+  table.innerHTML = items.map((item) =>
+    '<tr>' +
+      '<td><strong>' + esc(item.patch_ref) + '</strong></td>' +
+      '<td>' + confidenceBadge(item.confidence) + '</td>' +
+      '<td><strong>' + esc(item.success_rate == null ? '-' : item.success_rate + '%') + '</strong></td>' +
+      '<td>' + esc(item.completed_jobs) + '</td>' +
+      '<td>' + esc(item.success) + '</td>' +
+      '<td>' + esc(item.failed) + '</td>' +
+      '<td>' + esc(item.stalled) + ' / ' + esc(item.blocked) + '</td>' +
+      '<td><small>' + esc(item.asset_count) + ' ativos · ' + esc(item.campaign_count) + ' campanhas</small></td>' +
+    '</tr>'
+  ).join('');
+}
+
+
 function renderRemediationHub() {
   const report = state.remediationHub || {};
   const summary = report.summary || {};
@@ -1294,7 +1386,9 @@ function renderRemediationHub() {
 
     return '<tr>' +
       '<td><strong>#' + esc(index + 1) + '</strong></td>' +
-      '<td><strong>' + esc(item.patch_ref) + '</strong><br><small class="muted">' + esc(osFamilies.join(', ') || '-') + '</small></td>' +
+      '<td><strong>' + esc(item.patch_ref) + '</strong><br><small class="muted">' + esc(osFamilies.join(', ') || '-') + '</small>' +
+        (item.patch_confidence ? '<br><small class="muted">confidence ' + esc(item.patch_confidence.confidence) + (item.patch_confidence.success_rate == null ? '' : ' · ' + esc(item.patch_confidence.success_rate) + '%') + '</small>' : '') +
+      '</td>' +
       '<td><strong>' + esc(item.finding_count) + '</strong><br><small class="muted">' + esc(item.cve_count) + ' CVEs</small></td>' +
       '<td><strong>' + esc(item.asset_count) + '</strong><br><small class="muted">' + topAssets + '</small></td>' +
       '<td><strong>' + esc(item.before_risk_total) + ' → ' + esc(item.projected_risk_total) + '</strong></td>' +
