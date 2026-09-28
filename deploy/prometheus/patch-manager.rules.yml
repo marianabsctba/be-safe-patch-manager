@@ -131,6 +131,24 @@ groups:
           summary: Remediation Project vencido
           description: Existe pelo menos um Remediation Project ativo ou aguardando verificação após o prazo definido.
 
+      - alert: PatchManagerRemediationProjectCritical
+        expr: patch_manager_remediation_projects_attention{status="critical"} > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Remediation Project exige atenção crítica
+          description: Há projeto ativo com SLA vencido, KEV em ativo externo ou prazo já excedido.
+
+      - alert: PatchManagerRemediationProjectSlaBreached
+        expr: patch_manager_remediation_projects_sla_breached > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Findings de projeto com SLA vencido
+          description: Um ou mais findings rastreados por Remediation Projects ativos ultrapassaram o SLA.
+
       - alert: PatchManagerRiskGoalOverdue
         expr: patch_manager_risk_goals_overdue > 0
         for: 15m
