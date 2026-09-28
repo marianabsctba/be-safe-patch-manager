@@ -1983,7 +1983,8 @@ function renderRemediationProjects() {
       '<td>' + esc(when(project.due_at)) + '</td>' +
       '<td>' +
         (roleAtLeast('operator')
-          ? '<button class="row-action" onclick="editRemediationProject(\'' + project.id + '\')">Gerenciar</button>' +
+          ? '<button class="row-action" onclick="showRemediationProjectHistory(\'' + project.id + '\')">Histórico</button> ' +
+            '<button class="row-action" onclick="editRemediationProject(\'' + project.id + '\')">Gerenciar</button>' +
             (project.campaign_ready && project.current_open_findings > 0
               ? ' <button class="row-action" onclick="prepareCampaignFromRemediationProject(\'' + project.id + '\')">Preparar campanha</button>'
               : '')
@@ -2255,6 +2256,44 @@ window.retryRemediationRescan = async (evidenceId) => {
     toast('Rescan: ' + error.message, 'fail');
   }
 };
+
+window.showRemediationProjectHistory = async (projectId) => {
+  try {
+    const result = await api('/api/admin/remediation-projects/' + projectId + '/history?limit=200');
+    const target = $('#remediationProjectHistory');
+    if (!target) return;
+    const items = Array.isArray(result.items) ? result.items.slice().reverse() : [];
+    if (!items.length) {
+      target.innerHTML = '<div class="empty-state">Sem snapshots para este projeto.</div>';
+      return;
+    }
+    target.innerHTML =
+      '<div><span>Projeto</span><strong>' + esc(result.project_name || projectId) + '</strong></div>' +
+      '<div><span>Snapshots</span><strong>' + esc(items.length) + '</strong></div>' +
+      '<div class="table-wrap"><table><thead><tr>' +
+        '<th>Data</th><th>Backlog rastreado</th><th>Escopo atual</th><th>Ativos</th><th>Fechados</th><th>Novos</th><th>Scope drift</th><th>Progresso</th><th>Pace</th><th>Origem</th>' +
+      '</tr></thead><tbody>' +
+      items.map((item) =>
+        '<tr>' +
+          '<td>' + esc(shortWhen(item.captured_at)) + '</td>' +
+          '<td><strong>' + esc(item.tracked_open_findings) + '</strong></td>' +
+          '<td>' + esc(item.current_scope_findings) + '</td>' +
+          '<td>' + esc(item.current_assets) + '</td>' +
+          '<td>' + esc(item.closed_from_baseline) + '</td>' +
+          '<td>' + esc(item.new_findings_since_baseline) + '</td>' +
+          '<td>' + esc(item.scope_departures) + '</td>' +
+          '<td><strong>' + esc(item.progress_percent) + '%</strong></td>' +
+          '<td>' + remediationProjectBadge(item.pace_status) + '</td>' +
+          '<td><small>' + esc(item.source || '-') + '</small></td>' +
+        '</tr>'
+      ).join('') +
+      '</tbody></table></div>';
+    toast('Histórico do Remediation Project carregado.');
+  } catch (error) {
+    toast('Histórico do projeto: ' + error.message, 'fail');
+  }
+};
+
 
 window.createRemediationProjectFromHub = async (encodedPatchRef) => {
   if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
