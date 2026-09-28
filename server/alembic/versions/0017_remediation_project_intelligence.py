@@ -1,6 +1,6 @@
 """Enrich remediation project intelligence history.
 
-Revision ID: 0017_remediation_project_intelligence
+Revision ID: 0017_project_intel
 Revises: 0016_remediation_project_history
 Create Date: 2026-09-28
 """
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0017_remediation_project_intelligence"
+revision: str = "0017_project_intel"
 down_revision: Union[str, None] = "0016_remediation_project_history"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
