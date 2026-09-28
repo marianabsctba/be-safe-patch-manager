@@ -128,3 +128,68 @@ def test_ring_decision_serialization(db):
     assert data["from_ring"] == 10
     assert data["to_ring"] == 30
     assert data["decision"] == "PROMOTE"
+
+
+def test_regression_detects_success_rate_drop(db):
+    c = build_campaign(db, ring=10, soak=0, statuses=["success", "success"], finished_delta=120)
+    for idx in range(4):
+        agent = Agent(
+            id=f"p{idx}", hostname=f"p{idx}.local", os_family="windows",
+            os_name="Windows", token_hash=(f"prev-{idx}-" + "x"*64)[:64], tags="[]",
+        )
+        db.add(agent)
+        db.add(PatchJob(
+            id=f"pj{idx}", campaign_id="c1", agent_id=agent.id, action="install_updates",
+            payload_json=main.dump({"_ring_percent": 5, "post_patch_validation": False}),
+            status="success", finished_at=datetime.now(timezone.utc)-timedelta(minutes=180),
+            result_json="{}",
+        ))
+    db.commit()
+    c.ring_percent = 10
+    payload = main.load(c.payload_json,{})
+    payload["rollout_governance"]["promotion_max_success_drop"] = 5
+    c.payload_json = main.dump(payload)
+    c.jobs[0].status = "failed"
+    db.commit()
+    analysis = main.campaign_regression_analysis(c)
+    assert analysis["status"] == "REGRESSION"
+    assert analysis["deltas"]["success_rate_drop"] > 5
+
+
+def test_regression_stable_when_drop_within_threshold(db):
+    c = build_campaign(db, ring=10, soak=0, statuses=["success", "success"], finished_delta=120)
+    for idx in range(2):
+        agent = Agent(
+            id=f"p{idx}", hostname=f"p{idx}.local", os_family="windows",
+            os_name="Windows", token_hash=(f"stable-{idx}-" + "x"*64)[:64], tags="[]",
+        )
+        db.add(agent)
+        db.add(PatchJob(
+            id=f"pj{idx}", campaign_id="c1", agent_id=agent.id, action="install_updates",
+            payload_json=main.dump({"_ring_percent": 5, "post_patch_validation": False}),
+            status="success", finished_at=datetime.now(timezone.utc)-timedelta(minutes=180),
+            result_json="{}",
+        ))
+    db.commit()
+    analysis = main.campaign_regression_analysis(c)
+    assert analysis["status"] == "STABLE"
+
+
+def test_governance_pauses_on_regression(db):
+    c = build_campaign(db, ring=10, soak=0, statuses=["success", "failed"], min_success=50, pause=False, finished_delta=120)
+    for idx in range(2):
+        agent = Agent(
+            id=f"p{idx}", hostname=f"p{idx}.local", os_family="windows",
+            os_name="Windows", token_hash=(f"gov-{idx}-" + "x"*64)[:64], tags="[]",
+        )
+        db.add(agent)
+        db.add(PatchJob(
+            id=f"pj{idx}", campaign_id="c1", agent_id=agent.id, action="install_updates",
+            payload_json=main.dump({"_ring_percent": 5, "post_patch_validation": False}),
+            status="success", finished_at=datetime.now(timezone.utc)-timedelta(minutes=180),
+            result_json="{}",
+        ))
+    db.commit()
+    state = main.campaign_rollout_governance(c)
+    assert state["state"] == "PAUSE"
+    assert state["recommendation"]["action"] == "PAUSE"

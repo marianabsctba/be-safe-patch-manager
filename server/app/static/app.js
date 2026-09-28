@@ -3372,6 +3372,8 @@ function campaignCard(campaign, compact = false) {
   const health = campaign.health || {};
   const validation = health.validation || {};
   const rollout = campaign.rollout_governance || {};
+  const regression = rollout.regression || {};
+  const recommendation = rollout.recommendation || {};
   const nextRing = rollout.next_ring || nextRingPercent(campaign.ring_percent);
   const ringReady = rollout.state ? rollout.state === 'PROMOTE' : Boolean(health.ready);
   const healthRate = Number(health.success_rate || 0);
@@ -3419,6 +3421,7 @@ function campaignCard(campaign, compact = false) {
           ${badge(statusLabel(campaign.status), campaign.status === 'deployed' ? 'ok' : 'info')}
           ${campaign.rollout_complete ? badge('100% liberado', 'ok') : ''}
           ${campaign.status === 'deployed' && rollout.state ? badge('ROLLOUT ' + String(rollout.state).toUpperCase(), rollout.state === 'PROMOTE' || rollout.state === 'COMPLETE' ? 'ok' : rollout.state === 'PAUSE' ? 'fail' : 'warn') : ''}
+          ${campaign.status === 'deployed' && regression.status ? badge('REGRESSION ' + String(regression.status).toUpperCase(), regression.status === 'REGRESSION' ? 'fail' : regression.status === 'STABLE' ? 'ok' : 'info') : ''}
         </div>
 
         ${compact ? '' : `<p>${esc(campaign.description || 'Sem descrição')}</p>`}
@@ -3459,6 +3462,7 @@ function campaignCard(campaign, compact = false) {
             <span>Rollout: <strong>${esc((rollout.plan || [campaign.ring_percent]).join(' → '))}%</strong></span>
             <span>Soak: <strong>${esc(rollout.soak_minutes || 0)} min</strong></span>
             <span>Promoção: <strong>${esc(rollout.promotion_min_success_rate || health.required_success_rate || 90)}% sucesso mínimo</strong></span>
+            <span>Regressão: <strong>queda máx. ${esc(rollout.promotion_max_success_drop || 10)} p.p.</strong></span>
           `}
         </div>
 
@@ -3472,6 +3476,8 @@ function campaignCard(campaign, compact = false) {
           ${campaign.status === 'deployed' && Number(validation.waiting || 0) ? `<span>Validação aguardando: ${validation.waiting}</span>` : ''}
           ${campaign.status === 'deployed' && Number(validation.failed || 0) ? `<span class="text-danger">Validação falhou: ${validation.failed}</span>` : ''}
           ${campaign.status === 'deployed' && health.reason ? `<span>${esc(healthReasonLabel(health.reason))}</span>` : ''}
+          ${regression.status === 'REGRESSION' ? `<span class="text-danger">${esc((regression.reasons || []).join(' · '))}</span>` : ''}
+          ${campaign.status === 'deployed' && recommendation.action ? `<span>Recomendação: <strong>${esc(recommendation.action)}</strong></span>` : ''}
           ${healthIssues.length ? `<span class="text-danger health-issue">${esc(healthIssues.join(' · '))}</span>` : ''}
         </div>
 
@@ -3486,7 +3492,11 @@ function campaignCard(campaign, compact = false) {
         </div>
       </div>
 
-      ${action ? `<div class="campaign-actions">${action}</div>` : ''}
+      <div class="campaign-actions">
+        ${action || ''}
+        <button class="secondary" onclick="showPromotionAnalysis('${campaign.id}')">Safe Promotion</button>
+        <button class="secondary" onclick="showRingHistory('${campaign.id}')">Histórico de rings</button>
+      </div>
     </article>
   `;
 }
@@ -3741,6 +3751,31 @@ window.deploy = async (id) => {
     await load();
   } catch (error) {
     toast(error.message, 'fail');
+  }
+};
+
+window.showPromotionAnalysis = async (campaignId) => {
+  try {
+    const result = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/promotion-analysis');
+    const r = result.regression || {};
+    const current = r.current || {};
+    const previous = r.previous || {};
+    const d = r.deltas || {};
+    const recommendation = result.recommendation || {};
+    alert(
+      'Safe Promotion Analysis\n\n' +
+      'Campaign: ' + (result.campaign_name || '-') + '\n' +
+      'Regression: ' + (r.status || '-') + '\n' +
+      'Recommendation: ' + (recommendation.action || '-') + '\n\n' +
+      'Current ring: ' + (current.ring_percent || '-') + '% · success ' + (current.success_rate ?? '-') + '% · failure ' + (current.failure_rate ?? '-') + '%\n' +
+      (previous.ring_percent ? 'Previous ring: ' + previous.ring_percent + '% · success ' + previous.success_rate + '% · failure ' + previous.failure_rate + '%\n' : 'Previous ring: no baseline\n') +
+      'Success drop: ' + (d.success_rate_drop ?? '-') + ' p.p.\n' +
+      'Failure increase: ' + (d.failure_rate_increase ?? '-') + ' p.p.\n' +
+      'Validation delta: ' + (d.validation_failure_delta ?? '-') + '\n\n' +
+      ((r.reasons || []).join('\n') || 'No regression reasons.')
+    );
+  } catch (error) {
+    toast('Promotion analysis: ' + error.message, 'fail');
   }
 };
 
@@ -4388,6 +4423,7 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     rollout_plan: String(form.get('rollout_plan') || '').split(',').map((value) => Number(value.trim())).filter((value) => Number.isFinite(value) && value >= 1 && value <= 100),
     soak_minutes: Number(form.get('soak_minutes') || 0),
     promotion_min_success_rate: Number(form.get('promotion_min_success_rate') || 90),
+    promotion_max_success_drop: Number(form.get('promotion_max_success_drop') || 10),
     pause_on_failure: form.get('pause_on_failure') === 'on',
     target_agent_id: form.get('target_agent_id') || '',
     target_agent_ids: Array.isArray(state.campaignTargetAgentIds) ? state.campaignTargetAgentIds : [],
@@ -4409,6 +4445,7 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     event.target.elements.rollout_plan.value = '10,30,100';
     event.target.elements.soak_minutes.value = 60;
     event.target.elements.promotion_min_success_rate.value = 90;
+    event.target.elements.promotion_max_success_drop.value = 10;
     event.target.elements.pause_on_failure.checked = true;
     event.target.elements.maintenance_timezone.value = 'America/Sao_Paulo';
     event.target.elements.post_patch_validation.checked = true;

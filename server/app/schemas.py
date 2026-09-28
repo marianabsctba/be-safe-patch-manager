@@ -108,6 +108,7 @@ class CampaignCreate(BaseModel):
     rollout_plan: List[int] = Field(default_factory=list, max_length=10)
     soak_minutes: int = Field(default=0, ge=0, le=10080)
     promotion_min_success_rate: float = Field(default=90.0, ge=0.0, le=100.0)
+    promotion_max_success_drop: float = Field(default=10.0, ge=0.0, le=100.0)
     pause_on_failure: bool = True
 
 

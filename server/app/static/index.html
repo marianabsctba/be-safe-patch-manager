@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.37</small>
+          <small>dashboard v0.38</small>
         </div>
       </div>
     </aside>
@@ -893,6 +893,11 @@
                 <label>
                   <span>Sucesso mínimo p/ promoção (%)</span>
                   <input name="promotion_min_success_rate" type="number" min="0" max="100" step="0.1" value="90" />
+                </label>
+
+                <label>
+                  <span>Queda máx. vs ring anterior (p.p.)</span>
+                  <input name="promotion_max_success_drop" type="number" min="0" max="100" step="0.1" value="10" />
                 </label>
 
                 <label class="check">

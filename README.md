@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.37; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.38; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -963,3 +963,8 @@ Apache License 2.0. Veja [LICENSE](LICENSE).
 - promoção fora do próximo ring configurado é bloqueada; soak ativo e pause por falha também bloqueiam avanço, salvo override explícito já auditado.
 - cada deploy inicial e promoção de ring é persistido em campaign_ring_decisions com ator, origem/destino, decisão, motivo e snapshot de health.
 - a console usa o próximo ring da própria campanha e exibe estado, plano, soak e threshold de promoção.
+
+- Regression Intelligence compara o ring atual com o ring anterior usando success rate, failure rate, validação pós-patch e duração média dos jobs observados.
+- promotion_max_success_drop define a queda máxima de success rate, em pontos percentuais, aceita antes de marcar REGRESSION.
+- Safe Promotion expõe STABLE, REGRESSION ou NO_BASELINE, deltas e razões; REGRESSION pausa a promoção mesmo quando o threshold absoluto de sucesso ainda seria atendido.
+- endpoint /api/admin/campaigns/{id}/promotion-analysis devolve análise explicável e recomendação PROMOTE, PAUSE, WAIT, COMPLETE ou REVIEW.

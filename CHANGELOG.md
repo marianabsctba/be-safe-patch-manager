@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.38.0
+
+- control plane e dashboard passam para versão 0.38.0; agente permanece em 0.16.0;
+- adicionada Regression Intelligence por ring, sem score composto opaco;
+- comparação usa success rate, failure rate, falhas de validação pós-patch e duração média observada dos jobs;
+- campanhas ganham promotion_max_success_drop em pontos percentuais;
+- regressão acima do limite pausa promoção mesmo quando o threshold absoluto de sucesso ainda é atendido;
+- Safe Promotion retorna STABLE, REGRESSION ou NO_BASELINE, deltas, motivos e recomendação;
+- console exibe badge de regressão, recomendação e ação Safe Promotion;
+- adicionado endpoint promotion-analysis e testes de regressão, estabilidade e pause.
+
 ## 0.37.0
 
 - control plane e dashboard passam para versão 0.37.0; agente permanece em 0.16.0;

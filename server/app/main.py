@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.37.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.38.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -5418,6 +5418,91 @@ def campaign_health(c: Campaign):
 
 
 
+
+def campaign_ring_summary(c: Campaign, ring_percent: int) -> dict:
+    jobs = [
+        job for job in c.jobs
+        if int(load(job.payload_json, {}).get("_ring_percent", -1)) == int(ring_percent)
+    ]
+    counts = {"pending": 0, "blocked": 0, "claimed": 0, "running": 0, "stalled": 0, "success": 0, "failed": 0, "skipped": 0}
+    validations = {"passed": 0, "waiting": 0, "failed": 0, "disabled": 0}
+    durations = []
+    for job in jobs:
+        counts[job.status] = counts.get(job.status, 0) + 1
+        if job.status == "success":
+            validation = job_post_patch_validation(job)
+            status = validation.get("status", "waiting")
+            validations[status] = validations.get(status, 0) + 1
+        if job.started_at and job.finished_at:
+            started = job.started_at if job.started_at.tzinfo else job.started_at.replace(tzinfo=timezone.utc)
+            finished = job.finished_at if job.finished_at.tzinfo else job.finished_at.replace(tzinfo=timezone.utc)
+            durations.append(max(0.0, (finished - started).total_seconds()))
+    terminal = counts["success"] + counts["failed"] + counts["skipped"]
+    success_rate = round((counts["success"] / terminal * 100), 1) if terminal else 0.0
+    failure_rate = round((counts["failed"] / terminal * 100), 1) if terminal else 0.0
+    avg_duration = round(sum(durations) / len(durations), 1) if durations else None
+    return {
+        "ring_percent": int(ring_percent),
+        "jobs": len(jobs),
+        "counts": counts,
+        "terminal": terminal,
+        "success_rate": success_rate,
+        "failure_rate": failure_rate,
+        "validation": validations,
+        "avg_duration_seconds": avg_duration,
+    }
+
+
+def campaign_regression_analysis(c: Campaign) -> dict:
+    payload = load(c.payload_json, {})
+    governance = payload.get("rollout_governance") if isinstance(payload.get("rollout_governance"), dict) else {}
+    max_success_drop = float(governance.get("promotion_max_success_drop", 10.0) or 10.0)
+    current = campaign_ring_summary(c, c.ring_percent)
+    previous_rings = sorted({
+        int(load(job.payload_json, {}).get("_ring_percent", -1))
+        for job in c.jobs
+        if 0 < int(load(job.payload_json, {}).get("_ring_percent", -1)) < int(c.ring_percent)
+    })
+    previous = campaign_ring_summary(c, previous_rings[-1]) if previous_rings else None
+    reasons = []
+    status = "NO_BASELINE"
+
+    if previous:
+        success_drop = round(previous["success_rate"] - current["success_rate"], 1)
+        failure_rate_increase = round(current["failure_rate"] - previous["failure_rate"], 1)
+        validation_failure_delta = int(current["validation"].get("failed", 0)) - int(previous["validation"].get("failed", 0))
+        if success_drop > max_success_drop:
+            reasons.append(f"success rate dropped {success_drop} p.p. versus previous ring")
+        if failure_rate_increase > 0:
+            reasons.append(f"failure rate increased {failure_rate_increase} p.p. versus previous ring")
+        if validation_failure_delta > 0:
+            reasons.append(f"post-patch validation failures increased by {validation_failure_delta}")
+        status = "REGRESSION" if reasons else "STABLE"
+    else:
+        success_drop = None
+        failure_rate_increase = None
+        validation_failure_delta = None
+        if current["jobs"]:
+            reasons.append("first observed ring; no previous ring baseline")
+        else:
+            reasons.append("current ring has no jobs")
+
+    return {
+        "status": status,
+        "reasons": reasons,
+        "current": current,
+        "previous": previous,
+        "thresholds": {
+            "max_success_rate_drop": max_success_drop,
+        },
+        "deltas": {
+            "success_rate_drop": success_drop,
+            "failure_rate_increase": failure_rate_increase,
+            "validation_failure_delta": validation_failure_delta,
+        },
+    }
+
+
 def campaign_rollout_governance(c: Campaign, reference: datetime | None = None) -> dict:
     reference = reference or now()
     payload = load(c.payload_json, {})
@@ -5436,6 +5521,7 @@ def campaign_rollout_governance(c: Campaign, reference: datetime | None = None) 
         plan.append(100)
 
     health = campaign_health(c)
+    regression = campaign_regression_analysis(c)
     current_index = plan.index(c.ring_percent) if c.ring_percent in plan else 0
     next_ring = plan[current_index + 1] if current_index + 1 < len(plan) else None
     soak_minutes = max(0, int(governance.get("soak_minutes", 0) or 0))
@@ -5462,6 +5548,9 @@ def campaign_rollout_governance(c: Campaign, reference: datetime | None = None) 
     elif health["counts"].get("failed", 0) > 0 and pause_on_failure:
         state = "PAUSE"
         reason = "current ring has failed jobs and pause_on_failure is enabled"
+    elif regression["status"] == "REGRESSION":
+        state = "PAUSE"
+        reason = "regression detected versus previous ring"
     elif not health["ready"]:
         state = "RUNNING"
         reason = health["reason"]
@@ -5485,6 +5574,18 @@ def campaign_rollout_governance(c: Campaign, reference: datetime | None = None) 
         "soak_remaining_seconds": soak_remaining_seconds,
         "pause_on_failure": pause_on_failure,
         "promotion_min_success_rate": float(governance.get("promotion_min_success_rate", 90.0) or 90.0),
+        "promotion_max_success_drop": float(governance.get("promotion_max_success_drop", 10.0) or 10.0),
+        "regression": regression,
+        "recommendation": {
+            "action": (
+                "PROMOTE" if state == "PROMOTE"
+                else "PAUSE" if state == "PAUSE"
+                else "WAIT" if state in {"RUNNING", "SOAK"}
+                else "COMPLETE" if state == "COMPLETE"
+                else "REVIEW"
+            ),
+            "reasons": regression["reasons"] if regression["status"] == "REGRESSION" else [reason],
+        },
         "health": health,
     }
 
@@ -9726,6 +9827,7 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             "plan": rollout_plan,
             "soak_minutes": int(body.soak_minutes),
             "promotion_min_success_rate": float(body.promotion_min_success_rate),
+            "promotion_max_success_drop": float(body.promotion_max_success_drop),
             "pause_on_failure": bool(body.pause_on_failure),
         },
     }
@@ -9780,6 +9882,7 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             "rollout_plan": rollout_plan,
             "soak_minutes": int(body.soak_minutes),
             "promotion_min_success_rate": float(body.promotion_min_success_rate),
+            "promotion_max_success_drop": float(body.promotion_max_success_drop),
             "pause_on_failure": bool(body.pause_on_failure),
         },
     )
@@ -10092,6 +10195,26 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
         "campaign": serialize_campaign(campaign),
     }
 
+
+
+
+@app.get("/api/admin/campaigns/{campaign_id}/promotion-analysis")
+def get_campaign_promotion_analysis(
+    campaign_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    rollout = campaign_rollout_governance(campaign)
+    return {
+        "campaign_id": campaign.id,
+        "campaign_name": campaign.name,
+        "rollout": rollout,
+        "regression": rollout.get("regression"),
+        "recommendation": rollout.get("recommendation"),
+    }
 
 
 @app.get("/api/admin/campaigns/{campaign_id}/rollout-governance")
