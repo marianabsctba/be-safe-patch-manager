@@ -1715,7 +1715,9 @@ function renderRemediationHub() {
       '<td><strong>' + esc(item.before_risk_total) + ' → ' + esc(item.projected_risk_total) + '</strong></td>' +
       '<td><strong>-' + esc(item.risk_reduction) + '</strong><br><small class="muted">' + esc(item.reduction_percent) + '%</small></td>' +
       '<td><strong>' + esc(item.appetite_crossings) + '</strong></td>' +
-      '<td><small>' + esc(cves.slice(0, 4).join(', ') || '-') + (cves.length > 4 ? ' +' + esc(cves.length - 4) : '') + '</small></td>' +
+      '<td><small>' + esc(cves.slice(0, 4).join(', ') || '-') + (cves.length > 4 ? ' +' + esc(cves.length - 4) : '') +
+        '<br><span class="muted">' + esc((item.deployment_guidance || {}).mode || '-') +
+        ' · ring ' + esc((item.deployment_guidance || {}).suggested_ring_percent || '-') + '%</span></small></td>' +
       '<td>' + campaignButton + '</td>' +
     '</tr>';
   }).join('');
@@ -2015,7 +2017,8 @@ window.prepareCampaignFromRemediationGroup = (encodedPatchRef) => {
   const families = Array.isArray(group.os_families) ? group.os_families : [];
   form.elements.target_os.value = families.length === 1 ? families[0] : 'all';
   form.elements.target_tag.value = '';
-  form.elements.ring_percent.value = agentIds.length > 10 ? 10 : 100;
+  const guidance = group.deployment_guidance || {};
+  form.elements.ring_percent.value = Number(guidance.suggested_ring_percent || (agentIds.length > 10 ? 10 : 100));
   form.elements.action.value = 'install_updates';
   form.elements.packages.value = patchRef;
   form.elements.description.value =
@@ -2024,6 +2027,7 @@ window.prepareCampaignFromRemediationGroup = (encodedPatchRef) => {
     ' · ' + String(group.cve_count || 0) + ' CVEs' +
     ' · ' + String(agentIds.length) + ' ativos' +
     ' · redução projetada ' + String(group.risk_reduction || 0) +
+    ' · guidance ' + String((group.deployment_guidance || {}).mode || 'manual_review') +
     ' · população congelada no momento da criação';
 
   const context = $('#campaignSourceContext');
@@ -2032,7 +2036,8 @@ window.prepareCampaignFromRemediationGroup = (encodedPatchRef) => {
     '<strong>Origem da campanha</strong>' +
     '<span>Remediation Hub · ' + esc(patchRef) +
     ' · ' + esc(agentIds.length) + ' endpoints exatos' +
-    ' · ' + esc(group.finding_count || 0) + ' findings</span>';
+    ' · ' + esc(group.finding_count || 0) + ' findings' +
+    ' · ring sugerido ' + esc((group.deployment_guidance || {}).suggested_ring_percent || '-') + '%</span>';
 
   setView('campaigns');
   form.scrollIntoView({ behavior: 'smooth', block: 'start' });
