@@ -48,6 +48,9 @@
 - EPSS percentual é suportado e valores fora de `0..1` são rejeitados em vez de clampados;
 - tags de exposição deixaram de elevar também a criticidade, removendo double count de contexto;
 - tendência de Asset Risk passa a comparar com o snapshot anterior quando o snapshot mais recente já representa o score atual;
+- adicionada Risk Reduction Simulation por ativo/finding via `/api/admin/agents/{agent_id}/risk-simulation`;
+- simulação calcula before/after, delta, percentual de redução e cruzamento abaixo do appetite sem mutar findings, evidência, campanhas ou histórico;
+- console ganhou ação `Simular impacto` e painel de resultado projetado;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
