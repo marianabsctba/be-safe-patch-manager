@@ -1511,7 +1511,10 @@ def apply_patch_metadata_record(
             "actor": actor,
         }
         if not dry_run:
-            set_entry_field(entry, field, incoming)
+            if field == "cves":
+                state["enriched_cves"] = incoming or []
+            else:
+                set_entry_field(entry, field, incoming)
 
     if not dry_run:
         state["fields"] = fields
