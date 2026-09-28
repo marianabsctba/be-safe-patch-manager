@@ -32,7 +32,7 @@ from .observability import metrics_response, prometheus_http_middleware, readine
 from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.25.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.26.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -1811,6 +1811,134 @@ def remediation_projects_report(
     }
 
 
+
+REMEDIATION_PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+
+def remediation_group_decision(
+    *,
+    kev_findings: int,
+    ransomware_findings: int,
+    high_epss_findings: int,
+    max_epss: float,
+    sla_breached: int,
+    sla_due_soon: int,
+    external_assets: int,
+    critical_assets: int,
+    asset_count: int,
+    patch_confidence: dict | None,
+) -> dict:
+    """Build an explainable remediation priority and a conservative rollout plan."""
+    priority_reasons = []
+    confidence = (
+        str((patch_confidence or {}).get("confidence") or "insufficient_data").strip().lower()
+    )
+
+    if kev_findings:
+        priority_reasons.append(f"{kev_findings} finding(s) no CISA KEV")
+    if ransomware_findings:
+        priority_reasons.append(f"{ransomware_findings} finding(s) com uso conhecido em ransomware")
+    if sla_breached:
+        priority_reasons.append(f"{sla_breached} finding(s) com SLA vencido")
+    if sla_due_soon:
+        priority_reasons.append(f"{sla_due_soon} finding(s) próximos do SLA")
+    if external_assets:
+        priority_reasons.append(f"{external_assets} ativo(s) com exposição externa")
+    if critical_assets:
+        priority_reasons.append(f"{critical_assets} ativo(s) de criticidade 4–5")
+    if high_epss_findings:
+        priority_reasons.append(f"{high_epss_findings} finding(s) com EPSS >= 50%")
+
+    if (
+        (kev_findings and (ransomware_findings or sla_breached or external_assets or critical_assets))
+        or (ransomware_findings and external_assets)
+    ):
+        priority = "P0"
+        priority_label = "remediar agora"
+    elif (
+        kev_findings
+        or ransomware_findings
+        or sla_breached
+        or (max_epss >= 0.5 and (external_assets or critical_assets))
+    ):
+        priority = "P1"
+        priority_label = "prioridade imediata"
+    elif sla_due_soon or max_epss >= 0.2 or critical_assets:
+        priority = "P2"
+        priority_label = "programar próximo ciclo"
+    else:
+        priority = "P3"
+        priority_label = "planejado"
+
+    if not priority_reasons:
+        priority_reasons.append("sem sinal de ameaça/SLA que justifique escalonamento adicional")
+
+    change_reasons = []
+    if confidence in {"low", "insufficient_data"}:
+        change_reasons.append(
+            "histórico local de deploy insuficiente"
+            if confidence == "insufficient_data"
+            else "histórico local de falha exige cautela"
+        )
+    if critical_assets:
+        change_reasons.append("inclui ativos críticos")
+    if asset_count >= 50:
+        change_reasons.append("blast radius elevado")
+    if external_assets and critical_assets:
+        change_reasons.append("população combina exposição externa e ativos críticos")
+
+    if (confidence in {"low", "insufficient_data"} and critical_assets) or asset_count >= 100:
+        change_level = "high"
+    elif confidence in {"low", "insufficient_data"} or critical_assets or asset_count >= 50:
+        change_level = "medium"
+    else:
+        change_level = "low"
+
+    if asset_count <= 1:
+        ring_plan = [100]
+    elif change_level == "high":
+        ring_plan = [5, 10, 30, 100] if asset_count >= 20 else [10, 30, 100]
+    elif change_level == "medium":
+        ring_plan = [10, 30, 100] if asset_count >= 10 else [10, 100]
+    else:
+        ring_plan = [30, 100] if asset_count >= 10 else [100]
+
+    if change_level == "high":
+        mode = "guarded_canary"
+    elif confidence in {"low", "insufficient_data"}:
+        mode = "pilot_collect_evidence"
+    elif confidence == "medium":
+        mode = "pilot_then_expand"
+    else:
+        mode = "controlled_rollout"
+
+    return {
+        "priority": {
+            "tier": priority,
+            "label": priority_label,
+            "reasons": priority_reasons,
+        },
+        "change_risk": {
+            "level": change_level,
+            "reasons": change_reasons or ["mudança com evidência local e blast radius controlado"],
+            "patch_confidence": confidence,
+        },
+        "deployment_guidance": {
+            "mode": mode,
+            "suggested_ring_percent": ring_plan[0],
+            "ring_plan": ring_plan,
+            "health_gate_required": True,
+            "rollback_checkpoint_recommended": True,
+            "rollback_checkpoint_required": change_level == "high" and critical_assets > 0,
+            "maintenance_window_recommended": critical_assets > 0 or asset_count >= 50,
+            "reason": (
+                f"{priority} / change-risk {change_level}; "
+                f"patch-confidence {confidence}; rollout progressivo com validação entre rings"
+            ),
+        },
+    }
+
+
 def remediation_hub_report(
     db: Session,
     reference: datetime | None = None,
@@ -1856,9 +1984,26 @@ def remediation_hub_report(
                     "cves": set(),
                     "severities": set(),
                     "max_cvss": 0.0,
+                    "kev_findings": 0,
+                    "ransomware_findings": 0,
+                    "high_epss_findings": 0,
+                    "max_epss": 0.0,
+                    "sla_breached": 0,
+                    "sla_due_soon": 0,
                 })
                 group["findings_by_agent"].setdefault(agent.id, set()).add(finding.id)
-                group["finding_ids"].add(finding.id)
+                if finding.id not in group["finding_ids"]:
+                    group["finding_ids"].add(finding.id)
+                    detection = finding_detection_risk(finding, reference)
+                    sla = vulnerability_sla(finding, reference)
+                    group["kev_findings"] += 1 if detection["kev"] else 0
+                    group["ransomware_findings"] += 1 if detection["ransomware"] else 0
+                    epss = detection["epss"]
+                    if epss is not None:
+                        group["max_epss"] = max(group["max_epss"], float(epss))
+                        group["high_epss_findings"] += 1 if float(epss) >= 0.5 else 0
+                    group["sla_breached"] += 1 if sla["state"] == "breached" else 0
+                    group["sla_due_soon"] += 1 if sla["state"] == "due_soon" else 0
                 if finding.cve:
                     group["cves"].add(finding.cve)
                 group["severities"].add(str(finding.severity or "unknown").lower())
@@ -1872,6 +2017,8 @@ def remediation_hub_report(
         appetite_crossings = 0
         affected_assets = []
         os_families = set()
+        external_assets = 0
+        critical_assets = 0
 
         for agent_id, finding_ids in group["findings_by_agent"].items():
             agent = agent_map[agent_id]
@@ -1895,6 +2042,10 @@ def remediation_hub_report(
             )
             appetite_crossings += 1 if crossed else 0
             os_families.add(str(agent.os_family or "unknown").lower())
+            criticality = asset_criticality(agent)["score"]
+            external = asset_exposure(agent)["external"]
+            external_assets += 1 if external else 0
+            critical_assets += 1 if criticality >= 4 else 0
             affected_assets.append({
                 "agent_id": agent.id,
                 "hostname": agent.hostname,
@@ -1905,6 +2056,8 @@ def remediation_hub_report(
                 "risk_reduction": round(max(0.0, before["score"] - after["score"]), 1),
                 "risk_appetite": policy["risk_appetite"],
                 "crosses_below_appetite": crossed,
+                "criticality": criticality,
+                "external": external,
             })
 
         reduction = round(max(0.0, before_total - after_total), 1)
@@ -1915,30 +2068,19 @@ def remediation_hub_report(
         )
         affected_assets.sort(key=lambda item: (-item["risk_reduction"], item["hostname"].lower()))
         confidence_item = confidence.get(group["patch_ref"].lower())
-        if not confidence_item or confidence_item["confidence"] == "insufficient_data":
-            deployment_guidance = {
-                "mode": "pilot_collect_evidence",
-                "suggested_ring_percent": 10,
-                "reason": "insufficient local deployment evidence",
-            }
-        elif confidence_item["confidence"] == "low":
-            deployment_guidance = {
-                "mode": "pilot_review_failures",
-                "suggested_ring_percent": 10,
-                "reason": "local patch success rate is below the medium-confidence threshold",
-            }
-        elif confidence_item["confidence"] == "medium":
-            deployment_guidance = {
-                "mode": "pilot_then_expand",
-                "suggested_ring_percent": 10,
-                "reason": "local evidence is usable but does not meet high-confidence criteria",
-            }
-        else:
-            deployment_guidance = {
-                "mode": "controlled_rollout",
-                "suggested_ring_percent": 30 if len(group["findings_by_agent"]) >= 10 else 100,
-                "reason": "local patch evidence meets the high-confidence threshold",
-            }
+        decision = remediation_group_decision(
+            kev_findings=group["kev_findings"],
+            ransomware_findings=group["ransomware_findings"],
+            high_epss_findings=group["high_epss_findings"],
+            max_epss=group["max_epss"],
+            sla_breached=group["sla_breached"],
+            sla_due_soon=group["sla_due_soon"],
+            external_assets=external_assets,
+            critical_assets=critical_assets,
+            asset_count=len(group["findings_by_agent"]),
+            patch_confidence=confidence_item,
+        )
+        deployment_guidance = decision["deployment_guidance"]
 
         items.append({
             "patch_ref": group["patch_ref"],
@@ -1957,11 +2099,24 @@ def remediation_hub_report(
             "single_asset_campaign_ready": len(group["findings_by_agent"]) == 1,
             "primary_finding_id": next(iter(group["finding_ids"])) if len(group["finding_ids"]) == 1 else None,
             "patch_confidence": confidence_item,
+            "priority": decision["priority"],
+            "change_risk": decision["change_risk"],
             "deployment_guidance": deployment_guidance,
+            "threat_sla": {
+                "kev_findings": group["kev_findings"],
+                "ransomware_findings": group["ransomware_findings"],
+                "high_epss_findings": group["high_epss_findings"],
+                "max_epss": round(group["max_epss"], 4),
+                "sla_breached": group["sla_breached"],
+                "sla_due_soon": group["sla_due_soon"],
+                "external_assets": external_assets,
+                "critical_assets": critical_assets,
+            },
             "affected_assets": affected_assets,
         })
 
     items.sort(key=lambda item: (
+        REMEDIATION_PRIORITY_ORDER.get(item["priority"]["tier"], 9),
         -item["risk_reduction"],
         -item["appetite_crossings"],
         -item["finding_count"],
@@ -1985,6 +2140,11 @@ def remediation_hub_report(
                 for agent_id in group["findings_by_agent"]
             }),
             "appetite_crossings": sum(item["appetite_crossings"] for item in items),
+            "priority_p0": sum(1 for item in items if item["priority"]["tier"] == "P0"),
+            "priority_p1": sum(1 for item in items if item["priority"]["tier"] == "P1"),
+            "high_change_risk": sum(1 for item in items if item["change_risk"]["level"] == "high"),
+            "kev_findings": sum(item["threat_sla"]["kev_findings"] for item in items),
+            "sla_breached": sum(item["threat_sla"]["sla_breached"] for item in items),
         },
         "items": items,
         "note": "Each row simulates remediation of all open findings linked to the same patch reference. Risk is recalculated per asset before aggregation.",

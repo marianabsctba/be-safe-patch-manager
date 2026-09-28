@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.26.0
+
+- control plane e dashboard passam para versão 0.26.0; agente permanece em 0.16.0;
+- Remediation Hub ganha um Decision Engine explicável por grupo de patch, sem score opaco adicional;
+- prioridade operacional passa a ser P0/P1/P2/P3 com razões objetivas baseadas em CISA KEV, ransomware known, EPSS, SLA, exposição externa e criticidade do ativo;
+- risco da vulnerabilidade e risco da mudança ficam separados: change_risk usa Patch Confidence local, criticidade e blast radius;
+- cada grupo passa a expor plano de rollout recomendado por rings, incluindo canário de 5% quando o change risk é alto e a população permite;
+- guidance informa health gate obrigatório, checkpoint de rollback recomendado/obrigatório e necessidade de janela de manutenção;
+- draft criado pelo Remediation Hub herda ring inicial, health gate e rollback do guidance, mas continua sem executar deploy automaticamente;
+- console mostra prioridade, change risk, sinais críticos e sequência de rings diretamente no Remediation Hub;
+- ordenação do Hub passa a priorizar P0/P1 antes da redução projetada de risco;
+- adicionados testes unitários do Decision Engine para emergência KEV/ransomware, change risk alto e rollout de baixo risco.
+
 ## 0.25.0
 
 - control plane e dashboard passam para versão 0.25.0; agente permanece em 0.16.0;

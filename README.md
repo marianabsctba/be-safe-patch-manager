@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.25; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.26; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -33,6 +33,8 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - histórico auditável de Asset Risk com model version, decomposition, cálculo intermediário, policy/appetite e estado de governança persistidos por snapshot;
 - timeline por ativo na console, mostrando evolução de score, appetite/policy, governança e versão do modelo ao longo do tempo;
 - Remediation Hub por patch/action com impacto agregado recalculado por ativo;
+- Remediation Decision Engine com prioridade P0–P3 explicável, sinais de KEV/ransomware/EPSS/SLA/exposição/criticidade, change risk separado e rollout sugerido por rings;
+- drafts preparados pelo Remediation Hub já carregam health gate e política de rollback coerentes com o risco da mudança, sem executar deploy automaticamente;
 - Active Threat Watch baseado em CISA KEV, EPSS e ransomware known;
 - Patch Confidence a partir do histórico local de deploys;
 - Asset Accountability com owner, business service e environment;
@@ -60,7 +62,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - Windows Update Agent via COM no Windows;
 - `apt`, `dnf` e `yum` no Linux;
 - campanhas por SO, tag, pacote/KB e percentual;
-- rollout progressivo determinístico em **10% → 30% → 100%**;
+- rollout progressivo determinístico em **5% → 10% → 30% → 100%** quando o change risk exige canário menor, mantendo 10/30/100 ou 30/100 para cenários mais seguros;
 - health gate antes de promover o próximo ring;
 - janela de manutenção opcional por horário, dias e timezone;
 - política de reboot;

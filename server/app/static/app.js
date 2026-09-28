@@ -1914,6 +1914,19 @@ function renderRemediationHub() {
       esc(asset.hostname) + ' (-' + esc(asset.risk_reduction) + ')'
     ).join('<br>');
     const encodedPatchRef = encodeURIComponent(item.patch_ref).replace(/'/g, '%27');
+    const priority = item.priority || {};
+    const changeRisk = item.change_risk || {};
+    const guidance = item.deployment_guidance || {};
+    const signals = item.threat_sla || {};
+    const ringPlan = Array.isArray(guidance.ring_plan) ? guidance.ring_plan : [guidance.suggested_ring_percent || '-'];
+    const priorityClass = priority.tier === 'P0' ? 'fail' : priority.tier === 'P1' ? 'warn' : priority.tier === 'P2' ? 'info' : 'muted-badge';
+    const changeClass = changeRisk.level === 'high' ? 'fail' : changeRisk.level === 'medium' ? 'warn' : 'ok';
+    const priorityDetail = [
+      signals.kev_findings ? signals.kev_findings + ' KEV' : '',
+      signals.ransomware_findings ? signals.ransomware_findings + ' ransomware' : '',
+      signals.sla_breached ? signals.sla_breached + ' SLA vencido' : '',
+      signals.external_assets ? signals.external_assets + ' externo(s)' : '',
+    ].filter(Boolean).join(' · ') || 'sem sinal crítico adicional';
     const campaignButton = roleAtLeast('operator')
       ? '<button class="row-action" onclick="prepareCampaignFromRemediationGroup(\'' + encodedPatchRef + '\')">Preparar campanha</button>' +
         ' <button class="row-action" onclick="createRemediationProjectFromHub(\'' + encodedPatchRef + '\')">Criar projeto</button>'
@@ -1929,9 +1942,12 @@ function renderRemediationHub() {
       '<td><strong>' + esc(item.before_risk_total) + ' → ' + esc(item.projected_risk_total) + '</strong></td>' +
       '<td><strong>-' + esc(item.risk_reduction) + '</strong><br><small class="muted">' + esc(item.reduction_percent) + '%</small></td>' +
       '<td><strong>' + esc(item.appetite_crossings) + '</strong></td>' +
+      '<td>' + badge(priority.tier || 'P3', priorityClass) +
+        ' ' + badge('change ' + (changeRisk.level || 'low'), changeClass) +
+        '<br><small class="muted">' + esc(priorityDetail) + '</small></td>' +
       '<td><small>' + esc(cves.slice(0, 4).join(', ') || '-') + (cves.length > 4 ? ' +' + esc(cves.length - 4) : '') +
-        '<br><span class="muted">' + esc((item.deployment_guidance || {}).mode || '-') +
-        ' · ring ' + esc((item.deployment_guidance || {}).suggested_ring_percent || '-') + '%</span></small></td>' +
+        '<br><span class="muted">' + esc(guidance.mode || '-') +
+        ' · rings ' + esc(ringPlan.join(' → ')) + '%</span></small></td>' +
       '<td>' + campaignButton + '</td>' +
     '</tr>';
   }).join('');
@@ -2537,6 +2553,10 @@ window.prepareCampaignFromRemediationGroup = (encodedPatchRef) => {
   form.elements.target_tag.value = '';
   const guidance = group.deployment_guidance || {};
   form.elements.ring_percent.value = Number(guidance.suggested_ring_percent || (agentIds.length > 10 ? 10 : 100));
+  form.elements.health_gate_enabled.checked = guidance.health_gate_required !== false;
+  form.elements.health_gate_require_telemetry.checked = guidance.health_gate_required !== false;
+  form.elements.prepare_rollback.checked = guidance.rollback_checkpoint_recommended !== false;
+  form.elements.rollback_required.checked = guidance.rollback_checkpoint_required === true;
   form.elements.action.value = 'install_updates';
   form.elements.packages.value = patchRef;
   form.elements.description.value =
@@ -2545,7 +2565,10 @@ window.prepareCampaignFromRemediationGroup = (encodedPatchRef) => {
     ' · ' + String(group.cve_count || 0) + ' CVEs' +
     ' · ' + String(agentIds.length) + ' ativos' +
     ' · redução projetada ' + String(group.risk_reduction || 0) +
+    ' · prioridade ' + String((group.priority || {}).tier || 'P3') +
+    ' · change-risk ' + String((group.change_risk || {}).level || 'low') +
     ' · guidance ' + String((group.deployment_guidance || {}).mode || 'manual_review') +
+    ' · rings ' + String(((group.deployment_guidance || {}).ring_plan || []).join('→') || (group.deployment_guidance || {}).suggested_ring_percent || '-') +
     ' · população congelada no momento da criação';
 
   const context = $('#campaignSourceContext');
@@ -2553,9 +2576,11 @@ window.prepareCampaignFromRemediationGroup = (encodedPatchRef) => {
   context.innerHTML =
     '<strong>Origem da campanha</strong>' +
     '<span>Remediation Hub · ' + esc(patchRef) +
+    ' · ' + esc((group.priority || {}).tier || 'P3') +
+    ' · change ' + esc((group.change_risk || {}).level || 'low') +
     ' · ' + esc(agentIds.length) + ' endpoints exatos' +
     ' · ' + esc(group.finding_count || 0) + ' findings' +
-    ' · ring sugerido ' + esc((group.deployment_guidance || {}).suggested_ring_percent || '-') + '%</span>';
+    ' · rollout ' + esc(((group.deployment_guidance || {}).ring_plan || []).join(' → ') || (group.deployment_guidance || {}).suggested_ring_percent || '-') + '%</span>';
 
   setView('campaigns');
   form.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2913,7 +2938,7 @@ function healthReasonLabel(reason) {
 }
 
 function nextRingPercent(current) {
-  const presets = [10, 30, 100];
+  const presets = [5, 10, 30, 100];
   return presets.find((value) => value > Number(current || 0)) || null;
 }
 

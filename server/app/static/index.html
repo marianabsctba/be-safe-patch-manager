@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.25</small>
+          <small>dashboard v0.26</small>
         </div>
       </div>
     </aside>
@@ -418,7 +418,7 @@
               </div>
               <div id="remediationHubStats" class="integration-details"></div>
               <div class="vuln-note">
-                Agrupa findings pela mesma referência de patch e recalcula o impacto conjunto por ativo antes de agregar. Não soma simulações independentes.
+                Agrupa findings pela mesma referência de patch, recalcula o impacto por ativo e separa prioridade de remediação do risco da mudança. O rollout sugerido é explicável e continua exigindo revisão humana.
               </div>
               <div class="table-wrap">
                 <table>
@@ -431,7 +431,8 @@
                       <th>Risco agregado</th>
                       <th>Redução</th>
                       <th>Cruza appetite</th>
-                      <th>CVEs</th>
+                      <th>Prioridade / Change risk</th>
+                      <th>CVEs / Rollout</th>
                       <th></th>
                     </tr>
                   </thead>
