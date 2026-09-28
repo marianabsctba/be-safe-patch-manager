@@ -650,6 +650,39 @@ O plano é somente leitura. Ele não altera:
 
 A finalidade é apoiar a ordem operacional de remediação com base no modelo de risco atual.
 
+## 7.7. Campaign Candidate from Risk Reduction Plan
+
+Etapas do Risk Reduction Plan expõem:
+
+- `eligible_for_campaign`;
+- referências de patch conhecidas;
+- finding de origem;
+- ação recomendada.
+
+Quando a etapa é elegível, a console oferece **Preparar campanha**.
+
+Essa ação reutiliza o fluxo normal de campanha e apenas pré-preenche:
+
+- ativo alvo;
+- finding de origem;
+- nome/descrição;
+- sistema operacional;
+- ação;
+- referências de patch disponíveis.
+
+A campanha continua sendo revisada pelo operador e nasce como `draft`.
+
+Preparar a campanha **não**:
+
+- cria jobs;
+- faz deploy;
+- avança ring;
+- fecha o finding;
+- altera evidência;
+- altera o Asset Risk.
+
+Deploy permanece uma ação explícita e separada do operador.
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
