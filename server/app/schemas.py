@@ -126,6 +126,23 @@ class VulnerabilityImportRequest(BaseModel):
     findings: List[VulnerabilityFindingInput] = Field(default_factory=list)
 
 
+class RemediationProjectCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
+    patch_ref: str = Field(min_length=1, max_length=255)
+    scope_mode: str = Field(default="static", max_length=32)
+    scope_tag: str = Field(default="", max_length=128)
+    owner: str = Field(min_length=2, max_length=255)
+    due_at: datetime
+    reason: str = Field(min_length=5, max_length=1000)
+
+
+class RemediationProjectUpdate(BaseModel):
+    owner: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    due_at: Optional[datetime] = None
+    status: Optional[str] = None
+    reason: str = Field(min_length=5, max_length=1000)
+
+
 class RemediationRescanRequest(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
