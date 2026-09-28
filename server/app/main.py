@@ -46,6 +46,17 @@ def _seconds_setting(name: str, default: int, minimum: int) -> int:
     return max(minimum, value)
 
 
+def _int_setting(name: str, default: int, minimum: int, maximum: int | None = None) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
 def _bool_setting(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -75,7 +86,7 @@ AGENT_MIN_VERSION = os.getenv("AGENT_MIN_VERSION", "0.13.0").strip() or "0.13.0"
 AGENT_MIN_PROTOCOL = _seconds_setting("AGENT_MIN_PROTOCOL", 2, 1)
 AGENT_ENFORCE_COMPATIBILITY = _bool_setting("AGENT_ENFORCE_COMPATIBILITY", False)
 AGENT_UPDATE_ENABLED = _bool_setting("AGENT_UPDATE_ENABLED", False)
-ASSET_RISK_APPETITE = _seconds_setting("ASSET_RISK_APPETITE", 700, 1)
+ASSET_RISK_APPETITE = _int_setting("ASSET_RISK_APPETITE", 700, 1, 1000)
 AGENT_RELEASE_DIR = Path(os.getenv("AGENT_RELEASE_DIR", "/agent-releases"))
 AGENT_UPDATE_PUBLIC_KEY_FILE = Path(
     os.getenv("AGENT_UPDATE_PUBLIC_KEY_FILE", "/update-trust/agent-update-public.pem")
@@ -703,9 +714,6 @@ ASSET_CRITICALITY_TAGS = {
     "database": 4,
     "domain-controller": 5,
     "identity": 5,
-    "internet-facing": 4,
-    "public": 4,
-    "dmz": 4,
     "staging": 2,
     "dev": 1,
     "development": 1,
@@ -904,6 +912,43 @@ def asset_criticality(agent: Agent | None) -> dict:
     }
 
 
+def parse_boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if value is None:
+        return False
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "known", "on"}:
+        return True
+    if normalized in {"", "0", "false", "no", "n", "unknown", "none", "null", "off"}:
+        return False
+    return False
+
+
+def normalize_epss(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.endswith("%"):
+            try:
+                percent = float(normalized[:-1].strip())
+            except ValueError:
+                return None
+            result = percent / 100.0
+            return result if 0.0 <= result <= 1.0 else None
+        value = normalized
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if 0.0 <= result <= 1.0 else None
+
+
 def finding_detection_risk(finding: VulnerabilityFinding, reference: datetime | None = None) -> dict:
     reference = reference or now()
     raw = load(finding.raw_json, {})
@@ -915,23 +960,19 @@ def finding_detection_risk(finding: VulnerabilityFinding, reference: datetime | 
     score = cvss_points
     factors.append({"factor": "cvss", "points": round(cvss_points, 1), "value": cvss})
 
-    try:
-        epss = float(threat.get("epss")) if threat.get("epss") is not None else None
-    except (TypeError, ValueError):
-        epss = None
+    epss = normalize_epss(threat.get("epss"))
     if epss is not None:
-        epss = max(0.0, min(1.0, epss))
         points = epss * 20.0
         score += points
         factors.append({"factor": "epss", "points": round(points, 1), "value": epss})
 
-    kev = bool(threat.get("kev") or raw.get("known_exploited") or raw.get("cisa_kev"))
+    kev = any(parse_boolish(value) for value in (threat.get("kev"), raw.get("known_exploited"), raw.get("cisa_kev")))
     if kev:
         score += 15
         factors.append({"factor": "known_exploited", "points": 15, "value": True})
 
     ransomware = str(threat.get("kev_ransomware_use") or "").strip().lower()
-    ransomware_known = ransomware in {"known", "yes", "true"} or bool(raw.get("ransomware"))
+    ransomware_known = ransomware in {"known", "yes", "true"} or parse_boolish(raw.get("ransomware"))
     if ransomware_known:
         score += 10
         factors.append({"factor": "ransomware", "points": 10, "value": True})
@@ -1254,7 +1295,10 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
         if not snapshots:
             trend = {"delta": 0.0, "direction": "new", "previous_score": None}
         else:
-            previous = float(snapshots[0].score)
+            comparison = snapshots[0]
+            if len(snapshots) > 1 and float(snapshots[0].score) == float(current):
+                comparison = snapshots[1]
+            previous = float(comparison.score)
             delta = round(current - previous, 1)
             if delta > 0:
                 direction = "up"
@@ -1267,6 +1311,7 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
                 "direction": direction,
                 "previous_score": previous,
                 "last_snapshot_at": snapshots[0].captured_at.isoformat() if snapshots[0].captured_at else None,
+                "comparison_snapshot_at": comparison.captured_at.isoformat() if comparison.captured_at else None,
             }
         row["risk"]["trend"] = trend
 
@@ -1356,13 +1401,8 @@ def vulnerability_risk(finding: VulnerabilityFinding, reference: datetime | None
     score = cvss_points
     reasons.append({"factor": "cvss", "points": cvss_points, "value": cvss})
 
-    epss_value = threat.get("epss")
-    try:
-        epss = float(epss_value) if epss_value is not None else None
-    except (TypeError, ValueError):
-        epss = None
+    epss = normalize_epss(threat.get("epss"))
     if epss is not None:
-        epss = max(0.0, min(1.0, epss))
         epss_points = round(epss * 20.0, 1)
         score += epss_points
         reasons.append({"factor": "epss", "points": epss_points, "value": epss})
