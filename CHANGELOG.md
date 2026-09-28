@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.23.0
+
+- control plane e dashboard passam para versão 0.23.0; agente permanece em 0.16.0;
+- adicionados Remediation Projects persistentes com migration `0015_remediation_projects`;
+- projetos agrupam trabalho por patch reference sem executar patch automaticamente;
+- cada projeto possui owner, prazo, status, baseline de findings/ativos, redução potencial inicial, motivo e trilha de auditoria;
+- escopo `static` congela os findings iniciais; escopo `dynamic` incorpora novos findings da mesma patch/tag;
+- scope drift é explícito: finding que sai da tag ainda aberto não é contabilizado como remediado;
+- progresso usa backlog realmente rastreado e não concede progresso falso por mudança de escopo;
+- projeto não pode ser concluído enquanto ainda houver findings rastreados abertos;
+- lifecycle suporta `active`, `awaiting_verification`, `completed` e `cancelled`;
+- Remediation Hub passa a oferecer criação direta de projeto;
+- console ganha workspace de Remediation Projects com baseline/current, drift, progresso, owner, prazo e status;
+- projeto elegível pode pré-preencher draft de campanha com população exata de até 500 endpoints;
+- campanha continua separada do projeto e exige revisão explícita de ring, janela, health gate e deploy;
+- adicionados testes para static/dynamic scope, progresso, conclusão, auditoria e scope drift.
+
 ## 0.22.0
 
 - control plane e dashboard passam para versão 0.22.0; agente permanece em 0.16.0;
