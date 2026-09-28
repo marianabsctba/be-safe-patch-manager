@@ -21,7 +21,7 @@ os.environ["GREENBONE_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine
 from app.main import app, now
-from app.models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RiskReductionGoal, VulnerabilityFinding
+from app.models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding
 from app import observability
 
 
@@ -356,7 +356,31 @@ def test_metrics_expose_overdue_risk_programs():
             created_by="user:test",
             updated_by="user:test",
         )
-        db.add_all([project, goal])
+        snapshot = RemediationProjectSnapshot(
+            project=project,
+            tracked_open_findings=1,
+            current_scope_findings=1,
+            current_assets=1,
+            closed_from_baseline=0,
+            new_findings_since_baseline=0,
+            scope_departures=0,
+            progress_percent=25.0,
+            remaining_risk_reduction=8.0,
+            realized_risk_reduction=2.0,
+            risk_reduction_progress_percent=20.0,
+            expected_progress_percent=50.0,
+            schedule_variance_percent=-25.0,
+            sla_breached=1,
+            kev_findings=1,
+            external_assets=1,
+            average_age_days=14.0,
+            oldest_age_days=14.0,
+            attention_status="critical",
+            pace_status="overdue",
+            source="test",
+            captured_at=now(),
+        )
+        db.add_all([project, snapshot, goal])
         db.commit()
     finally:
         db.close()
@@ -365,5 +389,10 @@ def test_metrics_expose_overdue_risk_programs():
 
     assert 'patch_manager_remediation_projects{status="active"} 1.0' in body
     assert "patch_manager_remediation_projects_overdue 1.0" in body
+    assert 'patch_manager_remediation_projects_attention{status="critical"} 1.0' in body
+    assert "patch_manager_remediation_projects_remaining_risk_reduction 8.0" in body
+    assert "patch_manager_remediation_projects_realized_risk_reduction 2.0" in body
+    assert "patch_manager_remediation_projects_kev_findings 1.0" in body
+    assert "patch_manager_remediation_projects_sla_breached 1.0" in body
     assert 'patch_manager_risk_goals{status="active"} 1.0' in body
     assert "patch_manager_risk_goals_overdue 1.0" in body
