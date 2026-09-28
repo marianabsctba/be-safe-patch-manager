@@ -16,6 +16,10 @@
 - projeto elegível pode pré-preencher draft de campanha com população exata de até 500 endpoints;
 - campanha continua separada do projeto e exige revisão explícita de ring, janela, health gate e deploy;
 - adicionados testes para static/dynamic scope, progresso, conclusão, auditoria e scope drift.
+- migration `0016_remediation_project_history` adiciona burndown persistente dos Remediation Projects;
+- snapshots registram backlog rastreado, escopo atual, ativos, fechamentos, novos findings, scope drift, progresso e origem;
+- histórico é capturado em criação/alteração do projeto e em mudanças relevantes de vulnerability backlog, com debounce nos syncs automáticos;
+- console ganhou timeline de burndown por Remediation Project.
 
 ## 0.22.0
 
