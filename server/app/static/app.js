@@ -11,6 +11,7 @@ const state = {
   greenbone: null,
   threatIntel: null,
   remediationQueue: null,
+  remediationHub: null,
   riskReduction: null,
   assetRisk: null,
   riskPolicies: [],
@@ -236,13 +237,14 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
       api('/api/admin/integrations/greenbone'),
       api('/api/admin/integrations/threat-intel'),
       api('/api/admin/reports/remediation-queue'),
+      api('/api/admin/reports/remediation-hub'),
       api('/api/admin/reports/risk-reduction-opportunities'),
       api('/api/admin/reports/asset-risk'),
       api('/api/admin/risk-policies'),
@@ -259,6 +261,7 @@ async function load() {
     state.greenbone = greenbone;
     state.threatIntel = threatIntel;
     state.remediationQueue = remediationQueue;
+    state.remediationHub = remediationHub;
     state.riskReduction = riskReduction;
     state.assetRisk = assetRisk;
     state.riskPolicies = riskPolicies;
@@ -296,6 +299,7 @@ function renderAll() {
   renderGreenboneIntegration();
   renderThreatIntelIntegration();
   renderRemediationQueue();
+  renderRemediationHub();
   renderRiskReductionOpportunities();
   renderAssetRisk();
   renderVulnerabilities();
@@ -1233,6 +1237,58 @@ window.editAssetRiskProfile = async (agentId) => {
     toast('Perfil de risco: ' + error.message, 'fail');
   }
 };
+
+
+function renderRemediationHub() {
+  const report = state.remediationHub || {};
+  const summary = report.summary || {};
+  const items = Array.isArray(report.items) ? report.items.slice(0, 25) : [];
+
+  const stats = $('#remediationHubStats');
+  if (stats) {
+    stats.innerHTML = [
+      ['Grupos', summary.remediation_groups || 0],
+      ['Findings cobertos', summary.findings_covered || 0],
+      ['Ativos cobertos', summary.assets_covered || 0],
+      ['Cruza appetite', summary.appetite_crossings || 0],
+    ].map(([label, value]) =>
+      '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+    ).join('');
+  }
+
+  const table = $('#remediationHubTable');
+  if (!table) return;
+  if (!items.length) {
+    table.innerHTML = '<tr><td colspan="9"><div class="empty-state">Sem grupos de remediação com patch reference conhecida.</div></td></tr>';
+    return;
+  }
+
+  table.innerHTML = items.map((item, index) => {
+    const cves = Array.isArray(item.cves) ? item.cves : [];
+    const osFamilies = Array.isArray(item.os_families) ? item.os_families : [];
+    const assets = Array.isArray(item.affected_assets) ? item.affected_assets : [];
+    const topAssets = assets.slice(0, 3).map((asset) =>
+      esc(asset.hostname) + ' (-' + esc(asset.risk_reduction) + ')'
+    ).join('<br>');
+    const campaignButton = (
+      item.single_asset_campaign_ready && item.primary_finding_id && roleAtLeast('operator')
+        ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + item.primary_finding_id + '\')">Preparar campanha</button>'
+        : '<small class="muted">' + (item.asset_count > 1 ? 'multi-asset · revisar escopo' : 'análise') + '</small>'
+    );
+
+    return '<tr>' +
+      '<td><strong>#' + esc(index + 1) + '</strong></td>' +
+      '<td><strong>' + esc(item.patch_ref) + '</strong><br><small class="muted">' + esc(osFamilies.join(', ') || '-') + '</small></td>' +
+      '<td><strong>' + esc(item.finding_count) + '</strong><br><small class="muted">' + esc(item.cve_count) + ' CVEs</small></td>' +
+      '<td><strong>' + esc(item.asset_count) + '</strong><br><small class="muted">' + topAssets + '</small></td>' +
+      '<td><strong>' + esc(item.before_risk_total) + ' → ' + esc(item.projected_risk_total) + '</strong></td>' +
+      '<td><strong>-' + esc(item.risk_reduction) + '</strong><br><small class="muted">' + esc(item.reduction_percent) + '%</small></td>' +
+      '<td><strong>' + esc(item.appetite_crossings) + '</strong></td>' +
+      '<td><small>' + esc(cves.slice(0, 4).join(', ') || '-') + (cves.length > 4 ? ' +' + esc(cves.length - 4) : '') + '</small></td>' +
+      '<td>' + campaignButton + '</td>' +
+    '</tr>';
+  }).join('');
+}
 
 
 function renderRiskReductionOpportunities() {
