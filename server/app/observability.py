@@ -11,7 +11,7 @@ from prometheus_client.core import GaugeMetricFamily
 from sqlalchemy import func, text
 
 from .database import SessionLocal
-from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding
+from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RiskReductionGoal, VulnerabilityFinding
 
 
 APP_VERSION = "0.23.0"
@@ -431,6 +431,52 @@ class PatchManagerCollector:
                     count,
                 )
             yield vulnerabilities
+
+            remediation_projects = GaugeMetricFamily(
+                "patch_manager_remediation_projects",
+                "Remediation Projects by administrative status.",
+                labels=["status"],
+            )
+            for status, count in db.query(
+                RemediationProject.status,
+                func.count(RemediationProject.id),
+            ).group_by(RemediationProject.status).all():
+                remediation_projects.add_metric([str(status or "unknown")], count)
+            yield remediation_projects
+
+            overdue_projects = db.query(RemediationProject).filter(
+                RemediationProject.status.in_(["active", "awaiting_verification"]),
+                RemediationProject.due_at < current,
+            ).count()
+            overdue_project_metric = GaugeMetricFamily(
+                "patch_manager_remediation_projects_overdue",
+                "Active Remediation Projects past their due date.",
+            )
+            overdue_project_metric.add_metric([], overdue_projects)
+            yield overdue_project_metric
+
+            risk_goals = GaugeMetricFamily(
+                "patch_manager_risk_goals",
+                "Risk Reduction Goals by administrative status.",
+                labels=["status"],
+            )
+            for status, count in db.query(
+                RiskReductionGoal.status,
+                func.count(RiskReductionGoal.id),
+            ).group_by(RiskReductionGoal.status).all():
+                risk_goals.add_metric([str(status or "unknown")], count)
+            yield risk_goals
+
+            overdue_goals = db.query(RiskReductionGoal).filter(
+                RiskReductionGoal.status == "active",
+                RiskReductionGoal.due_at < current,
+            ).count()
+            overdue_goal_metric = GaugeMetricFamily(
+                "patch_manager_risk_goals_overdue",
+                "Active Risk Reduction Goals past their due date.",
+            )
+            overdue_goal_metric.add_metric([], overdue_goals)
+            yield overdue_goal_metric
 
             remediation = GaugeMetricFamily(
                 "patch_manager_remediation_evidence",
