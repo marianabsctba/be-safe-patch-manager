@@ -289,3 +289,33 @@ def test_http_metric_uses_route_template_not_agent_identifier():
     metrics = client.get("/metrics").text
     assert 'route="/api/admin/agents/{agent_id}/tags"' in metrics
     assert agent_id not in metrics
+
+
+
+def test_threat_intel_metrics_distinguish_degraded_and_stale(monkeypatch):
+    monkeypatch.setattr(observability, "THREAT_INTEL_STALE_SECONDS", 3600)
+
+    db = SessionLocal()
+    try:
+        db.add(IntegrationState(
+            name="threat_intel",
+            enabled=True,
+            status="degraded",
+            last_success_at=now() - timedelta(hours=2),
+            details_json='{"source_errors":{"epss":"timeout"}}',
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    client = TestClient(app)
+    body = client.get("/metrics").text
+
+    assert "patch_manager_threat_intel_sync_healthy 1.0" in body
+    assert "patch_manager_threat_intel_degraded 1.0" in body
+    assert "patch_manager_threat_intel_stale 1.0" in body
+    age_line = next(
+        line for line in body.splitlines()
+        if line.startswith("patch_manager_threat_intel_age_seconds ")
+    )
+    assert float(age_line.split()[-1]) >= 3600
