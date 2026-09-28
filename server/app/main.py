@@ -1261,6 +1261,32 @@ def remediation_hub_report(
             else 0.0
         )
         affected_assets.sort(key=lambda item: (-item["risk_reduction"], item["hostname"].lower()))
+        confidence_item = confidence.get(group["patch_ref"].lower())
+        if not confidence_item or confidence_item["confidence"] == "insufficient_data":
+            deployment_guidance = {
+                "mode": "pilot_collect_evidence",
+                "suggested_ring_percent": 10,
+                "reason": "insufficient local deployment evidence",
+            }
+        elif confidence_item["confidence"] == "low":
+            deployment_guidance = {
+                "mode": "pilot_review_failures",
+                "suggested_ring_percent": 10,
+                "reason": "local patch success rate is below the medium-confidence threshold",
+            }
+        elif confidence_item["confidence"] == "medium":
+            deployment_guidance = {
+                "mode": "pilot_then_expand",
+                "suggested_ring_percent": 10,
+                "reason": "local evidence is usable but does not meet high-confidence criteria",
+            }
+        else:
+            deployment_guidance = {
+                "mode": "controlled_rollout",
+                "suggested_ring_percent": 30 if len(group["findings_by_agent"]) >= 10 else 100,
+                "reason": "local patch evidence meets the high-confidence threshold",
+            }
+
         items.append({
             "patch_ref": group["patch_ref"],
             "finding_count": len(group["finding_ids"]),
@@ -1277,7 +1303,8 @@ def remediation_hub_report(
             "os_families": sorted(os_families),
             "single_asset_campaign_ready": len(group["findings_by_agent"]) == 1,
             "primary_finding_id": next(iter(group["finding_ids"])) if len(group["finding_ids"]) == 1 else None,
-            "patch_confidence": confidence.get(group["patch_ref"].lower()),
+            "patch_confidence": confidence_item,
+            "deployment_guidance": deployment_guidance,
             "affected_assets": affected_assets,
         })
 
