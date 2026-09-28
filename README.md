@@ -42,6 +42,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - Remediation Projects persistentes por patch/ação, com owner, prazo, baseline, escopo `static` ou `dynamic`, scope drift explícito, progresso e lifecycle separado de campanha/deploy;
 - Remediation Projects podem nascer do Remediation Hub e preparar um draft de campanha multi-asset exato, mantendo revisão humana e health gates antes do deploy;
 - burndown histórico de Remediation Projects com backlog rastreado, novos findings, scope drift, progresso e origem de cada snapshot;
+- Prometheus/alerting para Remediation Projects e Risk Reduction Goals vencidos, evitando depender de inspeção manual da console;
 - etapas elegíveis do plano podem pré-preencher um draft de campanha, mantendo criação e deploy sob controle explícito do operador;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
