@@ -20,6 +20,8 @@
 - snapshots registram backlog rastreado, escopo atual, ativos, fechamentos, novos findings, scope drift, progresso e origem;
 - histórico é capturado em criação/alteração do projeto e em mudanças relevantes de vulnerability backlog, com debounce nos syncs automáticos;
 - console ganhou timeline de burndown por Remediation Project.
+- Prometheus passa a expor Remediation Projects e Risk Reduction Goals por status, além de contadores de itens vencidos;
+- adicionados alertas para Remediation Projects e Risk Reduction Goals vencidos.
 
 ## 0.22.0
 
