@@ -151,6 +151,27 @@ class RemediationProject(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
+    snapshots = relationship("RemediationProjectSnapshot", back_populates="project", cascade="all, delete-orphan")
+
+
+class RemediationProjectSnapshot(Base):
+    __tablename__ = "remediation_project_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(String(36), ForeignKey("remediation_projects.id"), nullable=False, index=True)
+    tracked_open_findings = Column(Integer, nullable=False)
+    current_scope_findings = Column(Integer, nullable=False)
+    current_assets = Column(Integer, nullable=False)
+    closed_from_baseline = Column(Integer, nullable=False)
+    new_findings_since_baseline = Column(Integer, nullable=False)
+    scope_departures = Column(Integer, nullable=False)
+    progress_percent = Column(Float, nullable=False)
+    pace_status = Column(String(32), nullable=False)
+    source = Column(String(64), nullable=False, default="manual")
+    captured_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+    project = relationship("RemediationProject", back_populates="snapshots")
+
 
 class RemediationEvidence(Base):
     __tablename__ = "remediation_evidence"
