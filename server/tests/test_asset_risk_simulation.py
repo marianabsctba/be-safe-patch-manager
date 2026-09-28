@@ -19,7 +19,7 @@ os.environ["THREAT_INTEL_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine
 from app import main
-from app.models import Agent, VulnerabilityFinding
+from app.models import Agent, Campaign, PatchJob, VulnerabilityFinding
 from app.schemas import AssetRiskSimulationRequest
 
 
@@ -344,3 +344,99 @@ def test_remediation_hub_is_read_only(db, monkeypatch):
     db.refresh(finding)
 
     assert finding.status == "open"
+
+
+
+def test_active_threat_watch_groups_kev_and_high_epss(db, monkeypatch):
+    agent = make_agent()
+    kev = make_finding("watch-0001", "critical", 9.8, 0.95, True)
+    epss = make_finding("watch-0002", "high", 8.0, 0.80, False)
+    quiet = make_finding("watch-0003", "medium", 5.0, 0.10, False)
+    for finding in (kev, epss, quiet):
+        finding.agent = agent
+    kev.patch_refs_json = main.dump(["KB-WATCH"])
+    db.add_all([agent, kev, epss, quiet])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    report = main.active_threat_watch_report(db, REFERENCE)
+
+    cves = {item["cve"] for item in report["items"]}
+    assert kev.cve in cves
+    assert epss.cve in cves
+    assert quiet.cve not in cves
+    kev_item = next(item for item in report["items"] if item["cve"] == kev.cve)
+    assert kev_item["kev"] is True
+    assert kev_item["asset_count"] == 1
+    assert "KB-WATCH" in kev_item["patch_refs"]
+
+
+def test_patch_confidence_uses_local_completed_job_history(db, monkeypatch):
+    agent = make_agent()
+    campaign = Campaign(
+        id="confidence-campaign",
+        name="Confidence",
+        target_os="linux",
+        action="install_updates",
+        payload_json=main.dump({"packages": ["pkg-sec"]}),
+        status="deployed",
+    )
+    jobs = []
+    for index in range(10):
+        jobs.append(PatchJob(
+            id=f"confidence-job-{index}",
+            campaign=campaign,
+            agent=agent,
+            action="install_updates",
+            payload_json=campaign.payload_json,
+            status="success" if index < 9 else "failed",
+            finished_at=REFERENCE,
+        ))
+    db.add_all([agent, campaign, *jobs])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    report = main.patch_confidence_report(db)
+    item = next(row for row in report["items"] if row["patch_ref"] == "pkg-sec")
+
+    assert item["completed_jobs"] == 10
+    assert item["success"] == 9
+    assert item["failed"] == 1
+    assert item["success_rate"] == 90.0
+    assert item["confidence"] == "medium"
+
+
+def test_remediation_hub_includes_patch_confidence(db, monkeypatch):
+    agent = make_agent()
+    finding = make_finding("hub-confidence", "critical", 9.8, 0.95, True)
+    finding.agent = agent
+    finding.patch_refs_json = main.dump(["pkg-hub"])
+    campaign = Campaign(
+        id="hub-confidence-campaign",
+        name="Hub confidence",
+        target_os="linux",
+        action="install_updates",
+        payload_json=main.dump({"packages": ["pkg-hub"]}),
+        status="deployed",
+    )
+    jobs = [
+        PatchJob(
+            id=f"hub-confidence-job-{index}",
+            campaign=campaign,
+            agent=agent,
+            action="install_updates",
+            payload_json=campaign.payload_json,
+            status="success",
+            finished_at=REFERENCE,
+        )
+        for index in range(5)
+    ]
+    db.add_all([agent, finding, campaign, *jobs])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    report = main.remediation_hub_report(db, REFERENCE)
+    item = next(row for row in report["items"] if row["patch_ref"] == "pkg-hub")
+
+    assert item["patch_confidence"] is not None
+    assert item["patch_confidence"]["success_rate"] == 100.0
