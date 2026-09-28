@@ -4,7 +4,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 
 > **Status:** MVP / laboratório. Control plane v0.18; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
-![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.webp)
+![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
 ## O que já funciona
 
@@ -120,23 +120,25 @@ O Be Safe v0.18 adiciona um modelo próprio de risk-based vulnerability manageme
 
 A referência técnica completa, incluindo fórmula, faixas, tags reconhecidas, exemplos, APIs e princípios de segurança, está em [docs/risk-model.md](docs/risk-model.md).
 
+![Be Safe — Risk-Based Vulnerability Management](docs/images/risk-reduction-features.svg)
+
 ## Dashboard
 
 ### Visão geral
 
-![Dashboard — Visão geral](docs/images/dashboard-overview.webp)
+![Dashboard — Visão geral](docs/images/dashboard-overview.svg)
 
 > A captura acima usa a interface real da `main`; somente os dados foram simulados para mostrar a dashboard populada.
 
 ### Execuções, validação e rollback
 
-![Dashboard — Execuções e rollback](docs/images/dashboard-executions.webp)
+![Dashboard — Execuções e rollback](docs/images/dashboard-executions.svg)
 
 A tela de execuções consolida status do job, validação pós-patch e estado de rollback. Quando um checkpoint Windows elegível existe, a aprovação de rollback é explícita, exige motivo e gera um novo job auditável.
 
 ## Arquitetura
 
-![Be Safe Patch Manager — Arquitetura geral](docs/images/architecture-overview.webp)
+![Be Safe Patch Manager — Arquitetura geral](docs/images/architecture-overview.svg)
 
 A implementação atual é centralizada em FastAPI. O Docker Compose usa PostgreSQL por padrão e o schema é versionado com Alembic. SQLite continua disponível para desenvolvimento e testes. Os agentes Windows e Linux fazem polling de jobs, enviam heartbeat, inventário, patch scan e evidências de execução.
 
@@ -162,7 +164,7 @@ A v0.18 adiciona governança de SLA sem alterar o agente. Findings com status `o
 
 ## Fluxo seguro de implantação
 
-![Be Safe Patch Manager — Fluxo seguro de implantação](docs/images/secure-rollout-flow.webp)
+![Be Safe Patch Manager — Fluxo seguro de implantação](docs/images/secure-rollout-flow.svg)
 
 O fluxo atual é:
 
@@ -833,10 +835,11 @@ be-safe-patch-manager/
 ├── CHANGELOG.md
 ├── docs/
 │   └── images/
-│       ├── dashboard-overview.webp
-│       ├── dashboard-executions.webp
-│       ├── architecture-overview.webp
-│       └── secure-rollout-flow.webp
+│       ├── dashboard-overview.svg
+│       ├── dashboard-executions.svg
+│       ├── architecture-overview.svg
+│       ├── secure-rollout-flow.svg
+│       └── risk-reduction-features.svg
 ├── .github/workflows/ci.yml
 ├── scripts/pre-publish-check.py
 ├── scripts/backup-postgres.sh
