@@ -421,6 +421,77 @@ Motivo: migração do sistema legado em andamento
 
 O risco continua sendo 780. O sistema apenas registra que a organização decidiu aceitar temporariamente esse risco.
 
+## 7.3. Risk Treatment Plan
+
+Treatment Plan representa a decisão de **reduzir ou remover o risco**, diferente de aceitá-lo temporariamente.
+
+Um plano possui:
+
+- owner;
+- ação planejada;
+- prazo;
+- status;
+- criador e último editor;
+- evidência de conclusão;
+- data de conclusão.
+
+Status suportados:
+
+```text
+planned
+in_progress
+completed
+cancelled
+```
+
+Enquanto o ativo estiver acima do appetite e possuir plano ativo, o estado de governança é:
+
+```text
+in_treatment
+```
+
+Se o prazo vencer com status `planned` ou `in_progress`:
+
+```text
+treatment_overdue
+```
+
+Conclusão exige evidência textual. Um plano concluído não pode ser reaberto.
+
+Somente um plano ativo é permitido por ativo.
+
+APIs:
+
+```http
+GET  /api/admin/agents/{agent_id}/risk-treatments
+POST /api/admin/agents/{agent_id}/risk-treatments
+PUT  /api/admin/agents/{agent_id}/risk-treatments/{treatment_id}
+```
+
+Eventos:
+
+- `asset_risk.treatment.created`
+- `asset_risk.treatment.updated`
+
+### Tratamento x aceitação
+
+```text
+Risk Treatment  -> existe ação para reduzir/remover o risco
+Risk Acceptance -> organização aceita temporariamente o risco existente
+```
+
+Nenhum dos dois altera artificialmente o Asset Risk.
+
+A precedência de governança para um ativo acima do appetite é:
+
+```text
+accepted
+treatment_overdue / in_treatment
+above_appetite
+```
+
+Se houver aceite e plano ativos simultaneamente, o estado principal exibido é `accepted`, mas o plano continua registrado e consultável.
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
