@@ -1085,6 +1085,22 @@ def require_asset_above_risk_appetite(
     return risk, policy
 
 
+def agent_ids_matching_risk_tags(db: Session, tags: set[str]) -> set[str]:
+    normalized = {str(tag).strip().lower() for tag in tags if str(tag).strip()}
+    if not normalized:
+        return set()
+    matched = set()
+    for agent in db.query(Agent).all():
+        agent_tags = {
+            str(tag).strip().lower()
+            for tag in load(agent.tags, [])
+            if str(tag).strip()
+        }
+        if agent_tags.intersection(normalized):
+            matched.add(agent.id)
+    return matched
+
+
 def serialize_asset_risk_profile(profile: AssetRiskProfile | None) -> dict | None:
     if not profile:
         return None
@@ -4339,13 +4355,19 @@ def create_asset_risk_treatment(
     db.refresh(treatment)
 
     result = serialize_asset_risk_treatment(treatment)
+    snapshot = capture_asset_risk_snapshots(
+        db,
+        source=f"risk_treatment:{principal['actor']}",
+        minimum_interval_seconds=0,
+        agent_ids={agent.id},
+    )
     audit(
         db,
         principal["actor"],
         "asset_risk.treatment.created",
         "agent",
         agent.id,
-        result,
+        {"treatment": result, "snapshot": snapshot},
     )
     return {"ok": True, "treatment": result}
 
@@ -4415,13 +4437,19 @@ def update_asset_risk_treatment(
     db.refresh(treatment)
 
     after = serialize_asset_risk_treatment(treatment)
+    snapshot = capture_asset_risk_snapshots(
+        db,
+        source=f"risk_treatment_updated:{principal['actor']}",
+        minimum_interval_seconds=0,
+        agent_ids={agent.id},
+    )
     audit(
         db,
         principal["actor"],
         "asset_risk.treatment.updated",
         "agent",
         agent.id,
-        {"before": before, "after": after},
+        {"before": before, "after": after, "snapshot": snapshot},
     )
     return {"ok": True, "treatment": after}
 
@@ -4489,13 +4517,19 @@ def create_asset_risk_acceptance(
     db.refresh(acceptance)
 
     result = serialize_asset_risk_acceptance(acceptance)
+    snapshot = capture_asset_risk_snapshots(
+        db,
+        source=f"risk_acceptance:{principal['actor']}",
+        minimum_interval_seconds=0,
+        agent_ids={agent.id},
+    )
     audit(
         db,
         principal["actor"],
         "asset_risk.acceptance.created",
         "agent",
         agent.id,
-        result,
+        {"acceptance": result, "snapshot": snapshot},
     )
     return {"ok": True, "acceptance": result}
 
@@ -4528,13 +4562,19 @@ def revoke_asset_risk_acceptance(
     db.refresh(acceptance)
 
     result = serialize_asset_risk_acceptance(acceptance)
+    snapshot = capture_asset_risk_snapshots(
+        db,
+        source=f"risk_acceptance_revoked:{principal['actor']}",
+        minimum_interval_seconds=0,
+        agent_ids={agent.id},
+    )
     audit(
         db,
         principal["actor"],
         "asset_risk.acceptance.revoked",
         "agent",
         agent.id,
-        result,
+        {"acceptance": result, "snapshot": snapshot},
     )
     return {"ok": True, "acceptance": result}
 
@@ -4578,13 +4618,24 @@ def create_asset_risk_policy(
     db.add(policy)
     db.commit()
     db.refresh(policy)
+    affected_agent_ids = agent_ids_matching_risk_tags(db, {policy.target_tag})
+    snapshot = (
+        capture_asset_risk_snapshots(
+            db,
+            source=f"risk_policy:{principal['actor']}",
+            minimum_interval_seconds=0,
+            agent_ids=affected_agent_ids,
+        )
+        if affected_agent_ids
+        else {"created": 0, "skipped": 0, "pruned": 0}
+    )
     audit(
         db,
         principal["actor"],
         "asset_risk.policy.created",
         "asset_risk_policy",
         policy.id,
-        serialize_asset_risk_policy(policy),
+        {"policy": serialize_asset_risk_policy(policy), "affected_agents": len(affected_agent_ids), "snapshot": snapshot},
     )
     return {"ok": True, "policy": serialize_asset_risk_policy(policy)}
 
@@ -4601,6 +4652,7 @@ def update_asset_risk_policy(
         raise HTTPException(status_code=404, detail="risk policy not found")
 
     before = serialize_asset_risk_policy(policy)
+    previous_target_tag = str(policy.target_tag or "").strip().lower()
     if body.name is not None:
         name = body.name.strip()
         duplicate = db.query(AssetRiskPolicy).filter(
@@ -4625,13 +4677,27 @@ def update_asset_risk_policy(
     db.refresh(policy)
 
     after = serialize_asset_risk_policy(policy)
+    affected_agent_ids = agent_ids_matching_risk_tags(
+        db,
+        {previous_target_tag, str(policy.target_tag or "").strip().lower()},
+    )
+    snapshot = (
+        capture_asset_risk_snapshots(
+            db,
+            source=f"risk_policy_updated:{principal['actor']}",
+            minimum_interval_seconds=0,
+            agent_ids=affected_agent_ids,
+        )
+        if affected_agent_ids
+        else {"created": 0, "skipped": 0, "pruned": 0}
+    )
     audit(
         db,
         principal["actor"],
         "asset_risk.policy.updated",
         "asset_risk_policy",
         policy.id,
-        {"before": before, "after": after},
+        {"before": before, "after": after, "affected_agents": len(affected_agent_ids), "snapshot": snapshot},
     )
     return {"ok": True, "policy": after}
 
