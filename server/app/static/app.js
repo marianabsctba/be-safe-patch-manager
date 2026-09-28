@@ -11,6 +11,7 @@ const state = {
   greenbone: null,
   threatIntel: null,
   remediationQueue: null,
+  riskReduction: null,
   assetRisk: null,
   riskPolicies: [],
   agentRelease: null,
@@ -235,13 +236,14 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
       api('/api/admin/integrations/greenbone'),
       api('/api/admin/integrations/threat-intel'),
       api('/api/admin/reports/remediation-queue'),
+      api('/api/admin/reports/risk-reduction-opportunities'),
       api('/api/admin/reports/asset-risk'),
       api('/api/admin/risk-policies'),
       api('/api/admin/agent-release'),
@@ -257,6 +259,7 @@ async function load() {
     state.greenbone = greenbone;
     state.threatIntel = threatIntel;
     state.remediationQueue = remediationQueue;
+    state.riskReduction = riskReduction;
     state.assetRisk = assetRisk;
     state.riskPolicies = riskPolicies;
     state.agentRelease = agentRelease;
@@ -293,6 +296,7 @@ function renderAll() {
   renderGreenboneIntegration();
   renderThreatIntelIntegration();
   renderRemediationQueue();
+  renderRiskReductionOpportunities();
   renderAssetRisk();
   renderVulnerabilities();
   renderCampaigns();
@@ -1128,6 +1132,43 @@ window.editAssetRiskProfile = async (agentId) => {
     toast('Perfil de risco: ' + error.message, 'fail');
   }
 };
+
+
+function renderRiskReductionOpportunities() {
+  const report = state.riskReduction || {};
+  const summary = report.summary || {};
+  const items = Array.isArray(report.items) ? report.items.slice(0, 10) : [];
+
+  const stats = $('#riskReductionStats');
+  if (stats) {
+    stats.innerHTML = [
+      ['Oportunidades', summary.opportunities || 0],
+      ['Cruza appetite', summary.crosses_below_appetite || 0],
+    ].map(([label, value]) =>
+      '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+    ).join('');
+  }
+
+  const table = $('#riskReductionTable');
+  if (!table) return;
+  if (!items.length) {
+    table.innerHTML = '<tr><td colspan="8"><div class="empty-state">Sem oportunidades calculadas.</div></td></tr>';
+    return;
+  }
+
+  table.innerHTML = items.map((item, index) =>
+    '<tr>' +
+      '<td><strong>#' + esc(index + 1) + '</strong></td>' +
+      '<td><strong>' + esc(item.hostname || item.agent_id) + '</strong><br><small class="muted">' + esc(item.cve || item.finding_id) + '</small></td>' +
+      '<td>' + vulnerabilityRiskBadge(item.finding_risk) + '</td>' +
+      '<td><strong>' + esc(item.before_score) + ' → ' + esc(item.projected_score) + '</strong></td>' +
+      '<td><strong>-' + esc(item.risk_reduction) + '</strong><br><small class="muted">' + esc(item.reduction_percent) + '%</small></td>' +
+      '<td>' + (item.crosses_below_appetite ? badge('sim', 'ok') : badge('não', 'info')) + '</td>' +
+      '<td><small>' + esc((item.recommendation || {}).action || '-') + '</small></td>' +
+      '<td><button class="row-action" onclick="simulateFindingRiskImpact(\'' + item.finding_id + '\')">Detalhar</button></td>' +
+    '</tr>'
+  ).join('');
+}
 
 
 function remediationStatusLabel(status) {
