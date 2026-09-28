@@ -5423,6 +5423,7 @@ def campaign_rollout_governance(c: Campaign, reference: datetime | None = None) 
     payload = load(c.payload_json, {})
     governance = payload.get("rollout_governance") if isinstance(payload.get("rollout_governance"), dict) else {}
     raw_plan = governance.get("plan") if isinstance(governance.get("plan"), list) else []
+    plan_enforced = bool(raw_plan)
     plan = sorted({
         int(value) for value in raw_plan
         if isinstance(value, (int, float)) and 1 <= int(value) <= 100
@@ -5475,6 +5476,7 @@ def campaign_rollout_governance(c: Campaign, reference: datetime | None = None) 
         "state": state,
         "reason": reason,
         "plan": plan,
+        "plan_enforced": plan_enforced,
         "current_ring": c.ring_percent,
         "next_ring": next_ring,
         "soak_minutes": soak_minutes,
@@ -10150,7 +10152,7 @@ def advance_campaign(
             detail={"message": "rollout governance paused ring promotion", "rollout": rollout_state},
         )
     configured_next = rollout_state.get("next_ring")
-    if configured_next is not None and body.target_percent != configured_next and not body.override_health_gate:
+    if rollout_state.get("plan_enforced") and configured_next is not None and body.target_percent != configured_next and not body.override_health_gate:
         raise HTTPException(
             status_code=409,
             detail={
