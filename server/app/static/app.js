@@ -15,6 +15,7 @@ const state = {
   remediationProjects: null,
   activeThreatWatch: null,
   patchConfidence: null,
+  patchCatalog: null,
   patchBlockRules: null,
   businessContext: null,
   remediationPerformance: null,
@@ -245,7 +246,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchCatalog, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -256,6 +257,7 @@ async function load() {
       api('/api/admin/remediation-projects'),
       api('/api/admin/reports/active-threat-watch'),
       api('/api/admin/reports/patch-confidence'),
+      api('/api/admin/reports/patch-catalog'),
       api('/api/admin/patch-block-rules'),
       api('/api/admin/reports/business-context'),
       api('/api/admin/reports/remediation-performance'),
@@ -280,6 +282,7 @@ async function load() {
     state.remediationProjects = remediationProjects;
     state.activeThreatWatch = activeThreatWatch;
     state.patchConfidence = patchConfidence;
+    state.patchCatalog = patchCatalog;
     state.patchBlockRules = patchBlockRules;
     state.businessContext = businessContext;
     state.remediationPerformance = remediationPerformance;
@@ -325,6 +328,7 @@ function renderAll() {
   renderRemediationProjects();
   renderActiveThreatWatch();
   renderPatchConfidence();
+  renderPatchCatalog();
   renderBusinessContext();
   renderRemediationPerformance();
   renderRiskGoals();
@@ -1838,6 +1842,64 @@ function renderActiveThreatWatch() {
       '<td><small>' + esc((item.signals || []).join(' · ')) + '</small></td>' +
     '</tr>'
   ).join('');
+}
+
+
+
+function renderPatchCatalog() {
+  const report = state.patchCatalog || {};
+  const summary = report.summary || {};
+  const items = Array.isArray(report.items) ? report.items.slice(0, 100) : [];
+  const stats = $('#patchCatalogStats');
+  const table = $('#patchCatalogTable');
+  if (!stats || !table) return;
+
+  stats.innerHTML = [
+    ['Patches', summary.patches || 0],
+    ['Missing', summary.missing_observations || 0],
+    ['Installed inferred', summary.installed_inferred || 0],
+    ['Bloqueadas', summary.blocked || 0],
+    ['Ready', summary.ready || 0],
+    ['Pilot', summary.pilot || 0],
+  ].map(([label, value]) =>
+    '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+  ).join('');
+
+  if (!items.length) {
+    table.innerHTML = '<tr><td colspan="9"><div class="empty-state">O catálogo será populado pelos heartbeats dos agentes.</div></td></tr>';
+    return;
+  }
+
+  const readinessBadge = (value) => {
+    if (value === 'blocked') return badge('BLOCKED', 'fail');
+    if (value === 'review') return badge('REVIEW', 'fail');
+    if (value === 'pilot') return badge('PILOT', 'warn');
+    if (value === 'ready_with_controls') return badge('READY + CONTROLS', 'warn');
+    if (value === 'ready') return badge('READY', 'ok');
+    return badge('N/A', 'muted-badge');
+  };
+
+  table.innerHTML = items.map((item) => {
+    const states = item.states || {};
+    const threat = item.threat || {};
+    const readiness = item.deployment_readiness || {};
+    const confidence = item.patch_confidence || {};
+    const guard = item.guard || {};
+    const affected = (item.affected_assets || []).slice(0, 3).map(x => esc(x.hostname)).join('<br>');
+    return '<tr>' +
+      '<td><strong>' + esc(item.patch_ref) + '</strong><br><small class="muted">' + esc(item.title || item.product || '-') + '</small></td>' +
+      '<td><small>' + esc(item.vendor || '-') + '<br>' + esc(item.product || '-') + '</small></td>' +
+      '<td>' + badge(String(item.severity || 'unknown').toUpperCase(), ['critical','important'].includes(String(item.severity || '').toLowerCase()) ? 'fail' : 'info') + '</td>' +
+      '<td><strong>' + esc(states.missing || 0) + '</strong><br><small class="muted">' + affected + '</small></td>' +
+      '<td><strong>' + esc(states.installed_inferred || 0) + '</strong><br><small class="muted">' + esc(states.no_longer_reported || 0) + ' não reportado(s)</small></td>' +
+      '<td><small>' + esc((threat.cves || []).slice(0, 4).join(', ') || '-') +
+        (threat.kev_findings ? '<br>' + badge(threat.kev_findings + ' KEV', 'fail') : '') +
+        (threat.ransomware_findings ? ' ' + badge(threat.ransomware_findings + ' ransomware', 'warn') : '') + '</small></td>' +
+      '<td><strong>' + esc(confidence.confidence || 'insufficient_data') + '</strong><br><small class="muted">' + esc(confidence.success_rate == null ? '-' : confidence.success_rate + '%') + '</small></td>' +
+      '<td>' + (guard.blocked ? badge('PATCH GUARD', 'fail') : badge('livre', 'ok')) + '</td>' +
+      '<td>' + readinessBadge(readiness.status) + '<br><small class="muted">' + esc((readiness.reasons || []).join(' · ')) + '</small></td>' +
+    '</tr>';
+  }).join('');
 }
 
 

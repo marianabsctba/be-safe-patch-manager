@@ -343,6 +343,45 @@ class AssetRiskSnapshot(Base):
     agent = relationship("Agent", back_populates="risk_snapshots")
 
 
+class PatchCatalogEntry(Base):
+    __tablename__ = "patch_catalog_entries"
+
+    patch_key = Column(String(255), primary_key=True)
+    patch_ref = Column(String(255), nullable=False, index=True)
+    vendor = Column(String(128), nullable=False, default="")
+    product = Column(String(255), nullable=False, default="")
+    title = Column(Text, nullable=False, default="")
+    severity = Column(String(32), nullable=False, default="unknown", index=True)
+    version = Column(String(128), nullable=False, default="")
+    reboot_behavior = Column(String(128), nullable=False, default="")
+    source = Column(String(64), nullable=False, default="agent_scan")
+    metadata_json = Column(Text, nullable=False, default="{}")
+    first_seen = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_seen = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+    observations = relationship("PatchApplicability", back_populates="patch", cascade="all, delete-orphan")
+
+
+class PatchApplicability(Base):
+    __tablename__ = "patch_applicability"
+    __table_args__ = (
+        UniqueConstraint("patch_key", "agent_id", name="uq_patch_applicability_patch_agent"),
+    )
+
+    id = Column(String(36), primary_key=True)
+    patch_key = Column(String(255), ForeignKey("patch_catalog_entries.patch_key"), nullable=False, index=True)
+    agent_id = Column(String(36), ForeignKey("agents.id"), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="missing", index=True)
+    evidence = Column(String(64), nullable=False, default="agent_scan")
+    first_seen = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_seen = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+    last_changed_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    details_json = Column(Text, nullable=False, default="{}")
+
+    patch = relationship("PatchCatalogEntry", back_populates="observations")
+    agent = relationship("Agent")
+
+
 class PatchBlockRule(Base):
     __tablename__ = "patch_block_rules"
 

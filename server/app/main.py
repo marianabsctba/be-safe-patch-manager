@@ -21,7 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
 from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
@@ -32,7 +32,7 @@ from .observability import metrics_response, prometheus_http_middleware, readine
 from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.28.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.29.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -1200,6 +1200,269 @@ def active_threat_watch_report(
         },
         "items": items,
         "note": "Active Threat Watch is signal-based. It does not claim independent threat-research classification; it uses CISA KEV, EPSS and ransomware-use context available in the platform.",
+    }
+
+
+
+def normalize_patch_ref(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def patch_ref_key(value: Any) -> str:
+    return normalize_patch_ref(value).lower()
+
+
+def patch_refs_from_scan_item(item: dict) -> list[str]:
+    refs = []
+    for value in item.get("kb") or []:
+        ref = normalize_patch_ref(value)
+        if ref:
+            refs.append(ref)
+    package = normalize_patch_ref(item.get("package"))
+    if package:
+        refs.append(package)
+    if not refs:
+        fallback = normalize_patch_ref(item.get("id"))
+        if fallback:
+            refs.append(fallback)
+    return list(dict.fromkeys(refs))
+
+
+def successful_patch_refs_for_agent(db: Session, agent_id: str) -> set[str]:
+    refs = set()
+    jobs = db.query(PatchJob).filter(
+        PatchJob.agent_id == agent_id,
+        PatchJob.action == "install_updates",
+        PatchJob.status == "success",
+    ).all()
+    for job in jobs:
+        payload = load(job.payload_json, {})
+        for value in payload.get("packages", []) or []:
+            key = patch_ref_key(value)
+            if key:
+                refs.add(key)
+    return refs
+
+
+def sync_patch_catalog_for_agent(db: Session, agent: Agent, patch_scan: list[dict]) -> dict:
+    reference = now()
+    observed_keys = set()
+    created = 0
+    updated = 0
+
+    for item in patch_scan:
+        if not isinstance(item, dict):
+            continue
+        refs = patch_refs_from_scan_item(item)
+        for patch_ref in refs:
+            key = patch_ref_key(patch_ref)
+            if not key:
+                continue
+            observed_keys.add(key)
+            entry = db.get(PatchCatalogEntry, key)
+            metadata = {
+                "id": item.get("id"),
+                "kb": item.get("kb") or [],
+                "package": item.get("package") or "",
+                "raw_version": item.get("version") or "",
+            }
+            if not entry:
+                entry = PatchCatalogEntry(
+                    patch_key=key,
+                    patch_ref=patch_ref,
+                    vendor="Microsoft" if str(agent.os_family or "").lower() == "windows" else "",
+                    product=agent.os_name or agent.os_family or "",
+                    title=str(item.get("title") or ""),
+                    severity=str(item.get("severity") or "unknown").lower(),
+                    version=str(item.get("version") or ""),
+                    reboot_behavior=str(item.get("reboot_behavior") or ""),
+                    source="agent_scan",
+                    metadata_json=dump(metadata),
+                    first_seen=reference,
+                    last_seen=reference,
+                )
+                db.add(entry)
+                created += 1
+            else:
+                entry.patch_ref = patch_ref
+                entry.title = str(item.get("title") or entry.title or "")
+                entry.severity = str(item.get("severity") or entry.severity or "unknown").lower()
+                entry.version = str(item.get("version") or entry.version or "")
+                entry.reboot_behavior = str(item.get("reboot_behavior") or entry.reboot_behavior or "")
+                entry.product = entry.product or agent.os_name or agent.os_family or ""
+                entry.vendor = entry.vendor or ("Microsoft" if str(agent.os_family or "").lower() == "windows" else "")
+                entry.metadata_json = dump(metadata)
+                entry.last_seen = reference
+                updated += 1
+
+            obs = db.query(PatchApplicability).filter(
+                PatchApplicability.patch_key == key,
+                PatchApplicability.agent_id == agent.id,
+            ).first()
+            if not obs:
+                obs = PatchApplicability(
+                    id=str(uuid.uuid4()),
+                    patch_key=key,
+                    agent_id=agent.id,
+                    status="missing",
+                    evidence="agent_scan",
+                    first_seen=reference,
+                    last_seen=reference,
+                    last_changed_at=reference,
+                    details_json=dump({"hostname": agent.hostname}),
+                )
+                db.add(obs)
+            else:
+                if obs.status != "missing":
+                    obs.last_changed_at = reference
+                obs.status = "missing"
+                obs.evidence = "agent_scan"
+                obs.last_seen = reference
+                obs.details_json = dump({"hostname": agent.hostname})
+
+    previous = db.query(PatchApplicability).filter(
+        PatchApplicability.agent_id == agent.id,
+        PatchApplicability.status == "missing",
+    ).all()
+    successful_refs = successful_patch_refs_for_agent(db, agent.id)
+    for obs in previous:
+        if obs.patch_key in observed_keys:
+            continue
+        obs.status = "installed_inferred" if obs.patch_key in successful_refs else "no_longer_reported"
+        obs.evidence = "successful_install_job" if obs.patch_key in successful_refs else "scan_delta"
+        obs.last_changed_at = reference
+        obs.last_seen = reference
+
+    return {"catalog_created": created, "catalog_updated": updated, "observed": len(observed_keys)}
+
+
+def patch_catalog_report(db: Session, limit: int = 500) -> dict:
+    reference = now()
+    confidence_map = {
+        item["patch_ref"].lower(): item
+        for item in patch_confidence_report(db, limit=1000)["items"]
+    }
+    active_rules = active_patch_block_rules(db, reference)
+    findings = db.query(VulnerabilityFinding).filter(VulnerabilityFinding.status == "open").all()
+    by_patch = {}
+    for finding in findings:
+        for ref in load(finding.patch_refs_json, []):
+            key = patch_ref_key(ref)
+            if not key:
+                continue
+            bucket = by_patch.setdefault(key, {"cves": set(), "finding_count": 0, "kev": 0, "ransomware": 0})
+            bucket["finding_count"] += 1
+            if finding.cve:
+                bucket["cves"].add(finding.cve)
+            risk = finding_detection_risk(finding, reference)
+            bucket["kev"] += 1 if risk["kev"] else 0
+            bucket["ransomware"] += 1 if risk["ransomware"] else 0
+
+    entries = db.query(PatchCatalogEntry).options(
+        selectinload(PatchCatalogEntry.observations).selectinload(PatchApplicability.agent)
+    ).order_by(PatchCatalogEntry.last_seen.desc()).all()
+    items = []
+    for entry in entries:
+        observations = entry.observations or []
+        counts = {
+            "missing": sum(1 for x in observations if x.status == "missing"),
+            "installed_inferred": sum(1 for x in observations if x.status == "installed_inferred"),
+            "no_longer_reported": sum(1 for x in observations if x.status == "no_longer_reported"),
+        }
+        affected = [
+            {
+                "agent_id": x.agent_id,
+                "hostname": x.agent.hostname if x.agent else "",
+                "status": x.status,
+                "evidence": x.evidence,
+                "last_seen": x.last_seen.isoformat() if x.last_seen else None,
+            }
+            for x in observations
+            if x.status == "missing"
+        ][:50]
+        blocking_rules = [
+            serialize_patch_block_rule(rule, reference)
+            for rule in active_rules
+            if str(rule.patch_ref or "").strip().lower() == entry.patch_key
+        ]
+        confidence = confidence_map.get(entry.patch_key)
+        threat = by_patch.get(entry.patch_key, {"cves": set(), "finding_count": 0, "kev": 0, "ransomware": 0})
+
+        if blocking_rules:
+            readiness = "blocked"
+            readiness_reasons = ["Patch Guard ativo"]
+        elif counts["missing"] == 0:
+            readiness = "not_applicable"
+            readiness_reasons = ["nenhum endpoint reporta a patch como pendente"]
+        elif confidence and confidence["confidence"] == "high":
+            readiness = "ready"
+            readiness_reasons = ["alta confiança local de deployment"]
+        elif confidence and confidence["confidence"] == "medium":
+            readiness = "ready_with_controls"
+            readiness_reasons = ["confiança local média; usar rollout progressivo e health gate"]
+        elif confidence and confidence["confidence"] == "low":
+            readiness = "review"
+            readiness_reasons = ["baixa confiança local; revisar falhas antes de ampliar"]
+        else:
+            readiness = "pilot"
+            readiness_reasons = ["sem histórico local suficiente; iniciar piloto controlado"]
+
+        if threat["kev"]:
+            readiness_reasons.append(f'{threat["kev"]} finding(s) KEV')
+        if threat["ransomware"]:
+            readiness_reasons.append(f'{threat["ransomware"]} finding(s) com ransomware known')
+
+        items.append({
+            "patch_ref": entry.patch_ref,
+            "patch_key": entry.patch_key,
+            "vendor": entry.vendor,
+            "product": entry.product,
+            "title": entry.title,
+            "severity": entry.severity,
+            "version": entry.version,
+            "reboot_behavior": entry.reboot_behavior,
+            "source": entry.source,
+            "first_seen": entry.first_seen.isoformat() if entry.first_seen else None,
+            "last_seen": entry.last_seen.isoformat() if entry.last_seen else None,
+            "states": counts,
+            "affected_assets": affected,
+            "patch_confidence": confidence,
+            "guard": {
+                "blocked": bool(blocking_rules),
+                "rules": blocking_rules,
+            },
+            "threat": {
+                "cves": sorted(threat["cves"]),
+                "finding_count": threat["finding_count"],
+                "kev_findings": threat["kev"],
+                "ransomware_findings": threat["ransomware"],
+            },
+            "deployment_readiness": {
+                "status": readiness,
+                "reasons": readiness_reasons,
+            },
+        })
+
+    rank = {"blocked": 0, "review": 1, "pilot": 2, "ready_with_controls": 3, "ready": 4, "not_applicable": 5}
+    items.sort(key=lambda x: (
+        rank.get(x["deployment_readiness"]["status"], 9),
+        -x["threat"]["kev_findings"],
+        -x["states"]["missing"],
+        x["patch_ref"].lower(),
+    ))
+    items = items[:max(1, min(limit, 2000))]
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": {
+            "patches": len(items),
+            "missing_observations": sum(x["states"]["missing"] for x in items),
+            "installed_inferred": sum(x["states"]["installed_inferred"] for x in items),
+            "blocked": sum(1 for x in items if x["deployment_readiness"]["status"] == "blocked"),
+            "ready": sum(1 for x in items if x["deployment_readiness"]["status"] == "ready"),
+            "pilot": sum(1 for x in items if x["deployment_readiness"]["status"] == "pilot"),
+        },
+        "items": items,
+        "note": "Installed is inferred only when a previously missing patch disappears after a successful targeted install job. Other disappearances remain no_longer_reported.",
     }
 
 
@@ -5311,12 +5574,14 @@ def heartbeat(
     agent.reboot_required = body.reboot_required
     agent.pending_updates = len(body.patch_scan)
     agent.critical_updates = sum(1 for x in body.patch_scan if str(x.get("severity", "")).lower() in {"critical", "important", "security"})
+    catalog_sync = sync_patch_catalog_for_agent(db, agent, body.patch_scan)
     db.commit()
     unblocked = reconcile_blocked_agent_jobs(db, agent)
     return {
         "ok": True,
         "agent_compatibility": agent_runtime_metadata(agent),
         "jobs_unblocked": unblocked,
+        "patch_catalog": catalog_sync,
     }
 
 
@@ -5851,6 +6116,16 @@ def active_threat_watch(
     db: Session = Depends(get_db),
 ):
     return active_threat_watch_report(db, limit=limit)
+
+
+
+@app.get("/api/admin/reports/patch-catalog")
+def admin_patch_catalog(
+    limit: int = 500,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return patch_catalog_report(db, limit=limit)
 
 
 @app.get("/api/admin/reports/patch-confidence")

@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.28</small>
+          <small>dashboard v0.29</small>
         </div>
       </div>
     </aside>
@@ -377,6 +377,37 @@
                     </tr>
                   </thead>
                   <tbody id="activeThreatTable"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">PATCH INTELLIGENCE</p>
+                  <h3>Patch Catalog</h3>
+                </div>
+              </div>
+              <div id="patchCatalogStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Catálogo vivo construído pelos heartbeats. “Installed inferred” só é usado quando a patch estava missing e deixa de aparecer após job de instalação bem-sucedido; desaparecimentos sem prova ficam como “no longer reported”.
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Patch</th>
+                      <th>Vendor / Produto</th>
+                      <th>Severidade</th>
+                      <th>Missing</th>
+                      <th>Installed / Delta</th>
+                      <th>CVEs / Threat</th>
+                      <th>Confidence</th>
+                      <th>Guard</th>
+                      <th>Deployment readiness</th>
+                    </tr>
+                  </thead>
+                  <tbody id="patchCatalogTable"></tbody>
                 </table>
               </div>
             </div>

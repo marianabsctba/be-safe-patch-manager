@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.29.0
+
+- control plane e dashboard passam para versão 0.29.0; agente permanece em 0.16.0;
+- adicionado Patch Intelligence / Patch Catalog persistente com migration 0021_patch_catalog;
+- heartbeats passam a alimentar catálogo normalizado por patch reference e estado por endpoint;
+- `missing` vem diretamente do scan; `installed_inferred` exige desaparecimento após job de instalação bem-sucedido; demais deltas ficam `no_longer_reported`;
+- catálogo correlaciona Patch Confidence local, CVEs abertas, KEV/ransomware context e Patch Guard;
+- novo deployment readiness explicável: blocked, review, pilot, ready_with_controls, ready ou not_applicable;
+- console ganha visão Patch Catalog com cobertura, evidência e readiness sem chamar ausência de scan de instalação comprovada;
+- adicionados testes de sincronização, inferência pós-job e readiness bloqueado.
+
 ## 0.28.0
 
 - control plane e dashboard passam para versão 0.28.0; agente permanece em 0.16.0;
