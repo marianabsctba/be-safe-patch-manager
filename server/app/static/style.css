@@ -1685,3 +1685,116 @@ button:disabled:hover {
     grid-template-columns:1fr;
   }
 }
+
+
+/* v0.20 governance workspace */
+.governance-modal {
+  position:fixed;
+  inset:0;
+  z-index:1200;
+  display:grid;
+  place-items:center;
+  padding:24px;
+}
+
+.governance-modal-backdrop {
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  border:0;
+  border-radius:0;
+  background:rgba(4,4,7,.82);
+  backdrop-filter:blur(5px);
+}
+
+.governance-modal-card {
+  position:relative;
+  z-index:1;
+  width:min(720px,100%);
+  max-height:min(850px,92vh);
+  overflow:auto;
+  display:grid;
+  gap:18px;
+  padding:24px;
+  border:1px solid #34343d;
+  border-radius:16px;
+  background:#0f0f13;
+  box-shadow:0 28px 110px rgba(0,0,0,.65);
+}
+
+.governance-modal-head {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:18px;
+}
+
+.governance-modal-head h2 {
+  margin:4px 0 0;
+  color:#f5f5f7;
+}
+
+.governance-modal-context {
+  margin:7px 0 0;
+  color:var(--muted);
+  font-size:11px;
+  line-height:1.5;
+}
+
+.governance-fields {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:13px;
+}
+
+.governance-fields label {
+  display:grid;
+  gap:7px;
+}
+
+.governance-fields label.wide {
+  grid-column:1/-1;
+}
+
+.governance-fields label > span {
+  color:#c9c9cf;
+  font-size:10px;
+  font-weight:700;
+}
+
+.governance-fields input,
+.governance-fields select,
+.governance-fields textarea {
+  width:100%;
+  padding:11px 12px;
+  border:1px solid #303038;
+  border-radius:8px;
+  background:#09090c;
+  color:var(--text);
+}
+
+.governance-fields textarea {
+  min-height:96px;
+  resize:vertical;
+}
+
+.governance-field-hint {
+  color:var(--muted-2);
+  font-size:9px;
+  line-height:1.45;
+}
+
+.governance-modal-actions {
+  display:flex;
+  justify-content:flex-end;
+  gap:9px;
+  padding-top:4px;
+}
+
+@media (max-width:680px) {
+  .governance-modal { padding:12px; }
+  .governance-modal-card { padding:18px; }
+  .governance-fields { grid-template-columns:1fr; }
+  .governance-fields label.wide { grid-column:auto; }
+}
