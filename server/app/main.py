@@ -1522,7 +1522,7 @@ def remediation_projects_report(
             "achieved": sum(1 for item in items if item["pace_status"] in {"achieved", "completed"}),
             "overdue": sum(1 for item in items if item["pace_status"] == "overdue"),
             "open_findings": sum(
-                item["current_open_findings"]
+                item["tracked_open_findings"]
                 for item in items
                 if item["status"] in {"active", "awaiting_verification"}
             ),
