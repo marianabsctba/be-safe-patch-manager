@@ -254,6 +254,36 @@
             <div class="panel-subsection">
               <div class="panel-head">
                 <div>
+                  <p class="section-kicker">REMEDIATION HUB</p>
+                  <h3>Correções com maior impacto agregado</h3>
+                </div>
+              </div>
+              <div id="remediationHubStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Agrupa findings pela mesma referência de patch e recalcula o impacto conjunto por ativo antes de agregar. Não soma simulações independentes.
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Patch / Ação</th>
+                      <th>Findings</th>
+                      <th>Ativos</th>
+                      <th>Risco agregado</th>
+                      <th>Redução</th>
+                      <th>Cruza appetite</th>
+                      <th>CVEs</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="remediationHubTable"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
                   <p class="section-kicker">RISK REDUCTION OPPORTUNITIES</p>
                   <h3>Maior redução de risco primeiro</h3>
                 </div>
