@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.18; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.19; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -118,7 +118,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 
 ## Modelo de risco
 
-O Be Safe v0.18 adiciona um modelo próprio de risk-based vulnerability management com score individual por finding, Asset Risk 0–1000, criticidade 1–5, exposição externa, controles compensatórios, risk appetite, histórico e decomposição de contributors.
+O Be Safe v0.19 consolida um modelo próprio de risk-based vulnerability management com score individual por finding, Asset Risk 0–1000, criticidade 1–5, exposição externa, controles compensatórios, risk appetite, histórico e decomposição de contributors.
 
 A referência técnica completa, incluindo fórmula, faixas, tags reconhecidas, exemplos, APIs e princípios de segurança, está em [docs/risk-model.md](docs/risk-model.md).
 
@@ -163,6 +163,9 @@ A v0.16 endurece o lifecycle do agente. Releases que sofrem rollback entram em q
 A v0.17 endurece o control plane sem alterar o agente. Aprovações de ativação têm TTL, exigem heartbeat recente e ficam vinculadas à identidade completa da release assinada. Antes de qualquer claim, o servidor revalida expiração, SHA-256, source commit, signing key e release publicada. A console também permite pré-visualizar o snapshot elegível antes de aprovar o rollout.
 
 A v0.18 adiciona governança de SLA sem alterar o agente. Findings com status `open` recebem prazo calculado por severidade, idade, horas restantes e classificação operacional. O endpoint consolidado prioriza breaches e itens próximos do vencimento; estados como `accepted_risk`, `false_positive`, `not_detected` e `remediated` continuam visíveis, mas ficam fora dos contadores de breach. A mesma versão adiciona exceções formais persistentes: somente admin pode aprovar ou revogar, motivo e validade são obrigatórios, tudo fica auditado e a expiração devolve automaticamente o finding ao cálculo normal de SLA.
+
+A v0.19 amadurece o RBVM operacional: Asset Risk auditável, policies por tag, Risk Acceptance, Treatment Plan, Risk Reduction Simulation/Opportunities/Plan, timeline histórica, snapshots de governança, retenção de histórico, ranking correto antes do limit de findings e observabilidade de freshness do Threat Intel. O agente permanece em v0.16 porque essas mudanças são do control plane e da console.
+
 
 ## Fluxo seguro de implantação
 
