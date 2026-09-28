@@ -299,3 +299,78 @@ def test_project_snapshot_interval_prevents_noise(db, monkeypatch):
 
     assert capture["created"] == 0
     assert capture["skipped"] == 1
+
+
+
+def test_project_intelligence_exposes_risk_and_schedule_signals(db, monkeypatch):
+    agent = make_agent("intel-agent", ["prod", "internet-facing"])
+    f1 = make_finding("intel-f1", agent)
+    f2 = make_finding("intel-f2", agent)
+    db.add_all([agent, f1, f2])
+    db.commit()
+
+    result = create_project(db, monkeypatch, name="Intelligence project")
+    project = db.get(RemediationProject, result["project"]["id"])
+    project.created_at = REFERENCE - timedelta(days=10)
+    project.due_at = REFERENCE + timedelta(days=10)
+    db.commit()
+
+    data = main.serialize_remediation_project(db, project, REFERENCE)
+
+    assert data["kev_findings"] == 2
+    assert data["sla_breached"] == 2
+    assert data["external_assets"] == 1
+    assert data["average_age_days"] >= 7
+    assert data["oldest_age_days"] >= 7
+    assert data["max_epss"] == 0.9
+    assert data["expected_progress_percent"] == 50.0
+    assert data["schedule_variance_percent"] == -50.0
+    assert data["attention_status"] == "critical"
+    assert data["remaining_risk_reduction"] >= 0
+    assert data["realized_risk_reduction"] == 0.0
+
+
+def test_project_intelligence_tracks_realized_risk_reduction(db, monkeypatch):
+    agent = make_agent("risk-progress-agent", ["prod", "internet-facing"])
+    f1 = make_finding("risk-progress-f1", agent)
+    f2 = make_finding("risk-progress-f2", agent)
+    db.add_all([agent, f1, f2])
+    db.commit()
+
+    result = create_project(db, monkeypatch, name="Risk progress project")
+    project = db.get(RemediationProject, result["project"]["id"])
+    baseline = result["project"]["baseline_risk_reduction"]
+
+    f1.status = "remediated"
+    f1.resolved_at = REFERENCE
+    db.commit()
+
+    data = main.serialize_remediation_project(db, project, REFERENCE)
+
+    assert data["baseline_risk_reduction"] == baseline
+    assert data["remaining_risk_reduction"] <= baseline
+    assert data["realized_risk_reduction"] >= 0
+    assert 0.0 <= data["risk_reduction_progress_percent"] <= 100.0
+
+
+def test_project_history_persists_intelligence_fields(db, monkeypatch):
+    agent = make_agent("intel-history-agent", ["prod", "internet-facing"])
+    finding = make_finding("intel-history-f", agent)
+    db.add_all([agent, finding])
+    db.commit()
+
+    result = create_project(db, monkeypatch, name="Intelligence history")
+    project_id = result["project"]["id"]
+
+    history = main.remediation_project_history(db, project_id)
+    item = history["items"][0]
+
+    assert "remaining_risk_reduction" in item
+    assert "realized_risk_reduction" in item
+    assert "risk_reduction_progress_percent" in item
+    assert "expected_progress_percent" in item
+    assert "schedule_variance_percent" in item
+    assert item["kev_findings"] == 1
+    assert item["sla_breached"] == 1
+    assert item["external_assets"] == 1
+    assert item["attention_status"] in {"critical", "needs_attention", "watch", "on_track"}
