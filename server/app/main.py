@@ -1894,23 +1894,23 @@ def remediation_group_decision(
     else:
         change_level = "low"
 
-    if asset_count <= 1:
-        ring_plan = [100]
-    elif change_level == "high":
-        ring_plan = [5, 10, 30, 100] if asset_count >= 20 else [10, 30, 100]
-    elif change_level == "medium":
-        ring_plan = [10, 30, 100] if asset_count >= 10 else [10, 100]
-    else:
-        ring_plan = [30, 100] if asset_count >= 10 else [100]
-
-    if change_level == "high":
-        mode = "guarded_canary"
-    elif confidence in {"low", "insufficient_data"}:
+    # Preserve the established confidence-driven rollout contract while adding
+    # finer canaries only when local evidence is already strong.
+    if confidence == "insufficient_data":
         mode = "pilot_collect_evidence"
+        ring_plan = [10, 30, 100]
+    elif confidence == "low":
+        mode = "pilot_review_failures"
+        ring_plan = [10, 30, 100]
     elif confidence == "medium":
         mode = "pilot_then_expand"
+        ring_plan = [10, 30, 100]
+    elif change_level == "high" and asset_count >= 20:
+        mode = "guarded_canary"
+        ring_plan = [5, 10, 30, 100]
     else:
         mode = "controlled_rollout"
+        ring_plan = [30, 100] if asset_count >= 10 else [100]
 
     return {
         "priority": {

@@ -49,9 +49,10 @@ def test_low_confidence_critical_scope_uses_guarded_canary():
     )
 
     assert result["change_risk"]["level"] == "high"
-    assert result["deployment_guidance"]["mode"] == "guarded_canary"
-    assert result["deployment_guidance"]["ring_plan"] == [5, 10, 30, 100]
+    assert result["deployment_guidance"]["mode"] == "pilot_review_failures"
+    assert result["deployment_guidance"]["ring_plan"] == [10, 30, 100]
     assert result["deployment_guidance"]["rollback_checkpoint_required"] is True
+    assert result["deployment_guidance"]["approval_required"] is True
 
 
 def test_high_confidence_small_low_risk_scope_can_start_at_full_ring():
