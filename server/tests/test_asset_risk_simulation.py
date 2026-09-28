@@ -44,12 +44,13 @@ def db():
 
 
 def make_agent(aid="sim-agent"):
+    token_seed = (aid.replace("-", "") + "s" * 64)[:64]
     return Agent(
         id=aid,
         hostname=f"{aid}.local",
         os_family="linux",
         os_name="Linux",
-        token_hash="s" * 64,
+        token_hash=token_seed,
         tags=main.dump(["tier0", "internet-facing"]),
     )
 
