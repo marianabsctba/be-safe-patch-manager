@@ -737,6 +737,154 @@ def risk_reduction_opportunities_report(
     }
 
 
+def remediation_hub_report(
+    db: Session,
+    reference: datetime | None = None,
+    limit: int = 100,
+) -> dict:
+    reference = reference or now()
+    agents = db.query(Agent).options(
+        selectinload(Agent.vulnerabilities),
+        selectinload(Agent.risk_profile),
+    ).order_by(Agent.hostname.asc()).all()
+    policies = db.query(AssetRiskPolicy).filter(
+        AssetRiskPolicy.enabled.is_(True)
+    ).order_by(
+        AssetRiskPolicy.priority.desc(),
+        AssetRiskPolicy.name.asc(),
+    ).all()
+
+    groups: dict[str, dict] = {}
+    for agent in agents:
+        open_findings = [
+            finding for finding in (agent.vulnerabilities or [])
+            if finding.status == "open"
+        ]
+        if not open_findings:
+            continue
+
+        for finding in open_findings:
+            refs = sorted({
+                str(ref).strip()
+                for ref in load(finding.patch_refs_json, [])
+                if str(ref).strip()
+            })
+            for patch_ref in refs:
+                key = patch_ref.lower()
+                group = groups.setdefault(key, {
+                    "patch_ref": patch_ref,
+                    "findings_by_agent": {},
+                    "finding_ids": set(),
+                    "cves": set(),
+                    "severities": set(),
+                    "max_cvss": 0.0,
+                })
+                group["findings_by_agent"].setdefault(agent.id, set()).add(finding.id)
+                group["finding_ids"].add(finding.id)
+                if finding.cve:
+                    group["cves"].add(finding.cve)
+                group["severities"].add(str(finding.severity or "unknown").lower())
+                group["max_cvss"] = max(group["max_cvss"], float(finding.cvss or 0.0))
+
+    items = []
+    agent_map = {agent.id: agent for agent in agents}
+    for group in groups.values():
+        before_total = 0.0
+        after_total = 0.0
+        appetite_crossings = 0
+        affected_assets = []
+        os_families = set()
+
+        for agent_id, finding_ids in group["findings_by_agent"].items():
+            agent = agent_map[agent_id]
+            open_findings = [
+                finding for finding in (agent.vulnerabilities or [])
+                if finding.status == "open"
+            ]
+            before = asset_risk_score(agent, open_findings, reference)
+            after_findings = [
+                finding for finding in open_findings
+                if finding.id not in finding_ids
+            ]
+            after = asset_risk_score(agent, after_findings, reference)
+            policy = effective_asset_risk_policy(db, agent, policies=policies)
+
+            before_total += before["score"]
+            after_total += after["score"]
+            crossed = (
+                before["score"] >= policy["risk_appetite"]
+                and after["score"] < policy["risk_appetite"]
+            )
+            appetite_crossings += 1 if crossed else 0
+            os_families.add(str(agent.os_family or "unknown").lower())
+            affected_assets.append({
+                "agent_id": agent.id,
+                "hostname": agent.hostname,
+                "os_family": agent.os_family,
+                "finding_count": len(finding_ids),
+                "before_score": before["score"],
+                "projected_score": after["score"],
+                "risk_reduction": round(max(0.0, before["score"] - after["score"]), 1),
+                "risk_appetite": policy["risk_appetite"],
+                "crosses_below_appetite": crossed,
+            })
+
+        reduction = round(max(0.0, before_total - after_total), 1)
+        reduction_percent = (
+            round(reduction / before_total * 100.0, 1)
+            if before_total > 0
+            else 0.0
+        )
+        affected_assets.sort(key=lambda item: (-item["risk_reduction"], item["hostname"].lower()))
+        items.append({
+            "patch_ref": group["patch_ref"],
+            "finding_count": len(group["finding_ids"]),
+            "asset_count": len(group["findings_by_agent"]),
+            "cves": sorted(group["cves"]),
+            "cve_count": len(group["cves"]),
+            "severities": sorted(group["severities"]),
+            "max_cvss": round(group["max_cvss"], 1),
+            "before_risk_total": round(before_total, 1),
+            "projected_risk_total": round(after_total, 1),
+            "risk_reduction": reduction,
+            "reduction_percent": reduction_percent,
+            "appetite_crossings": appetite_crossings,
+            "os_families": sorted(os_families),
+            "single_asset_campaign_ready": len(group["findings_by_agent"]) == 1,
+            "primary_finding_id": next(iter(group["finding_ids"])) if len(group["finding_ids"]) == 1 else None,
+            "affected_assets": affected_assets,
+        })
+
+    items.sort(key=lambda item: (
+        -item["risk_reduction"],
+        -item["appetite_crossings"],
+        -item["finding_count"],
+        -item["max_cvss"],
+        item["patch_ref"].lower(),
+    ))
+    items = items[:max(1, min(limit, 500))]
+    return {
+        "generated_at": reference.isoformat(),
+        "mode": "simulation_only",
+        "summary": {
+            "remediation_groups": len(items),
+            "findings_covered": len({
+                finding_id
+                for group in groups.values()
+                for finding_id in group["finding_ids"]
+            }),
+            "assets_covered": len({
+                agent_id
+                for group in groups.values()
+                for agent_id in group["findings_by_agent"]
+            }),
+            "appetite_crossings": sum(item["appetite_crossings"] for item in items),
+        },
+        "items": items,
+        "note": "Each row simulates remediation of all open findings linked to the same patch reference. Risk is recalculated per asset before aggregation.",
+    }
+
+
 def risk_reduction_plan_report(
     db: Session,
     agent_id: str,
@@ -4197,6 +4345,15 @@ def risk_reduction_plan(
     db: Session = Depends(get_db),
 ):
     return risk_reduction_plan_report(db, agent_id=agent_id, max_steps=max_steps)
+
+
+@app.get("/api/admin/reports/remediation-hub")
+def remediation_hub(
+    limit: int = 100,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return remediation_hub_report(db, limit=limit)
 
 
 @app.get("/api/admin/reports/risk-reduction-opportunities")
