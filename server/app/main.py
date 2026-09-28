@@ -737,6 +737,231 @@ def risk_reduction_opportunities_report(
     }
 
 
+def active_threat_watch_report(
+    db: Session,
+    reference: datetime | None = None,
+    epss_threshold: float = 0.70,
+    limit: int = 50,
+) -> dict:
+    reference = reference or now()
+    findings = db.query(VulnerabilityFinding).options(
+        selectinload(VulnerabilityFinding.agent).selectinload(Agent.risk_profile),
+    ).filter(
+        VulnerabilityFinding.status == "open",
+        VulnerabilityFinding.cve != "",
+    ).all()
+
+    groups: dict[str, dict] = {}
+    for finding in findings:
+        detection = finding_detection_risk(finding, reference)
+        active_signal = (
+            detection["kev"]
+            or detection["ransomware"]
+            or (detection["epss"] is not None and detection["epss"] >= epss_threshold)
+        )
+        if not active_signal:
+            continue
+
+        cve = finding.cve.upper()
+        group = groups.setdefault(cve, {
+            "cve": cve,
+            "finding_ids": set(),
+            "asset_ids": set(),
+            "hostnames": set(),
+            "patch_refs": set(),
+            "kev": False,
+            "ransomware": False,
+            "max_epss": None,
+            "max_risk_score": 0.0,
+            "max_cvss": 0.0,
+            "oldest_age_days": 0.0,
+            "external_assets": set(),
+            "critical_assets": set(),
+        })
+        group["finding_ids"].add(finding.id)
+        if finding.agent_id:
+            group["asset_ids"].add(finding.agent_id)
+        if finding.agent:
+            group["hostnames"].add(finding.agent.hostname)
+            if asset_exposure(finding.agent)["external"]:
+                group["external_assets"].add(finding.agent.id)
+            if asset_criticality(finding.agent)["score"] >= 5:
+                group["critical_assets"].add(finding.agent.id)
+        group["patch_refs"].update({
+            str(ref).strip()
+            for ref in load(finding.patch_refs_json, [])
+            if str(ref).strip()
+        })
+        group["kev"] = group["kev"] or detection["kev"]
+        group["ransomware"] = group["ransomware"] or detection["ransomware"]
+        if detection["epss"] is not None:
+            group["max_epss"] = max(group["max_epss"] or 0.0, detection["epss"])
+        group["max_risk_score"] = max(group["max_risk_score"], detection["score"])
+        group["max_cvss"] = max(group["max_cvss"], detection["cvss"])
+        group["oldest_age_days"] = max(group["oldest_age_days"], detection["age_days"])
+
+    items = []
+    for group in groups.values():
+        signals = []
+        if group["kev"]:
+            signals.append("CISA KEV")
+        if group["ransomware"]:
+            signals.append("ransomware")
+        if group["max_epss"] is not None and group["max_epss"] >= epss_threshold:
+            signals.append(f"EPSS {group['max_epss']:.0%}")
+        items.append({
+            "cve": group["cve"],
+            "signals": signals,
+            "kev": group["kev"],
+            "ransomware": group["ransomware"],
+            "max_epss": group["max_epss"],
+            "max_risk_score": round(group["max_risk_score"], 1),
+            "max_cvss": round(group["max_cvss"], 1),
+            "finding_count": len(group["finding_ids"]),
+            "asset_count": len(group["asset_ids"]),
+            "external_asset_count": len(group["external_assets"]),
+            "critical_asset_count": len(group["critical_assets"]),
+            "oldest_age_days": round(group["oldest_age_days"], 1),
+            "patch_refs": sorted(group["patch_refs"]),
+            "hostnames": sorted(group["hostnames"]),
+        })
+
+    items.sort(key=lambda item: (
+        -int(item["kev"]),
+        -int(item["ransomware"]),
+        -(item["max_epss"] or 0.0),
+        -item["max_risk_score"],
+        -item["asset_count"],
+        item["cve"],
+    ))
+    items = items[:max(1, min(limit, 500))]
+    return {
+        "generated_at": reference.isoformat(),
+        "epss_threshold": epss_threshold,
+        "summary": {
+            "cves": len(items),
+            "kev": sum(1 for item in items if item["kev"]),
+            "ransomware": sum(1 for item in items if item["ransomware"]),
+            "affected_assets": len({
+                hostname
+                for item in items
+                for hostname in item["hostnames"]
+            }),
+            "external_asset_exposures": sum(item["external_asset_count"] for item in items),
+        },
+        "items": items,
+        "note": "Active Threat Watch is signal-based. It does not claim independent threat-research classification; it uses CISA KEV, EPSS and ransomware-use context available in the platform.",
+    }
+
+
+def patch_confidence_report(
+    db: Session,
+    limit: int = 200,
+) -> dict:
+    campaigns = db.query(Campaign).options(
+        selectinload(Campaign.jobs),
+    ).filter(
+        Campaign.action == "install_updates",
+    ).all()
+    buckets: dict[str, dict] = {}
+
+    for campaign in campaigns:
+        payload = load(campaign.payload_json, {})
+        packages = sorted({
+            str(package).strip()
+            for package in payload.get("packages", [])
+            if str(package).strip()
+        })
+        if not packages:
+            continue
+
+        for package in packages:
+            bucket = buckets.setdefault(package.lower(), {
+                "patch_ref": package,
+                "success": 0,
+                "failed": 0,
+                "stalled": 0,
+                "blocked": 0,
+                "other": 0,
+                "campaign_ids": set(),
+                "agent_ids": set(),
+                "last_execution_at": None,
+            })
+            bucket["campaign_ids"].add(campaign.id)
+            for job in campaign.jobs or []:
+                bucket["agent_ids"].add(job.agent_id)
+                if job.status == "success":
+                    bucket["success"] += 1
+                elif job.status == "failed":
+                    bucket["failed"] += 1
+                elif job.status == "stalled":
+                    bucket["stalled"] += 1
+                elif job.status == "blocked":
+                    bucket["blocked"] += 1
+                elif job.status not in {"pending", "claimed", "running"}:
+                    bucket["other"] += 1
+                executed_at = job.finished_at or job.started_at or job.created_at
+                if executed_at and (
+                    bucket["last_execution_at"] is None
+                    or executed_at > bucket["last_execution_at"]
+                ):
+                    bucket["last_execution_at"] = executed_at
+
+    items = []
+    for bucket in buckets.values():
+        completed = bucket["success"] + bucket["failed"]
+        success_rate = (
+            round(bucket["success"] / completed * 100.0, 1)
+            if completed
+            else None
+        )
+        if completed < 5:
+            confidence = "insufficient_data"
+        elif success_rate is not None and success_rate >= 95.0 and completed >= 10:
+            confidence = "high"
+        elif success_rate is not None and success_rate >= 80.0:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        items.append({
+            "patch_ref": bucket["patch_ref"],
+            "confidence": confidence,
+            "completed_jobs": completed,
+            "success": bucket["success"],
+            "failed": bucket["failed"],
+            "stalled": bucket["stalled"],
+            "blocked": bucket["blocked"],
+            "success_rate": success_rate,
+            "campaign_count": len(bucket["campaign_ids"]),
+            "asset_count": len(bucket["agent_ids"]),
+            "last_execution_at": (
+                bucket["last_execution_at"].isoformat()
+                if bucket["last_execution_at"]
+                else None
+            ),
+        })
+
+    confidence_rank = {"high": 0, "medium": 1, "low": 2, "insufficient_data": 3}
+    items.sort(key=lambda item: (
+        confidence_rank[item["confidence"]],
+        -(item["completed_jobs"]),
+        item["patch_ref"].lower(),
+    ))
+    items = items[:max(1, min(limit, 1000))]
+    return {
+        "generated_at": now().isoformat(),
+        "summary": {
+            "patches_observed": len(items),
+            "high_confidence": sum(1 for item in items if item["confidence"] == "high"),
+            "low_confidence": sum(1 for item in items if item["confidence"] == "low"),
+            "insufficient_data": sum(1 for item in items if item["confidence"] == "insufficient_data"),
+        },
+        "items": items,
+        "note": "Patch Confidence uses this environment's own completed deployment history. Bundle jobs are attributed to each package in that bundle and should be interpreted as local operational evidence, not vendor-wide reliability telemetry.",
+    }
+
+
 def remediation_hub_report(
     db: Session,
     reference: datetime | None = None,
@@ -753,6 +978,10 @@ def remediation_hub_report(
         AssetRiskPolicy.priority.desc(),
         AssetRiskPolicy.name.asc(),
     ).all()
+    confidence = {
+        item["patch_ref"].lower(): item
+        for item in patch_confidence_report(db, limit=1000)["items"]
+    }
 
     groups: dict[str, dict] = {}
     for agent in agents:
@@ -852,6 +1081,7 @@ def remediation_hub_report(
             "os_families": sorted(os_families),
             "single_asset_campaign_ready": len(group["findings_by_agent"]) == 1,
             "primary_finding_id": next(iter(group["finding_ids"])) if len(group["finding_ids"]) == 1 else None,
+            "patch_confidence": confidence.get(group["patch_ref"].lower()),
             "affected_assets": affected_assets,
         })
 
@@ -4365,6 +4595,24 @@ def risk_reduction_plan(
     db: Session = Depends(get_db),
 ):
     return risk_reduction_plan_report(db, agent_id=agent_id, max_steps=max_steps)
+
+
+@app.get("/api/admin/reports/active-threat-watch")
+def active_threat_watch(
+    limit: int = 50,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return active_threat_watch_report(db, limit=limit)
+
+
+@app.get("/api/admin/reports/patch-confidence")
+def patch_confidence(
+    limit: int = 200,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return patch_confidence_report(db, limit=limit)
 
 
 @app.get("/api/admin/reports/remediation-hub")
