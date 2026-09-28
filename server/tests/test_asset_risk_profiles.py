@@ -320,3 +320,34 @@ def test_risk_profile_rejects_whitespace_reason(db):
         )
 
     assert exc.value.status_code == 400
+
+
+
+def test_risk_profile_persists_accountability_context(db, monkeypatch):
+    agent = make_agent(tags=["prod"])
+    db.add(agent)
+    db.commit()
+    monkeypatch.setattr(main, "capture_asset_risk_snapshots", lambda *args, **kwargs: {"created": 1})
+
+    result = main.update_asset_risk_profile(
+        agent.id,
+        AssetRiskProfileUpdate(
+            criticality=4,
+            external=False,
+            compensating_controls=[],
+            owner="Equipe ERP",
+            business_service="Financeiro",
+            environment="PROD",
+            reason="Definição de accountability do ativo",
+        ),
+        principal={"actor": "user:admin", "role": "admin"},
+        db=db,
+    )
+
+    assert result["profile"]["owner"] == "Equipe ERP"
+    assert result["profile"]["business_service"] == "Financeiro"
+    assert result["profile"]["environment"] == "prod"
+
+    report = main.asset_risk_report(db, REFERENCE)
+    assert report["summary"]["assets_with_owner"] == 1
+    assert report["summary"]["assets_without_owner"] == 0
