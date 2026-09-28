@@ -1055,6 +1055,26 @@ def effective_asset_risk_policy(
     }
 
 
+def require_asset_above_risk_appetite(
+    db: Session,
+    agent: Agent,
+    reference: datetime | None = None,
+) -> tuple[dict, dict]:
+    reference = reference or now()
+    risk = asset_risk_score(agent, list(agent.vulnerabilities or []), reference)
+    policy = effective_asset_risk_policy(db, agent)
+    if risk["score"] < policy["risk_appetite"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "asset is not above its effective risk appetite",
+                "score": risk["score"],
+                "risk_appetite": policy["risk_appetite"],
+            },
+        )
+    return risk, policy
+
+
 def serialize_asset_risk_profile(profile: AssetRiskProfile | None) -> dict | None:
     if not profile:
         return None
@@ -4249,9 +4269,17 @@ def create_asset_risk_treatment(
     principal=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    agent = db.get(Agent, agent_id)
+    agent = db.query(Agent).filter(Agent.id == agent_id).with_for_update().first()
     if not agent:
         raise HTTPException(status_code=404, detail="agent not found")
+
+    owner = body.owner.strip()
+    action = body.action.strip()
+    if len(owner) < 2:
+        raise HTTPException(status_code=400, detail="risk treatment owner must contain at least 2 non-space characters")
+    if len(action) < 5:
+        raise HTTPException(status_code=400, detail="risk treatment action must contain at least 5 non-space characters")
+    require_asset_above_risk_appetite(db, agent)
 
     due_at = body.due_at
     if due_at.tzinfo is None:
@@ -4269,8 +4297,8 @@ def create_asset_risk_treatment(
     treatment = AssetRiskTreatment(
         id=str(uuid.uuid4()),
         agent=agent,
-        owner=body.owner.strip(),
-        action=body.action.strip(),
+        owner=owner,
+        action=action,
         due_at=due_at,
         status="planned",
         created_by=principal["actor"],
@@ -4313,9 +4341,15 @@ def update_asset_risk_treatment(
         raise HTTPException(status_code=400, detail="unsupported risk treatment status")
 
     if body.owner is not None:
-        treatment.owner = body.owner.strip()
+        owner = body.owner.strip()
+        if len(owner) < 2:
+            raise HTTPException(status_code=400, detail="risk treatment owner must contain at least 2 non-space characters")
+        treatment.owner = owner
     if body.action is not None:
-        treatment.action = body.action.strip()
+        action = body.action.strip()
+        if len(action) < 5:
+            raise HTTPException(status_code=400, detail="risk treatment action must contain at least 5 non-space characters")
+        treatment.action = action
     if body.due_at is not None:
         due_at = body.due_at
         if due_at.tzinfo is None:
@@ -4388,9 +4422,14 @@ def create_asset_risk_acceptance(
     principal=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    agent = db.get(Agent, agent_id)
+    agent = db.query(Agent).filter(Agent.id == agent_id).with_for_update().first()
     if not agent:
         raise HTTPException(status_code=404, detail="agent not found")
+
+    reason = body.reason.strip()
+    if len(reason) < 5:
+        raise HTTPException(status_code=400, detail="risk acceptance reason must contain at least 5 non-space characters")
+    require_asset_above_risk_appetite(db, agent)
 
     expires_at = body.expires_at
     if expires_at.tzinfo is None:
@@ -4411,7 +4450,7 @@ def create_asset_risk_acceptance(
     acceptance = AssetRiskAcceptance(
         id=str(uuid.uuid4()),
         agent=agent,
-        reason=body.reason.strip(),
+        reason=reason,
         approved_by=principal["actor"],
         expires_at=expires_at,
     )
@@ -4448,9 +4487,13 @@ def revoke_asset_risk_acceptance(
     if acceptance.revoked_at is not None:
         raise HTTPException(status_code=409, detail="risk acceptance already revoked")
 
+    revoke_reason = body.reason.strip()
+    if len(revoke_reason) < 5:
+        raise HTTPException(status_code=400, detail="revoke reason must contain at least 5 non-space characters")
+
     acceptance.revoked_at = now()
     acceptance.revoked_by = principal["actor"]
-    acceptance.revoke_reason = body.reason.strip()
+    acceptance.revoke_reason = revoke_reason
     db.commit()
     db.refresh(acceptance)
 
