@@ -60,6 +60,9 @@
 - console ganhou ação `Plano de redução` e painel de sequência projetada;
 - etapas do Risk Reduction Plan agora expõem elegibilidade de campanha e referências de patch;
 - console permite `Preparar campanha` a partir de uma etapa elegível, apenas pré-preenchendo o draft; deploy continua separado;
+- migration `0012_risk_snapshot_details` enriquece snapshots de Asset Risk com model version, decomposition, cálculo, policy/appetite e governança;
+- histórico passa a explicar o score histórico sem depender de recálculo com regras futuras;
+- Asset Risk agora expõe `calculation` com base, multiplicadores, raw score e cap aplicado;
 - corrigido ID da revision Alembic 0006 para respeitar o limite da tabela `alembic_version` no PostgreSQL;
 - configuração do SLA é feita por variáveis de ambiente, sem migration ou mudança no agente;
 - adicionados testes de breach, due soon, exclusão, agregação e summary.
