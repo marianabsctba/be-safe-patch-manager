@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
 from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -3899,6 +3899,78 @@ def remediation_queue(
 @app.get("/api/admin/reports/vulnerability-sla")
 def admin_vulnerability_sla_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return vulnerability_sla_report(db)
+
+
+@app.post("/api/admin/agents/{agent_id}/risk-simulation")
+def simulate_asset_risk_reduction(
+    agent_id: str,
+    body: AssetRiskSimulationRequest,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    requested_ids = list(dict.fromkeys(body.finding_ids))
+    findings = list(agent.vulnerabilities or [])
+    finding_map = {finding.id: finding for finding in findings}
+    missing = [finding_id for finding_id in requested_ids if finding_id not in finding_map]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "finding does not belong to asset", "finding_ids": missing},
+        )
+
+    reference = now()
+    before = asset_risk_score(agent, findings, reference)
+    excluded = set(requested_ids)
+    simulated_findings = [
+        finding for finding in findings
+        if finding.id not in excluded
+    ]
+    after = asset_risk_score(agent, simulated_findings, reference)
+
+    delta = round(max(0.0, before["score"] - after["score"]), 1)
+    reduction_percent = (
+        round((delta / before["score"]) * 100.0, 1)
+        if before["score"] > 0
+        else 0.0
+    )
+
+    policy = effective_asset_risk_policy(db, agent)
+    return {
+        "generated_at": reference.isoformat(),
+        "mode": "simulation_only",
+        "asset": {
+            "agent_id": agent.id,
+            "hostname": agent.hostname,
+        },
+        "excluded_findings": requested_ids,
+        "before": {
+            "score": before["score"],
+            "level": before["level"],
+            "open_findings": before["open_findings"],
+            "above_risk_appetite": before["score"] >= policy["risk_appetite"],
+        },
+        "after": {
+            "score": after["score"],
+            "level": after["level"],
+            "open_findings": after["open_findings"],
+            "above_risk_appetite": after["score"] >= policy["risk_appetite"],
+        },
+        "impact": {
+            "delta": delta,
+            "reduction_percent": reduction_percent,
+            "crosses_below_appetite": (
+                before["score"] >= policy["risk_appetite"]
+                and after["score"] < policy["risk_appetite"]
+            ),
+        },
+        "risk_appetite": policy["risk_appetite"],
+        "risk_policy": policy,
+        "note": "Simulation does not modify finding status, evidence, campaign state, or Asset Risk history.",
+    }
 
 
 @app.get("/api/admin/agents/{agent_id}/risk-treatments")
