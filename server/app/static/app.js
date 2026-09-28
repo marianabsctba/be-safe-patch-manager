@@ -1481,7 +1481,7 @@ function renderRemediationHub() {
       esc(asset.hostname) + ' (-' + esc(asset.risk_reduction) + ')'
     ).join('<br>');
     const campaignButton = roleAtLeast('operator')
-      ? '<button class="row-action" onclick="prepareCampaignFromRemediationGroup(\'' + encodeURIComponent(item.patch_ref) + '\')">Preparar campanha</button>'
+      ? '<button class="row-action" onclick="prepareCampaignFromRemediationGroup(\'' + encodeURIComponent(item.patch_ref).replace(/'/g, '%27') + '\')">Preparar campanha</button>'
       : '<small class="muted">somente análise</small>';
 
     return '<tr>' +
