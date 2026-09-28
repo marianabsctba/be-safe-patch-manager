@@ -791,6 +791,8 @@ def risk_reduction_plan_report(
             "cvss": finding.cvss,
             "action": selected["recommendation"]["action"],
             "priority_score": selected["recommendation"]["priority_score"],
+            "eligible_for_campaign": selected["recommendation"]["eligible_for_campaign"],
+            "patch_refs": selected["recommendation"]["patch_refs"],
             "before_score": current["score"],
             "after_score": after["score"],
             "marginal_reduction": selected["marginal"],
