@@ -783,23 +783,24 @@ function renderAssetRisk() {
           ? compensating.controls.map((control) => control.tag).join(', ')
           : 'nenhum'
       ) + '<br><span class="muted">fonte: ' + esc(compensating.source || 'tags') + '</span></small></td>' +
-      '<td>' + (
-        roleAtLeast('admin')
-          ? '<button class="row-action" onclick="editAssetRiskProfile(\'' + item.agent_id + '\')">Perfil de risco</button>' +
-            ' <button class="row-action" onclick="showAssetRiskTimeline(\'' + item.agent_id + '\')">Timeline</button>' +
-            ' <button class="row-action" onclick="showRiskReductionPlan(\'' + item.agent_id + '\')">Plano de redução</button>' +
-            (treatment && treatment.active
-              ? ' <button class="row-action" onclick="editAssetRiskTreatment(\'' + item.agent_id + '\', \'' + treatment.id + '\')">Atualizar plano</button>'
-              : risk.above_risk_appetite
-                ? ' <button class="row-action" onclick="createAssetRiskTreatment(\'' + item.agent_id + '\')">Plano de tratamento</button>'
-                : '') +
-            (acceptance && acceptance.active
-              ? ' <button class="row-action" onclick="revokeAssetRiskAcceptance(\'' + item.agent_id + '\', \'' + acceptance.id + '\')">Revogar aceite</button>'
-              : risk.above_risk_appetite
-                ? ' <button class="row-action" onclick="createAssetRiskAcceptance(\'' + item.agent_id + '\')">Aceitar risco</button>'
-                : '')
-          : ''
-      ) + '</td>' +
+      '<td>' +
+        '<button class="row-action" onclick="showAssetRiskTimeline(\'' + item.agent_id + '\')">Timeline</button>' +
+        ' <button class="row-action" onclick="showRiskReductionPlan(\'' + item.agent_id + '\')">Plano de redução</button>' +
+        (
+          roleAtLeast('admin')
+            ? ' <button class="row-action" onclick="editAssetRiskProfile(\'' + item.agent_id + '\')">Perfil de risco</button>' +
+              (treatment && treatment.active
+                ? ' <button class="row-action" onclick="editAssetRiskTreatment(\'' + item.agent_id + '\', \'' + treatment.id + '\')">Atualizar plano</button>'
+                : risk.above_risk_appetite
+                  ? ' <button class="row-action" onclick="createAssetRiskTreatment(\'' + item.agent_id + '\')">Plano de tratamento</button>'
+                  : '') +
+              (acceptance && acceptance.active
+                ? ' <button class="row-action" onclick="revokeAssetRiskAcceptance(\'' + item.agent_id + '\', \'' + acceptance.id + '\')">Revogar aceite</button>'
+                : risk.above_risk_appetite
+                  ? ' <button class="row-action" onclick="createAssetRiskAcceptance(\'' + item.agent_id + '\')">Aceitar risco</button>'
+                  : '')
+            : ''
+        ) + '</td>' +
     '</tr>';
   }).join('');
 }
