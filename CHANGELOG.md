@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.22.0
+
+- control plane e dashboard passam para versão 0.22.0; agente permanece em 0.16.0;
+- adicionados Risk Reduction Goals persistentes com migration `0014_risk_reduction_goals`;
+- goals suportam baseline congelado, target máximo, owner, prazo, escopo global ou dinâmico por tag e trilha de auditoria;
+- métricas suportadas incluem Asset Risk médio, ativos acima do appetite, findings abertos e ativos Critical/High;
+- valor atual é recalculado sobre o escopo vivo sem reescrever o baseline histórico;
+- progresso é calculado contra baseline → target e o pace indica `on_track`, `at_risk`, `overdue`, `achieved`, `completed` ou `cancelled`;
+- conclusão manual exige que o target esteja realmente atingido;
+- console ganha Risk Reduction Goals na overview com criação e gestão via governance workspace;
+- overview ganha Risk Program Overview com exposure backlog, threat-active assets, owner coverage, MTTR, evidência verificada, patch success, goals e maior alavanca do Remediation Hub;
+- a visão executiva não cria score agregado oculto; ela apresenta métricas observáveis e explicáveis do ambiente;
+- adicionados testes de baseline, progresso, escopo por tag, conclusão e overdue.
+
+## 0.21.0
+
+- control plane passa para versão 0.21.0; agente permanece em 0.16.0;
+- campanhas passam a suportar população exata multi-asset congelada no momento da criação;
+- Remediation Hub pode preparar draft de campanha diretamente a partir do grupo de patch, preservando a lista exata de endpoints alvo;
+- encoding de patch refs no fluxo da console foi endurecido;
+- adicionados testes de targeting multi-asset;
+- Risk Acceptance, Risk Profile, Risk Policy e Treatment Plan deixam de depender de prompts simples e passam a usar workspace modal de governança;
+- Remediation Hub passa a produzir deployment guidance com base no Patch Confidence local;
+- guidance diferencia coleta de evidência, revisão de falhas, pilot e controlled rollout;
+- draft preparado pelo Remediation Hub usa ring sugerido pelo guidance, mas continua exigindo revisão humana antes do deploy;
+- adicionados testes do deployment guidance.
+
 ## 0.20.0
 
 - control plane e dashboard passam para versão 0.20.0; agente permanece em 0.16.0;
