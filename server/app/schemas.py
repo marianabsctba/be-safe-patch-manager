@@ -192,6 +192,24 @@ class AgentMtlsBindRequest(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+class RiskReductionGoalCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
+    scope_tag: str = Field(default="", max_length=128)
+    goal_type: str = Field(min_length=3, max_length=64)
+    target_value: float = Field(ge=0)
+    owner: str = Field(min_length=2, max_length=255)
+    due_at: datetime
+    reason: str = Field(min_length=5, max_length=1000)
+
+
+class RiskReductionGoalUpdate(BaseModel):
+    target_value: Optional[float] = Field(default=None, ge=0)
+    owner: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    due_at: Optional[datetime] = None
+    status: Optional[str] = None
+    reason: str = Field(min_length=5, max_length=1000)
+
+
 class AssetRiskSimulationRequest(BaseModel):
     finding_ids: List[str] = Field(min_length=1, max_length=500)
 
