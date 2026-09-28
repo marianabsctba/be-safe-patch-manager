@@ -43,10 +43,10 @@ def db():
         session.close()
 
 
-def make_agent():
+def make_agent(aid="sim-agent"):
     return Agent(
-        id="sim-agent",
-        hostname="sim-agent.local",
+        id=aid,
+        hostname=f"{aid}.local",
         os_family="linux",
         os_name="Linux",
         token_hash="s" * 64,
