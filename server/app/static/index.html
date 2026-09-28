@@ -255,6 +255,64 @@
             <div class="panel-subsection">
               <div class="panel-head">
                 <div>
+                  <p class="section-kicker">ACTIVE THREAT WATCH</p>
+                  <h3>Exploração ativa e probabilidade alta</h3>
+                </div>
+              </div>
+              <div id="activeThreatStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Visão baseada em sinais objetivos disponíveis na plataforma: CISA KEV, EPSS e ransomware known. Não representa classificação própria de threat research.
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>CVE</th>
+                      <th>Sinais</th>
+                      <th>Risco</th>
+                      <th>EPSS</th>
+                      <th>Ativos</th>
+                      <th>Findings</th>
+                      <th>Patch refs</th>
+                      <th>Contexto</th>
+                    </tr>
+                  </thead>
+                  <tbody id="activeThreatTable"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">PATCH CONFIDENCE</p>
+                  <h3>Confiabilidade observada na própria frota</h3>
+                </div>
+              </div>
+              <div id="patchConfidenceStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Confidence usa histórico local de jobs install_updates. Jobs em bundle contam para cada package do bundle e não representam telemetria global do fabricante.
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Patch</th>
+                      <th>Confidence</th>
+                      <th>Sucesso</th>
+                      <th>Concluídos</th>
+                      <th>OK</th>
+                      <th>Falhas</th>
+                      <th>Stalled / Blocked</th>
+                      <th>Cobertura</th>
+                    </tr>
+                  </thead>
+                  <tbody id="patchConfidenceTable"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
                   <p class="section-kicker">REMEDIATION HUB</p>
                   <h3>Correções com maior impacto agregado</h3>
                 </div>
