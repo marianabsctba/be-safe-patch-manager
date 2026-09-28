@@ -640,6 +640,97 @@ def remediation_queue_report(db: Session, reference: datetime | None = None) -> 
     }
 
 
+def risk_reduction_opportunities_report(
+    db: Session,
+    reference: datetime | None = None,
+    limit: int = 100,
+) -> dict:
+    reference = reference or now()
+    agents = db.query(Agent).order_by(Agent.hostname.asc()).all()
+    opportunities = []
+
+    for agent in agents:
+        findings = [
+            finding
+            for finding in (agent.vulnerabilities or [])
+            if finding.status == "open"
+        ]
+        if not findings:
+            continue
+
+        before = asset_risk_score(agent, findings, reference)
+        policy = effective_asset_risk_policy(db, agent)
+
+        for finding in findings:
+            after_findings = [
+                candidate for candidate in findings
+                if candidate.id != finding.id
+            ]
+            after = asset_risk_score(agent, after_findings, reference)
+            delta = round(max(0.0, before["score"] - after["score"]), 1)
+            reduction_percent = (
+                round((delta / before["score"]) * 100.0, 1)
+                if before["score"] > 0
+                else 0.0
+            )
+            finding_risk = finding_detection_risk(finding, reference)
+            sla = vulnerability_sla(finding, reference)
+            recommendation = remediation_recommendation(finding, reference)
+
+            opportunities.append({
+                "finding_id": finding.id,
+                "agent_id": agent.id,
+                "hostname": agent.hostname,
+                "cve": finding.cve,
+                "title": finding.title,
+                "severity": finding.severity,
+                "cvss": finding.cvss,
+                "finding_risk": finding_risk,
+                "sla": sla,
+                "recommendation": {
+                    "action": recommendation["action"],
+                    "priority_score": recommendation["priority_score"],
+                    "eligible_for_campaign": recommendation["eligible_for_campaign"],
+                },
+                "before_score": before["score"],
+                "projected_score": after["score"],
+                "risk_appetite": policy["risk_appetite"],
+                "risk_reduction": delta,
+                "reduction_percent": reduction_percent,
+                "crosses_below_appetite": (
+                    before["score"] >= policy["risk_appetite"]
+                    and after["score"] < policy["risk_appetite"]
+                ),
+            })
+
+    opportunities.sort(key=lambda item: (
+        -item["risk_reduction"],
+        -item["reduction_percent"],
+        -item["recommendation"]["priority_score"],
+        -float(item.get("cvss") or 0),
+        item["hostname"].lower(),
+    ))
+
+    opportunities = opportunities[:max(1, min(limit, 500))]
+    return {
+        "generated_at": reference.isoformat(),
+        "mode": "simulation_only",
+        "summary": {
+            "opportunities": len(opportunities),
+            "crosses_below_appetite": sum(
+                1 for item in opportunities
+                if item["crosses_below_appetite"]
+            ),
+            "total_simulated_reduction": round(
+                sum(item["risk_reduction"] for item in opportunities),
+                1,
+            ),
+        },
+        "items": opportunities,
+        "note": "Each opportunity is an independent single-finding simulation. Reductions are not additive across rows.",
+    }
+
+
 def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> dict:
     reference = reference or now()
     findings = db.query(VulnerabilityFinding).all()
@@ -3886,6 +3977,15 @@ def admin_asset_risk_report(
     db: Session = Depends(get_db),
 ):
     return asset_risk_report(db)
+
+
+@app.get("/api/admin/reports/risk-reduction-opportunities")
+def risk_reduction_opportunities(
+    limit: int = 100,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return risk_reduction_opportunities_report(db, limit=limit)
 
 
 @app.get("/api/admin/reports/remediation-queue")
