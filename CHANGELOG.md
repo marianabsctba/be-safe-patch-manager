@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.19.0
+
+- control plane e dashboard passam para versão 0.19.0; agente permanece em 0.16.0;
+- Risk Acceptance e Treatment Plan agora só podem ser criados quando o ativo está acima do appetite efetivo;
+- criação concorrente de governança é serializada por ativo no backend;
+- campos administrativos relevantes são validados também após trim para impedir valores compostos apenas por espaços;
+- mudanças de Risk Profile, Risk Policy, Risk Acceptance e Treatment Plan geram snapshots imediatos dos ativos afetados;
+- snapshots históricos persistem model version, decomposition, cálculo, policy/appetite e estado de governança;
+- adicionado retention configurável de snapshots via `ASSET_RISK_HISTORY_RETENTION_DAYS`;
+- Risk Reduction Simulation, Opportunities e Plan permitem estimar impacto e ordenar remediação sem alterar estado real;
+- etapas elegíveis do plano podem pré-preencher campanhas, mantendo criação e deploy explícitos;
+- timeline de Asset Risk fica disponível na console para viewer/operator/admin;
+- top contributors passam a informar ativos afetados e participação percentual;
+- relatório e oportunidades de risco reduzem consultas repetidas por policy e relacionamentos;
+- listagem de vulnerabilidades passa a ordenar por risco antes de aplicar o limit, evitando ocultar finding antigo e urgente;
+- Threat Intel expõe freshness, age, degraded e stale em Prometheus;
+- adicionados alertas de Threat Intel stale/degraded e novos painéis Grafana;
+- documentação e imagens de features foram atualizadas para refletir a arquitetura e a console atuais.
+
 ## 0.18.0
 
 - control plane e dashboard passam para versão 0.18.0; agente permanece em 0.16.0;
