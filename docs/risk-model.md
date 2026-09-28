@@ -718,6 +718,31 @@ A migration correspondente é:
 0012_risk_snapshot_details
 ```
 
+## 7.9. Asset Risk Timeline
+
+A console pode carregar a timeline histórica de um ativo usando:
+
+```http
+GET /api/admin/reports/asset-risk/history?agent_id={agent_id}
+```
+
+A timeline exibe, por snapshot:
+
+- data/hora;
+- score;
+- delta contra o snapshot anterior;
+- appetite efetivo;
+- policy efetiva;
+- estado de governança;
+- model version;
+- origem do snapshot.
+
+O detalhe mais recente também mostra o `raw_score` persistido no cálculo.
+
+Timeline e Risk Reduction Plan são visões somente leitura e estão disponíveis para `viewer`, `operator` e `admin`.
+
+Ações que alteram contexto ou governança continuam restritas ao papel apropriado, como Risk Profile, Treatment Plan e Risk Acceptance.
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
