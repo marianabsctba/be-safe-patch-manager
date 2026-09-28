@@ -39,7 +39,7 @@ def db():
 def add_agent(db, agent_id, os_family="windows", tags=None, external=False):
     agent = Agent(
         id=agent_id, hostname=agent_id + ".local", os_family=os_family,
-        os_name=os_family, token_hash="a"*64, tags=main.dump(tags or []),
+        os_name=os_family, token_hash=(agent_id + "-" + ("a"*64))[:64], tags=main.dump(tags or []),
     )
     db.add(agent)
     db.add(AssetRiskProfile(
