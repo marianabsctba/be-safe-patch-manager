@@ -147,3 +147,38 @@ def test_simulation_deduplicates_requested_ids(db, monkeypatch):
     )
 
     assert result["excluded_findings"] == [f1.id]
+
+
+
+def test_opportunity_report_ranks_larger_reduction_first(db, monkeypatch):
+    agent = make_agent()
+    critical = make_finding("finding-crit", "critical", 9.8, 0.95, True)
+    medium = make_finding("finding-med", "medium", 5.0, 0.05, False)
+    critical.agent = agent
+    medium.agent = agent
+    db.add_all([agent, critical, medium])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    report = main.risk_reduction_opportunities_report(db, REFERENCE)
+
+    assert report["mode"] == "simulation_only"
+    assert len(report["items"]) == 2
+    assert report["items"][0]["risk_reduction"] >= report["items"][1]["risk_reduction"]
+    assert report["items"][0]["finding_id"] == critical.id
+
+
+def test_opportunity_report_is_read_only(db, monkeypatch):
+    agent = make_agent()
+    finding = make_finding("finding-readonly", "critical", 9.8, 0.95, True)
+    finding.agent = agent
+    db.add_all([agent, finding])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    before_status = finding.status
+    report = main.risk_reduction_opportunities_report(db, REFERENCE)
+    db.refresh(finding)
+
+    assert report["items"]
+    assert finding.status == before_status == "open"
