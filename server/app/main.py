@@ -646,7 +646,16 @@ def risk_reduction_opportunities_report(
     limit: int = 100,
 ) -> dict:
     reference = reference or now()
-    agents = db.query(Agent).order_by(Agent.hostname.asc()).all()
+    agents = db.query(Agent).options(
+        selectinload(Agent.vulnerabilities),
+        selectinload(Agent.risk_profile),
+    ).order_by(Agent.hostname.asc()).all()
+    policies = db.query(AssetRiskPolicy).filter(
+        AssetRiskPolicy.enabled.is_(True)
+    ).order_by(
+        AssetRiskPolicy.priority.desc(),
+        AssetRiskPolicy.name.asc(),
+    ).all()
     opportunities = []
 
     for agent in agents:
@@ -659,7 +668,7 @@ def risk_reduction_opportunities_report(
             continue
 
         before = asset_risk_score(agent, findings, reference)
-        policy = effective_asset_risk_policy(db, agent)
+        policy = effective_asset_risk_policy(db, agent, policies=policies)
 
         for finding in findings:
             after_findings = [
@@ -1567,14 +1576,27 @@ def asset_risk_report(
         row["risk"]["trend"] = trend
 
     contributor_totals = {}
+    contributor_assets = {}
     for row in rows:
         for item in row["risk"].get("decomposition", []):
             if item["raw"] <= 0:
                 continue
-            contributor_totals[item["name"]] = contributor_totals.get(item["name"], 0.0) + item["raw"]
+            name = item["name"]
+            contributor_totals[name] = contributor_totals.get(name, 0.0) + item["raw"]
+            contributor_assets.setdefault(name, set()).add(row["agent_id"])
 
+    contributor_positive_total = sum(contributor_totals.values())
     top_contributors = [
-        {"name": name, "raw": round(value, 1)}
+        {
+            "name": name,
+            "raw": round(value, 1),
+            "assets_affected": len(contributor_assets.get(name, set())),
+            "share_percent": (
+                round(value / contributor_positive_total * 100.0, 1)
+                if contributor_positive_total > 0
+                else 0.0
+            ),
+        }
         for name, value in sorted(
             contributor_totals.items(),
             key=lambda pair: pair[1],
