@@ -183,6 +183,43 @@ def test_asset_risk_report_applies_configured_risk_appetite(db, monkeypatch):
 
 
 
+def test_asset_risk_snapshot_persists_auditable_context(db):
+    agent = make_agent("audit-history-asset", ["tier0", "internet-facing"])
+    finding = make_finding(
+        "audit-history-f",
+        agent,
+        "critical",
+        9.8,
+        {"threat_intel": {"epss": 0.95, "kev": True}},
+    )
+    db.add_all([agent, finding])
+    db.commit()
+
+    result = main.capture_asset_risk_snapshots(
+        db,
+        source="audit-test",
+        reference=REFERENCE,
+        minimum_interval_seconds=0,
+    )
+    history = main.asset_risk_history(db, agent_id=agent.id)
+    item = history["items"][0]
+
+    assert result["created"] == 1
+    assert item["model_version"] == "be_safe_asset_risk_v1"
+    assert item["decomposition"]
+    assert item["calculation"]["score_cap"] == 1000
+    assert "raw_score" in item["calculation"]
+    assert item["risk_appetite"] >= 1
+    assert item["governance_status"] in {
+        "within_appetite",
+        "above_appetite",
+        "accepted",
+        "in_treatment",
+        "treatment_overdue",
+    }
+    assert "source" in item["risk_policy"]
+
+
 def test_asset_risk_snapshot_persists_and_history_returns_latest(db):
     agent = make_agent("history-asset", ["prod"])
     finding = make_finding("history-f", agent, "high", 8.0, {})
