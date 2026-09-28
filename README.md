@@ -31,6 +31,7 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - ranking de Risk Reduction Opportunities para priorizar findings pela redução projetada de Asset Risk, sem somar deltas independentes;
 - Risk Reduction Plan por ativo, recalculando ganho marginal passo a passo até atingir o appetite ou o limite de etapas;
 - histórico auditável de Asset Risk com model version, decomposition, cálculo intermediário, policy/appetite e estado de governança persistidos por snapshot;
+- timeline por ativo na console, mostrando evolução de score, appetite/policy, governança e versão do modelo ao longo do tempo;
 - etapas elegíveis do plano podem pré-preencher um draft de campanha, mantendo criação e deploy sob controle explícito do operador;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
