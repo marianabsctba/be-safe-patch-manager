@@ -1278,6 +1278,32 @@ Remediation Hub
 
 Criar ou atualizar um projeto não cria jobs, não muda findings e não altera evidência.
 
+### Burndown histórico
+
+A migration `0016_remediation_project_history` adiciona snapshots de progresso por projeto.
+
+Cada snapshot persiste:
+
+- backlog rastreado aberto;
+- findings ainda no escopo atual;
+- ativos atuais;
+- findings fechados desde o baseline;
+- novos findings;
+- scope departures;
+- progresso percentual;
+- pace/status;
+- origem e timestamp.
+
+Endpoint:
+
+```http
+GET /api/admin/remediation-projects/{project_id}/history
+```
+
+Capturas administrativas de criação/alteração são imediatas. Capturas automáticas após sync Greenbone e import de vulnerabilities usam intervalo mínimo de uma hora para evitar ruído. Mudanças manuais de status de finding também geram captura imediata.
+
+A timeline permite distinguir **redução real de backlog** de mudanças de população/escopo ao longo do tempo.
+
 ## 14. Princípios de segurança
 
 O modelo segue estas regras:
