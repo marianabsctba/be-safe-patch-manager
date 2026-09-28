@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.24.0
+
+- control plane e dashboard passam para versão 0.24.0; agente permanece em 0.16.0;
+- migration `0017_remediation_project_intelligence` enriquece o histórico de Remediation Projects;
+- projetos passam a calcular risco restante, risco reduzido desde o baseline e progresso percentual de redução de risco;
+- progresso operacional passa a ser comparado com progresso esperado pelo prazo, expondo schedule variance;
+- Project Intelligence inclui KEV, SLA vencido/próximo, ativos externos, aging médio/máximo, EPSS médio/máximo e contexto de business service/owner;
+- attention state distingue `critical`, `needs_attention`, `watch` e `on_track` sem criar score opaco adicional;
+- histórico de projeto persiste risk burndown, threat/SLA signals, exposição, aging e attention state;
+- consultas de projeto passam a preload de risk profile e vulnerabilities para reduzir N+1;
+- console de Remediation Projects foi ampliada com redução de risco, threat/SLA, schedule variance e attention state;
+- Prometheus expõe atenção de projetos, risco restante/reduzido, KEV e SLA vencido;
+- adicionados alertas para projetos críticos e findings de projeto com SLA vencido;
+- Grafana ganhou painéis de projetos críticos, risco restante, risco reduzido e SLA vencido;
+- adicionados testes para inteligência de projeto, risk burndown e observabilidade.
+
 ## 0.23.0
 
 - control plane e dashboard passam para versão 0.23.0; agente permanece em 0.16.0;
