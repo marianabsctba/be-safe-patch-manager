@@ -1307,6 +1307,10 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
             1 for row in rows
             if row["risk"]["governance_status"] == "above_appetite"
         ),
+        "untreated_above_appetite": sum(
+            1 for row in rows
+            if row["risk"]["governance_status"] == "above_appetite"
+        ),
         "in_treatment_above_appetite": sum(
             1 for row in rows
             if row["risk"]["governance_status"] == "in_treatment"
