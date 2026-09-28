@@ -87,6 +87,7 @@ AGENT_MIN_PROTOCOL = _seconds_setting("AGENT_MIN_PROTOCOL", 2, 1)
 AGENT_ENFORCE_COMPATIBILITY = _bool_setting("AGENT_ENFORCE_COMPATIBILITY", False)
 AGENT_UPDATE_ENABLED = _bool_setting("AGENT_UPDATE_ENABLED", False)
 ASSET_RISK_APPETITE = _int_setting("ASSET_RISK_APPETITE", 700, 1, 1000)
+ASSET_RISK_HISTORY_RETENTION_DAYS = _int_setting("ASSET_RISK_HISTORY_RETENTION_DAYS", 180, 7, 3650)
 AGENT_RELEASE_DIR = Path(os.getenv("AGENT_RELEASE_DIR", "/agent-releases"))
 AGENT_UPDATE_PUBLIC_KEY_FILE = Path(
     os.getenv("AGENT_UPDATE_PUBLIC_KEY_FILE", "/update-trust/agent-update-public.pem")
@@ -1447,10 +1448,17 @@ def capture_asset_risk_snapshots(
         ))
         created += 1
 
+    cutoff = reference - timedelta(days=ASSET_RISK_HISTORY_RETENTION_DAYS)
+    prune_query = db.query(AssetRiskSnapshot).filter(
+        AssetRiskSnapshot.captured_at < cutoff
+    )
+    pruned = prune_query.delete(synchronize_session=False)
     db.commit()
     return {
         "created": created,
         "skipped": skipped,
+        "pruned": pruned,
+        "retention_days": ASSET_RISK_HISTORY_RETENTION_DAYS,
         "source": source,
         "captured_at": reference.isoformat(),
     }
