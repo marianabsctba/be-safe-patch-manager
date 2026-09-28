@@ -18,6 +18,7 @@ const state = {
   patchCatalog: null,
   patchFeeds: null,
   freezeWindows: null,
+  autoPatch: null,
   patchBlockRules: null,
   businessContext: null,
   remediationPerformance: null,
@@ -248,7 +249,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchCatalog, patchFeeds, freezeWindows, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchCatalog, patchFeeds, freezeWindows, autoPatch, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -262,6 +263,7 @@ async function load() {
       api('/api/admin/reports/patch-catalog'),
       api('/api/admin/patch-feeds'),
       api('/api/admin/freeze-windows'),
+      api('/api/admin/reports/auto-patch-decisions'),
       api('/api/admin/patch-block-rules'),
       api('/api/admin/reports/business-context'),
       api('/api/admin/reports/remediation-performance'),
@@ -289,6 +291,7 @@ async function load() {
     state.patchCatalog = patchCatalog;
     state.patchFeeds = patchFeeds;
     state.freezeWindows = freezeWindows;
+    state.autoPatch = autoPatch;
     state.patchBlockRules = patchBlockRules;
     state.businessContext = businessContext;
     state.remediationPerformance = remediationPerformance;
@@ -336,6 +339,7 @@ function renderAll() {
   renderPatchConfidence();
   renderPatchCatalog();
   renderPatchFeeds();
+  renderAutoPatch();
   renderFreezeWindows();
   renderBusinessContext();
   renderRemediationPerformance();
@@ -1944,6 +1948,85 @@ window.toggleFreezeWindow = async (id, enabled) => {
   }
 };
 
+
+
+function renderAutoPatch() {
+  const report = state.autoPatch || {};
+  const summary = report.summary || {};
+  const policies = Array.isArray(report.policies) ? report.policies : [];
+  const decisions = Array.isArray(report.decisions) ? report.decisions.slice(0, 100) : [];
+  const stats = $('#autoPatchStats');
+  const policyTable = $('#autoPatchPolicyTable');
+  const decisionTable = $('#autoPatchDecisionTable');
+  if (!stats || !policyTable || !decisionTable) return;
+
+  stats.innerHTML = [
+    ['Policies', summary.policies || 0],
+    ['Decisions', summary.decisions || 0],
+    ['Ready', summary.ready || 0],
+    ['Blocked', summary.blocked || 0],
+    ['Holds', summary.holds || 0],
+    ['Drafts criados', summary.drafts_created || 0],
+  ].map(([label, value]) =>
+    '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+  ).join('');
+
+  policyTable.innerHTML = policies.length ? policies.map((item) => {
+    const signals = [
+      item.require_kev ? 'KEV' : '',
+      item.require_external ? 'external' : '',
+      item.require_patch_tuesday ? 'Patch Tuesday' : '',
+    ].filter(Boolean).join(' + ') || 'qualquer patch compatível';
+    return '<tr>' +
+      '<td><strong>' + esc(item.name) + '</strong><br><small class="muted">' + esc(item.mode) + '</small></td>' +
+      '<td>' + (item.enabled ? badge('ENABLED', 'ok') : badge('DISABLED', 'muted-badge')) + '</td>' +
+      '<td><small>' + esc(item.target_os || 'all') + (item.target_tag ? ' · #' + esc(item.target_tag) : '') + '</small></td>' +
+      '<td><small>' + esc(signals) + '</small></td>' +
+      '<td><small>confidence ≥ ' + esc(item.confidence_floor) + '<br>ring ' + esc(item.ring_percent) + '%</small></td>' +
+      '<td><small>' + (item.require_approval ? 'approval ' : '') + (item.require_health_gate ? 'health ' : '') + (item.require_rollback ? 'rollback' : '') + '</small></td>' +
+    '</tr>';
+  }).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhuma Auto Patch Policy criada.</div></td></tr>';
+
+  decisionTable.innerHTML = decisions.length ? decisions.map((item) => {
+    const status = String(item.status || '');
+    const cls = status.startsWith('blocked_') ? 'fail'
+      : status.startsWith('hold_') || status.startsWith('review_') ? 'warn'
+      : status.includes('draft') || status === 'recommend' ? 'ok'
+      : 'info';
+    const signals = [
+      item.kev ? 'KEV' : '',
+      item.patch_tuesday ? 'Patch Tuesday' : '',
+      Number(item.external_assets || 0) ? item.external_assets + ' external' : '',
+    ].filter(Boolean).join(' · ') || '-';
+    return '<tr>' +
+      '<td><strong>' + esc(item.policy_name || '-') + '</strong></td>' +
+      '<td><strong>' + esc(item.patch_ref || '-') + '</strong>' +
+        (item.source_patch_ref && item.source_patch_ref !== item.patch_ref ? '<br><small class="muted">de ' + esc(item.source_patch_ref) + '</small>' : '') + '</td>' +
+      '<td>' + badge(status.toUpperCase(), cls) + '</td>' +
+      '<td><strong>' + esc(item.assets || 0) + '</strong></td>' +
+      '<td><small>' + esc(signals) + '</small></td>' +
+      '<td><small>ring ' + esc(item.ring_percent || '-') + '%<br>' +
+        (item.approval_required ? 'approval · ' : '') +
+        (item.health_gate_required ? 'health · ' : '') +
+        (item.rollback_required ? 'rollback' : '') +
+      '</small></td>' +
+      '<td><small>' + esc((item.reasons || []).join(' · ')) + '</small></td>' +
+    '</tr>';
+  }).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhuma decisão gerada pelas policies atuais.</div></td></tr>';
+}
+
+window.runAutoPatch = async (createDrafts) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+  try {
+    const result = await api('/api/admin/auto-patch/evaluate?create_drafts=' + (createDrafts ? 'true' : 'false'), { method: 'POST' });
+    toast(createDrafts
+      ? ('Policy engine executado: ' + Number((result.summary || {}).drafts_created || 0) + ' draft(s) criado(s).')
+      : 'Policy engine avaliado em modo recomendação.');
+    await load();
+  } catch (error) {
+    toast('Auto Patch Policy: ' + error.message, 'fail');
+  }
+};
 
 function renderPatchFeeds() {
   const report = state.patchFeeds || {};
@@ -4096,6 +4179,41 @@ $('#agentRolloutForm').addEventListener('submit', async (event) => {
   }
 });
 
+
+
+const autoPatchPolicyForm = $('#autoPatchPolicyForm');
+if (autoPatchPolicyForm) autoPatchPolicyForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!requireRole('admin', 'Somente admin pode criar Auto Patch Policies.')) return;
+  const form = new FormData(event.target);
+  try {
+    await api('/api/admin/auto-patch/policies', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: String(form.get('name') || '').trim(),
+        mode: String(form.get('mode') || 'recommend'),
+        target_os: String(form.get('target_os') || 'all').trim(),
+        target_tag: String(form.get('target_tag') || '').trim(),
+        require_kev: form.get('require_kev') === 'on',
+        require_external: form.get('require_external') === 'on',
+        require_patch_tuesday: form.get('require_patch_tuesday') === 'on',
+        min_missing_assets: Number(form.get('min_missing_assets') || 1),
+        confidence_floor: String(form.get('confidence_floor') || 'insufficient_data'),
+        allow_eol: form.get('allow_eol') === 'on',
+        superseded_action: String(form.get('superseded_action') || 'replace'),
+        ring_percent: Number(form.get('ring_percent') || 10),
+        require_approval: form.get('require_approval') === 'on',
+        require_health_gate: form.get('require_health_gate') === 'on',
+        require_rollback: form.get('require_rollback') === 'on',
+      }),
+    });
+    event.target.reset();
+    toast('Auto Patch Policy criada.');
+    await load();
+  } catch (error) {
+    toast('Auto Patch Policy: ' + error.message, 'fail');
+  }
+});
 
 const patchGuardForm = $('#patchGuardForm');
 if (patchGuardForm) patchGuardForm.addEventListener('submit', async (event) => {

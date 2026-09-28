@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.34; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.35; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -945,3 +945,10 @@ Próximas evoluções planejadas:
 ## Licença
 
 Apache License 2.0. Veja [LICENSE](LICENSE).
+
+- Auto Patch Policy Engine persistente suporta modos `recommend` e `draft`; nunca faz deploy automático.
+- policies combinam KEV, exposição externa, Patch Tuesday, confidence mínima, escopo OS/tag, EOL e supersedence.
+- KEV + ativo externo força canary de até 5%; Patch Tuesday limita rollout inicial a até 10%.
+- confidence abaixo do floor segura a automação; EOL é bloqueado por padrão; superseded pode virar leaf observada, skip ou allow.
+- Patch Guard e Change Freeze bloqueiam a decisão antes de draft; Approval Gate, health gate e rollback são herdados pela campanha.
+- targeting usa `patch_applicability` persistente, não a amostra visual do catálogo; drafts são deduplicados por policy + effective patch.

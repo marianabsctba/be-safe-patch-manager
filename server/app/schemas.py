@@ -351,6 +351,44 @@ class PatchCatalogLifecycleUpdate(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
 
 
+class AutoPatchPolicyCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
+    enabled: bool = True
+    mode: str = Field(default="recommend", pattern=r"^(recommend|draft)$")
+    target_os: str = Field(default="all", max_length=32)
+    target_tag: str = Field(default="", max_length=128)
+    require_kev: bool = False
+    require_external: bool = False
+    require_patch_tuesday: bool = False
+    min_missing_assets: int = Field(default=1, ge=1, le=50000)
+    confidence_floor: str = Field(default="insufficient_data", pattern=r"^(insufficient_data|low|medium|high)$")
+    allow_eol: bool = False
+    superseded_action: str = Field(default="replace", pattern=r"^(replace|skip|allow)$")
+    ring_percent: int = Field(default=10, ge=1, le=100)
+    require_approval: bool = True
+    require_health_gate: bool = True
+    require_rollback: bool = True
+
+
+class AutoPatchPolicyUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    mode: Optional[str] = Field(default=None, pattern=r"^(recommend|draft)$")
+    target_os: Optional[str] = Field(default=None, max_length=32)
+    target_tag: Optional[str] = Field(default=None, max_length=128)
+    require_kev: Optional[bool] = None
+    require_external: Optional[bool] = None
+    require_patch_tuesday: Optional[bool] = None
+    min_missing_assets: Optional[int] = Field(default=None, ge=1, le=50000)
+    confidence_floor: Optional[str] = Field(default=None, pattern=r"^(insufficient_data|low|medium|high)$")
+    allow_eol: Optional[bool] = None
+    superseded_action: Optional[str] = Field(default=None, pattern=r"^(replace|skip|allow)$")
+    ring_percent: Optional[int] = Field(default=None, ge=1, le=100)
+    require_approval: Optional[bool] = None
+    require_health_gate: Optional[bool] = None
+    require_rollback: Optional[bool] = None
+
+
+
 class PatchFreezeWindowCreate(BaseModel):
     name: str = Field(min_length=3, max_length=128)
     target_os: str = Field(default="all", max_length=32)

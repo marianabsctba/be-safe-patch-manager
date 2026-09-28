@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.34</small>
+          <small>dashboard v0.35</small>
         </div>
       </div>
     </aside>
@@ -398,6 +398,53 @@
                 <table>
                   <thead><tr><th>Janela</th><th>Status</th><th>OS</th><th>Tag</th><th>Período</th><th>Motivo</th><th></th></tr></thead>
                   <tbody id="freezeWindowTable"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">AUTO PATCH POLICY ENGINE</p>
+                  <h3>Decisão explicável + draft governado</h3>
+                </div>
+                <div>
+                  <button class="text-button" onclick="runAutoPatch(false)" data-min-role="operator">Avaliar</button>
+                  <button class="text-button" onclick="runAutoPatch(true)" data-min-role="operator">Criar drafts elegíveis</button>
+                </div>
+              </div>
+              <div id="autoPatchStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Policies podem recomendar ou criar campanha em draft. Nunca fazem deploy automático. Patch Guard e Change Freeze bloqueiam antes do draft; Approval Gate, health gate e rollback são herdados pela campanha.
+              </div>
+              <form id="autoPatchPolicyForm" class="form-grid" data-min-role="admin">
+                <label>Nome<input name="name" required minlength="3" placeholder="KEV externos"></label>
+                <label>Modo<select name="mode"><option value="recommend">recommend</option><option value="draft">draft</option></select></label>
+                <label>OS<select name="target_os"><option value="all">all</option><option value="windows">windows</option><option value="linux">linux</option></select></label>
+                <label>Tag<input name="target_tag" placeholder="production"></label>
+                <label>Missing mínimo<input name="min_missing_assets" type="number" min="1" value="1"></label>
+                <label>Confidence mínima<select name="confidence_floor"><option value="insufficient_data">insufficient_data</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label>
+                <label>Ring inicial<input name="ring_percent" type="number" min="1" max="100" value="10"></label>
+                <label>Superseded<select name="superseded_action"><option value="replace">replace</option><option value="skip">skip</option><option value="allow">allow</option></select></label>
+                <label><input name="require_kev" type="checkbox"> Exigir KEV</label>
+                <label><input name="require_external" type="checkbox"> Somente external</label>
+                <label><input name="require_patch_tuesday" type="checkbox"> Exigir Patch Tuesday</label>
+                <label><input name="allow_eol" type="checkbox"> Permitir EOL</label>
+                <label><input name="require_approval" type="checkbox" checked> Approval Gate</label>
+                <label><input name="require_health_gate" type="checkbox" checked> Health Gate</label>
+                <label><input name="require_rollback" type="checkbox" checked> Rollback obrigatório</label>
+                <button type="submit">Criar policy</button>
+              </form>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Policy</th><th>Status</th><th>Escopo</th><th>Sinais</th><th>Confidence / Ring</th><th>Controles</th></tr></thead>
+                  <tbody id="autoPatchPolicyTable"></tbody>
+                </table>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Policy</th><th>Patch</th><th>Decisão</th><th>Ativos</th><th>Sinais</th><th>Controles</th><th>Motivos</th></tr></thead>
+                  <tbody id="autoPatchDecisionTable"></tbody>
                 </table>
               </div>
             </div>

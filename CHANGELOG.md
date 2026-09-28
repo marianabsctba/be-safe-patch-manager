@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.35.0
+
+- control plane e dashboard passam para versão 0.35.0; agente permanece em 0.16.0;
+- adicionado Auto Patch Policy Engine persistente com migration 0027_auto_patch_policies;
+- policies operam em `recommend` ou `draft`; não existe auto-deploy nesta versão;
+- condições suportam KEV, exposição externa, Patch Tuesday, mínimo de ativos, confidence floor, OS/tag, EOL e supersedence;
+- KEV + external força canary de até 5%; Patch Tuesday mantém pilot de até 10%;
+- confidence abaixo do floor gera hold; EOL é bloqueado por padrão; replacement superseded exige leaf observada como missing;
+- Patch Guard e Change Freeze bloqueiam antes da criação de draft; Approval Gate, health gate e rollback são herdados;
+- targeting consulta `patch_applicability` completo e drafts são deduplicados por policy + effective patch;
+- console ganha workspace Auto Patch Policy com criação de policy, avaliação explicável e criação de drafts elegíveis;
+- adicionados testes de emergency canary, confidence hold, Patch Guard e deduplicação de draft.
+
 ## 0.34.0
 
 - control plane e dashboard passam para versão 0.34.0; agente permanece em 0.16.0;

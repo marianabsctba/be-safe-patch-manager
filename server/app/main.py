@@ -21,8 +21,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.34.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.35.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -7088,6 +7088,372 @@ def update_patch_catalog_lifecycle(
         item for item in patch_catalog_report(db, limit=2000)["items"]
         if item["patch_key"] == entry.patch_key
     )}
+
+
+
+AUTO_PATCH_CONFIDENCE_RANK = {"insufficient_data": 0, "low": 1, "medium": 2, "high": 3}
+
+
+def serialize_auto_patch_policy(policy: AutoPatchPolicy) -> dict:
+    return {
+        "id": policy.id,
+        "name": policy.name,
+        "enabled": policy.enabled,
+        "mode": policy.mode,
+        "target_os": policy.target_os,
+        "target_tag": policy.target_tag,
+        "require_kev": policy.require_kev,
+        "require_external": policy.require_external,
+        "require_patch_tuesday": policy.require_patch_tuesday,
+        "min_missing_assets": policy.min_missing_assets,
+        "confidence_floor": policy.confidence_floor,
+        "allow_eol": policy.allow_eol,
+        "superseded_action": policy.superseded_action,
+        "ring_percent": policy.ring_percent,
+        "require_approval": policy.require_approval,
+        "require_health_gate": policy.require_health_gate,
+        "require_rollback": policy.require_rollback,
+        "created_by": policy.created_by,
+        "updated_by": policy.updated_by,
+        "created_at": policy.created_at.isoformat() if policy.created_at else None,
+        "updated_at": policy.updated_at.isoformat() if policy.updated_at else None,
+    }
+
+
+def _auto_patch_agent_external(db: Session, agent_id: str) -> bool:
+    latest = db.query(AssetRiskSnapshot).filter(
+        AssetRiskSnapshot.agent_id == agent_id
+    ).order_by(AssetRiskSnapshot.captured_at.desc()).first()
+    if latest is not None:
+        return bool(latest.external)
+    profile = db.get(AssetRiskProfile, agent_id)
+    if profile is not None and profile.external_override is not None:
+        return bool(profile.external_override)
+    return False
+
+
+def _auto_patch_existing_campaign(db: Session, policy_id: str, patch_ref: str):
+    for campaign in db.query(Campaign).filter(Campaign.status.in_(["draft", "deployed"])).all():
+        payload = load(campaign.payload_json, {})
+        if (
+            str(payload.get("auto_policy_id") or "") == policy_id
+            and str(payload.get("auto_policy_patch_ref") or "").lower() == patch_ref.lower()
+        ):
+            return campaign
+    return None
+
+
+def _auto_patch_policy_agents(db: Session, policy: AutoPatchPolicy, item: dict) -> list[Agent]:
+    patch_key = str(item.get("patch_key") or patch_ref_key(item.get("patch_ref")))
+    if not patch_key:
+        return []
+    agent_ids = [
+        row.agent_id
+        for row in db.query(PatchApplicability).filter(
+            PatchApplicability.patch_key == patch_key,
+            PatchApplicability.status == "missing",
+        ).all()
+    ]
+    if not agent_ids:
+        return []
+    agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
+    result = []
+    for agent in agents:
+        if policy.target_os not in {"", "all"} and str(agent.os_family or "").lower() != policy.target_os:
+            continue
+        if policy.target_tag:
+            tags = {str(x).strip().lower() for x in load(agent.tags, []) if str(x).strip()}
+            if policy.target_tag.lower() not in tags:
+                continue
+        if policy.require_external and not _auto_patch_agent_external(db, agent.id):
+            continue
+        result.append(agent)
+    return sorted(result, key=lambda x: x.hostname.lower())
+
+
+def _auto_patch_freeze_windows(db: Session, policy: AutoPatchPolicy, agents: list[Agent]) -> list[dict]:
+    if not agents:
+        return []
+    os_values = {str(agent.os_family or "all").lower() for agent in agents}
+    target_os = policy.target_os if policy.target_os not in {"", "all"} else (
+        next(iter(os_values)) if len(os_values) == 1 else "all"
+    )
+    probe = Campaign(
+        id=f"policy-probe-{policy.id}",
+        name="policy-probe",
+        target_os=target_os,
+        target_tag=policy.target_tag,
+        ring_percent=policy.ring_percent,
+        action="install_updates",
+        payload_json="{}",
+        status="draft",
+    )
+    return [serialize_freeze_window(x) for x in active_freeze_windows_for_campaign(db, probe)]
+
+
+def _auto_patch_blockers(db: Session, patch_ref: str, agents: list[Agent]) -> list[dict]:
+    blockers = []
+    for rule in active_patch_block_rules(db):
+        matched = [agent for agent in agents if patch_block_rule_matches(rule, patch_ref, agent)]
+        if matched:
+            blockers.append({
+                "rule_id": rule.id,
+                "rule_name": rule.name,
+                "patch_ref": rule.patch_ref,
+                "reason": rule.reason,
+                "matched_assets": len(matched),
+            })
+    return blockers
+
+
+def auto_patch_policy_report(db: Session, create_drafts: bool = False, actor: str = "system:auto-patch") -> dict:
+    catalog = patch_catalog_report(db, limit=2000)
+    items = catalog.get("items", [])
+    item_by_ref = {str(item.get("patch_ref") or "").lower(): item for item in items}
+    policies = db.query(AutoPatchPolicy).filter(AutoPatchPolicy.enabled.is_(True)).order_by(AutoPatchPolicy.name.asc()).all()
+    decisions = []
+    created = 0
+
+    for policy in policies:
+        seen_effective = set()
+        for original in items:
+            reasons = []
+            effective = original
+            effective_ref = str(original.get("patch_ref") or "")
+            if not effective_ref:
+                continue
+            threat = original.get("threat") or {}
+            lifecycle = original.get("lifecycle") or {}
+            supersedence = original.get("supersedence") or {}
+
+            if policy.require_kev and int(threat.get("kev_findings") or 0) <= 0:
+                continue
+            if policy.require_patch_tuesday and not bool(lifecycle.get("patch_tuesday")):
+                continue
+            if int((original.get("states") or {}).get("missing") or 0) < int(policy.min_missing_assets):
+                continue
+
+            if supersedence.get("obsolete"):
+                if policy.superseded_action == "skip":
+                    decisions.append({
+                        "policy_id": policy.id, "policy_name": policy.name, "patch_ref": effective_ref,
+                        "status": "skipped_superseded",
+                        "reasons": ["patch superseded and policy is configured to skip"],
+                    })
+                    continue
+                if policy.superseded_action == "replace":
+                    replacement = str(supersedence.get("preferred_replacement") or "")
+                    replacement_item = item_by_ref.get(replacement.lower()) if replacement else None
+                    if not replacement_item or int((replacement_item.get("states") or {}).get("missing") or 0) <= 0:
+                        decisions.append({
+                            "policy_id": policy.id, "policy_name": policy.name, "patch_ref": effective_ref,
+                            "status": "review_replacement",
+                            "reasons": ["preferred replacement is not observed as applicable/missing"],
+                            "preferred_replacement": replacement or None,
+                        })
+                        continue
+                    effective = replacement_item
+                    effective_ref = replacement
+                    reasons.append(f"superseded patch replaced by observed leaf {replacement}")
+
+            effective_key = effective_ref.lower()
+            if effective_key in seen_effective:
+                continue
+            seen_effective.add(effective_key)
+
+            lifecycle = effective.get("lifecycle") or {}
+            if lifecycle.get("eol_state") == "eol" and not policy.allow_eol:
+                decisions.append({
+                    "policy_id": policy.id, "policy_name": policy.name, "patch_ref": effective_ref,
+                    "status": "blocked_eol", "reasons": reasons + ["EOL is blocked by policy"],
+                })
+                continue
+
+            confidence = (effective.get("patch_confidence") or {}).get("confidence") or "insufficient_data"
+            if AUTO_PATCH_CONFIDENCE_RANK.get(confidence, 0) < AUTO_PATCH_CONFIDENCE_RANK.get(policy.confidence_floor, 0):
+                decisions.append({
+                    "policy_id": policy.id, "policy_name": policy.name, "patch_ref": effective_ref,
+                    "status": "hold_confidence",
+                    "reasons": reasons + [f"confidence {confidence} is below floor {policy.confidence_floor}"],
+                })
+                continue
+
+            agents = _auto_patch_policy_agents(db, policy, effective)
+            if len(agents) < int(policy.min_missing_assets):
+                continue
+            external_count = sum(1 for agent in agents if _auto_patch_agent_external(db, agent.id))
+            blockers = _auto_patch_blockers(db, effective_ref, agents)
+            freezes = _auto_patch_freeze_windows(db, policy, agents)
+
+            if blockers:
+                decisions.append({
+                    "policy_id": policy.id, "policy_name": policy.name, "patch_ref": effective_ref,
+                    "status": "blocked_patch_guard", "assets": len(agents),
+                    "reasons": reasons + ["Patch Guard matched the selected patch/assets"], "blockers": blockers,
+                })
+                continue
+            if freezes:
+                decisions.append({
+                    "policy_id": policy.id, "policy_name": policy.name, "patch_ref": effective_ref,
+                    "status": "blocked_change_freeze", "assets": len(agents),
+                    "reasons": reasons + ["active Change Freeze matched policy scope"], "freeze_windows": freezes,
+                })
+                continue
+            if len(agents) > 500:
+                decisions.append({
+                    "policy_id": policy.id, "policy_name": policy.name, "patch_ref": effective_ref,
+                    "status": "review_scope_size", "assets": len(agents),
+                    "reasons": reasons + ["target snapshot exceeds 500 agents; split policy scope before drafting"],
+                })
+                continue
+
+            effective_threat = effective.get("threat") or {}
+            effective_lifecycle = effective.get("lifecycle") or {}
+            kev = int(effective_threat.get("kev_findings") or 0) > 0
+            patch_tuesday = bool(effective_lifecycle.get("patch_tuesday"))
+            ring_percent = int(policy.ring_percent)
+            if kev and external_count:
+                ring_percent = min(ring_percent, 5)
+                reasons.append("KEV + external exposure forces emergency 5% canary")
+            elif patch_tuesday:
+                ring_percent = min(ring_percent, 10)
+                reasons.append("Patch Tuesday keeps rollout in pilot ring")
+
+            approval_required = bool(policy.require_approval or kev or external_count)
+            health_gate = bool(policy.require_health_gate or confidence in {"insufficient_data", "low"})
+            rollback_required = bool(policy.require_rollback)
+            existing = _auto_patch_existing_campaign(db, policy.id, effective_ref)
+            decision = {
+                "policy_id": policy.id, "policy_name": policy.name, "mode": policy.mode,
+                "patch_ref": effective_ref, "source_patch_ref": original.get("patch_ref"),
+                "assets": len(agents), "external_assets": external_count,
+                "kev": kev, "patch_tuesday": patch_tuesday, "confidence": confidence,
+                "ring_percent": ring_percent, "approval_required": approval_required,
+                "health_gate_required": health_gate, "rollback_required": rollback_required,
+                "status": "recommend", "reasons": reasons or ["policy conditions matched"],
+                "existing_campaign_id": existing.id if existing else None,
+            }
+
+            if policy.mode == "draft" and create_drafts and not existing:
+                target_os_values = {str(agent.os_family or "all").lower() for agent in agents}
+                target_os = policy.target_os if policy.target_os not in {"", "all"} else (
+                    next(iter(target_os_values)) if len(target_os_values) == 1 else "all"
+                )
+                body = CampaignCreate(
+                    name=f"[AUTO] {policy.name} · {effective_ref}",
+                    description="Auto Patch Policy draft: " + " · ".join(decision["reasons"]),
+                    target_os=target_os,
+                    target_tag=policy.target_tag,
+                    ring_percent=ring_percent,
+                    action="install_updates",
+                    payload={
+                        "packages": [effective_ref],
+                        "auto_policy_id": policy.id,
+                        "auto_policy_name": policy.name,
+                        "auto_policy_patch_ref": effective_ref,
+                    },
+                    reboot_policy="never",
+                    post_patch_validation=True,
+                    health_gate_enabled=health_gate,
+                    health_gate_require_telemetry=True,
+                    prepare_rollback=True,
+                    rollback_required=rollback_required,
+                    target_agent_ids=[agent.id for agent in agents],
+                    approval_required=approval_required,
+                    approval_reason=(f"Auto Patch Policy {policy.name}: govern deployment of {effective_ref}" if approval_required else ""),
+                )
+                created_campaign = create_campaign(body, principal={"actor": actor, "role": "operator"}, db=db)
+                decision["status"] = "draft_created"
+                decision["campaign_id"] = created_campaign["id"]
+                created += 1
+            elif existing:
+                decision["status"] = "draft_exists"
+            elif policy.mode == "draft":
+                decision["status"] = "draft_ready"
+            decisions.append(decision)
+
+    status_counts = {}
+    for item in decisions:
+        status = item.get("status") or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+    return {
+        "generated_at": now().isoformat(),
+        "summary": {
+            "policies": len(policies), "decisions": len(decisions), "drafts_created": created,
+            "blocked": sum(v for k, v in status_counts.items() if str(k).startswith("blocked_")),
+            "holds": sum(v for k, v in status_counts.items() if str(k).startswith("hold_") or str(k).startswith("review_")),
+            "ready": status_counts.get("draft_ready", 0) + status_counts.get("recommend", 0),
+            "status_counts": status_counts,
+        },
+        "policies": [serialize_auto_patch_policy(policy) for policy in policies],
+        "decisions": decisions,
+    }
+
+
+
+@app.get("/api/admin/auto-patch/policies")
+def list_auto_patch_policies(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    return [serialize_auto_patch_policy(x) for x in db.query(AutoPatchPolicy).order_by(AutoPatchPolicy.name.asc()).all()]
+
+
+@app.post("/api/admin/auto-patch/policies")
+def create_auto_patch_policy(body: AutoPatchPolicyCreate, principal=Depends(require_admin), db: Session = Depends(get_db)):
+    name = body.name.strip()
+    if db.query(AutoPatchPolicy).filter(func.lower(AutoPatchPolicy.name) == name.lower()).first():
+        raise HTTPException(status_code=409, detail="auto patch policy name already exists")
+    policy = AutoPatchPolicy(
+        id=str(uuid.uuid4()), name=name, enabled=body.enabled, mode=body.mode,
+        target_os=body.target_os.strip().lower(), target_tag=body.target_tag.strip(),
+        require_kev=body.require_kev, require_external=body.require_external,
+        require_patch_tuesday=body.require_patch_tuesday, min_missing_assets=body.min_missing_assets,
+        confidence_floor=body.confidence_floor, allow_eol=body.allow_eol,
+        superseded_action=body.superseded_action, ring_percent=body.ring_percent,
+        require_approval=body.require_approval, require_health_gate=body.require_health_gate,
+        require_rollback=body.require_rollback, created_by=principal["actor"], updated_by=principal["actor"],
+    )
+    db.add(policy)
+    db.commit()
+    audit(db, principal["actor"], "auto_patch_policy.created", "auto_patch_policy", policy.id, serialize_auto_patch_policy(policy))
+    return serialize_auto_patch_policy(policy)
+
+
+@app.patch("/api/admin/auto-patch/policies/{policy_id}")
+def update_auto_patch_policy(policy_id: str, body: AutoPatchPolicyUpdate, principal=Depends(require_admin), db: Session = Depends(get_db)):
+    policy = db.get(AutoPatchPolicy, policy_id)
+    if not policy:
+        raise HTTPException(status_code=404, detail="auto patch policy not found")
+    before = serialize_auto_patch_policy(policy)
+    for field in (
+        "enabled", "mode", "target_os", "target_tag", "require_kev", "require_external",
+        "require_patch_tuesday", "min_missing_assets", "confidence_floor", "allow_eol",
+        "superseded_action", "ring_percent", "require_approval", "require_health_gate", "require_rollback"
+    ):
+        value = getattr(body, field)
+        if value is not None:
+            if field == "target_os":
+                value = value.strip().lower()
+            if field == "target_tag":
+                value = value.strip()
+            setattr(policy, field, value)
+    policy.updated_by = principal["actor"]
+    db.commit()
+    after = serialize_auto_patch_policy(policy)
+    audit(db, principal["actor"], "auto_patch_policy.updated", "auto_patch_policy", policy.id, {"before": before, "after": after})
+    return after
+
+
+@app.get("/api/admin/reports/auto-patch-decisions")
+def auto_patch_decisions(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    return auto_patch_policy_report(db, create_drafts=False)
+
+
+@app.post("/api/admin/auto-patch/evaluate")
+def evaluate_auto_patch(create_drafts: bool = False, principal=Depends(require_operator), db: Session = Depends(get_db)):
+    result = auto_patch_policy_report(db, create_drafts=create_drafts, actor=principal["actor"])
+    audit(db, principal["actor"], "auto_patch_policy.evaluated", "auto_patch_policy", "", {
+        "create_drafts": create_drafts, "summary": result["summary"]
+    })
+    return result
 
 
 @app.get("/api/admin/reports/patch-catalog")
