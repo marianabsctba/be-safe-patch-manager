@@ -424,3 +424,53 @@ def test_trend_uses_previous_snapshot_when_latest_matches_current(db):
     assert trend["direction"] == "up"
     assert trend["previous_score"] == previous_score
     assert trend["delta"] == round(current["score"] - previous_score, 1)
+
+
+
+def test_asset_risk_snapshot_prunes_rows_older_than_retention(db, monkeypatch):
+    agent = make_agent("retention-asset", ["prod"])
+    finding = make_finding("retention-f", agent, "high", 8.0, {})
+    db.add_all([agent, finding])
+    db.commit()
+
+    old = AssetRiskSnapshot(
+        agent_id=agent.id,
+        score=500.0,
+        level="medium",
+        criticality=4,
+        external=False,
+        open_findings=1,
+        factors_json="[]",
+        source="old",
+        captured_at=REFERENCE - timedelta(days=181),
+    )
+    db.add(old)
+    db.commit()
+
+    monkeypatch.setattr(main, "ASSET_RISK_HISTORY_RETENTION_DAYS", 180)
+    result = main.capture_asset_risk_snapshots(
+        db,
+        source="retention-test",
+        reference=REFERENCE,
+        minimum_interval_seconds=0,
+    )
+
+    assert result["pruned"] == 1
+    assert result["retention_days"] == 180
+    assert db.query(AssetRiskSnapshot).filter(AssetRiskSnapshot.source == "old").count() == 0
+
+
+def test_top_contributors_include_asset_coverage_and_share(db):
+    a1 = make_agent("contrib-a1", ["tier0"])
+    a2 = make_agent("contrib-a2", ["tier0"])
+    f1 = make_finding("contrib-a1-f", a1, "critical", 9.8, {})
+    f2 = make_finding("contrib-a2-f", a2, "high", 8.0, {})
+    db.add_all([a1, a2, f1, f2])
+    db.commit()
+
+    report = main.asset_risk_report(db, REFERENCE)
+
+    assert report["top_contributors"]
+    for contributor in report["top_contributors"]:
+        assert contributor["assets_affected"] >= 1
+        assert 0.0 <= contributor["share_percent"] <= 100.0
