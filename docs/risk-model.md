@@ -153,6 +153,28 @@ Exemplo:
 
 Para devolver um campo ao modo automático, envie `null`.
 
+### Normalização de Threat Intelligence
+
+Valores externos são normalizados antes de entrar no score.
+
+EPSS aceita:
+
+- número entre `0` e `1`;
+- string decimal entre `0` e `1`;
+- percentual como `90%`.
+
+Valores fora da faixa são ignorados em vez de serem convertidos artificialmente para `0` ou `1`.
+
+Flags booleanas de KEV/ransomware também são interpretadas explicitamente. Strings como `"false"`, `"0"` e `"unknown"` não são consideradas verdadeiras.
+
+### Separação entre criticidade e exposição
+
+Tags de exposição (`internet-facing`, `public`, `dmz`) não aumentam mais a criticidade do ativo.
+
+Elas afetam apenas o componente de exposição.
+
+Isso evita contabilizar o mesmo contexto duas vezes no Asset Risk.
+
 ## 3. Exposição
 
 Tags reconhecidas como exposição externa:
