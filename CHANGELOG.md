@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.27.0
+
+- control plane e dashboard passam para versão 0.27.0; agente permanece em 0.16.0;
+- adicionado Patch Guard persistente com migration 0019_patch_block_rules;
+- admins podem bloquear patch references globalmente ou por SO/tag, com motivo, expiração opcional, enable/disable e auditoria;
+- deploy inicial e avanço de ring de campanhas install_updates passam a falhar antes da criação de jobs quando uma regra ativa casa com o patch e os endpoints do lote;
+- API expõe listagem e gestão das regras com RBAC viewer/admin;
+- console de Campanhas ganha workspace Patch Guard com status, escopo, expiração e ações administrativas;
+- Remediation Hub passa a exibir contadores P0/P1 e change risk alto; corrigido colspan da tabela após a inclusão da nova coluna;
+- adicionados testes de matching por SO/tag, expiração e bloqueio fail-closed no deploy.
+
 ## 0.26.0
 
 - control plane e dashboard passam para versão 0.26.0; agente permanece em 0.16.0;

@@ -287,5 +287,19 @@ class AssetRiskProfileUpdate(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
 
 
+class PatchBlockRuleCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
+    patch_ref: str = Field(min_length=1, max_length=255)
+    target_os: str = Field(default="all", max_length=32)
+    target_tag: str = Field(default="", max_length=128)
+    reason: str = Field(min_length=5, max_length=1000)
+    expires_at: Optional[datetime] = None
+
+
+class PatchBlockRuleUpdate(BaseModel):
+    enabled: bool
+    reason: str = Field(min_length=5, max_length=1000)
+
+
 class TagUpdate(BaseModel):
     tags: List[str]

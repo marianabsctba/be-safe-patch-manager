@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.26</small>
+          <small>dashboard v0.27</small>
         </div>
       </div>
     </aside>
@@ -643,6 +643,68 @@
                 <button id="agentRolloutPreviewButton" type="button" class="wide">Pré-visualizar rollout</button>
                 <button type="submit" class="primary wide">Criar e iniciar rollout</button>
               </form>
+            </section>
+
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">PATCH GUARD</p>
+                  <h2>Bloqueios de deployment</h2>
+                </div>
+              </div>
+              <div id="patchGuardStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Regras ativas bloqueiam o deploy ou avanço de ring antes da criação de jobs. O match é exato por patch reference e pode ser restrito por SO e tag.
+              </div>
+              <form id="patchGuardForm" class="grid-form" data-min-role="admin" hidden>
+                <label>
+                  <span>Nome da regra</span>
+                  <input name="name" placeholder="Ex.: Bloqueio KB com regressão" required />
+                </label>
+                <label>
+                  <span>Patch reference</span>
+                  <input name="patch_ref" placeholder="KB5039999 / pacote" required />
+                </label>
+                <label>
+                  <span>Sistema</span>
+                  <select name="target_os">
+                    <option value="all">Todos</option>
+                    <option value="windows">Windows</option>
+                    <option value="linux">Linux</option>
+                    <option value="macos">macOS</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Tag opcional</span>
+                  <input name="target_tag" placeholder="prod, tier0..." />
+                </label>
+                <label>
+                  <span>Expira em</span>
+                  <input name="expires_at" type="datetime-local" />
+                </label>
+                <label class="wide">
+                  <span>Motivo</span>
+                  <textarea name="reason" placeholder="Ex.: regressão confirmada no piloto; aguardar pacote corrigido" required></textarea>
+                </label>
+                <button type="submit" class="primary wide">Bloquear patch</button>
+              </form>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Regra</th>
+                      <th>Patch</th>
+                      <th>Escopo</th>
+                      <th>Status</th>
+                      <th>Expiração</th>
+                      <th>Atualizado por</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="patchGuardTable"></tbody>
+                </table>
+              </div>
             </section>
 
             <section class="panel" data-min-role="operator" hidden>

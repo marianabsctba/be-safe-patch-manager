@@ -15,6 +15,7 @@ const state = {
   remediationProjects: null,
   activeThreatWatch: null,
   patchConfidence: null,
+  patchBlockRules: null,
   businessContext: null,
   remediationPerformance: null,
   riskGoals: null,
@@ -244,7 +245,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -255,6 +256,7 @@ async function load() {
       api('/api/admin/remediation-projects'),
       api('/api/admin/reports/active-threat-watch'),
       api('/api/admin/reports/patch-confidence'),
+      api('/api/admin/patch-block-rules'),
       api('/api/admin/reports/business-context'),
       api('/api/admin/reports/remediation-performance'),
       api('/api/admin/risk-goals'),
@@ -278,6 +280,7 @@ async function load() {
     state.remediationProjects = remediationProjects;
     state.activeThreatWatch = activeThreatWatch;
     state.patchConfidence = patchConfidence;
+    state.patchBlockRules = patchBlockRules;
     state.businessContext = businessContext;
     state.remediationPerformance = remediationPerformance;
     state.riskGoals = riskGoals;
@@ -330,6 +333,7 @@ function renderAll() {
   renderAssetRisk();
   renderVulnerabilities();
   renderCampaigns();
+  renderPatchBlockRules();
   renderOverviewCampaigns();
   renderAgentRolloutForm();
   renderJobs();
@@ -1893,6 +1897,8 @@ function renderRemediationHub() {
       ['Grupos', summary.remediation_groups || 0],
       ['Findings cobertos', summary.findings_covered || 0],
       ['Ativos cobertos', summary.assets_covered || 0],
+      ['P0 / P1', String(summary.priority_p0 || 0) + ' / ' + String(summary.priority_p1 || 0)],
+      ['Change risk alto', summary.high_change_risk || 0],
       ['Cruza appetite', summary.appetite_crossings || 0],
     ].map(([label, value]) =>
       '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
@@ -1902,7 +1908,7 @@ function renderRemediationHub() {
   const table = $('#remediationHubTable');
   if (!table) return;
   if (!items.length) {
-    table.innerHTML = '<tr><td colspan="9"><div class="empty-state">Sem grupos de remediação com patch reference conhecida.</div></td></tr>';
+    table.innerHTML = '<tr><td colspan="10"><div class="empty-state">Sem grupos de remediação com patch reference conhecida.</div></td></tr>';
     return;
   }
 
@@ -3062,6 +3068,74 @@ function renderAgentRolloutForm() {
   }
 }
 
+
+function renderPatchBlockRules() {
+  const report = state.patchBlockRules || {};
+  const items = Array.isArray(report.items) ? report.items : [];
+  const stats = $('#patchGuardStats');
+  const table = $('#patchGuardTable');
+  if (!stats || !table) return;
+
+  const summary = report.summary || {};
+  stats.innerHTML = [
+    ['Ativas', summary.active || 0],
+    ['Desativadas', summary.disabled || 0],
+    ['Expiradas', summary.expired || 0],
+  ].map(([label, value]) =>
+    '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+  ).join('');
+
+  if (!items.length) {
+    table.innerHTML = '<tr><td colspan="7"><div class="empty-state">Nenhuma regra de bloqueio cadastrada.</div></td></tr>';
+    return;
+  }
+
+  table.innerHTML = items.map((rule) => {
+    const status = rule.active
+      ? badge('ATIVA', 'fail')
+      : rule.expired
+        ? badge('EXPIRADA', 'muted-badge')
+        : badge('DESATIVADA', 'muted-badge');
+    const scope = [
+      rule.target_os && rule.target_os !== 'all' ? rule.target_os : 'todos SOs',
+      rule.target_tag ? 'tag ' + rule.target_tag : 'todas tags',
+    ].join(' · ');
+    const action = roleAtLeast('admin')
+      ? '<button class="row-action" onclick="togglePatchBlockRule(\'' + rule.id + '\',' + (rule.enabled ? 'false' : 'true') + ')">' +
+        (rule.enabled ? 'Desativar' : 'Reativar') + '</button>'
+      : '<small class="muted">somente leitura</small>';
+    return '<tr>' +
+      '<td><strong>' + esc(rule.name) + '</strong><br><small class="muted">' + esc(rule.reason) + '</small></td>' +
+      '<td><strong>' + esc(rule.patch_ref) + '</strong></td>' +
+      '<td><small>' + esc(scope) + '</small></td>' +
+      '<td>' + status + '</td>' +
+      '<td><small>' + esc(rule.expires_at ? shortWhen(rule.expires_at) : 'sem expiração') + '</small></td>' +
+      '<td><small>' + esc(rule.updated_by || rule.created_by || '-') + '</small></td>' +
+      '<td>' + action + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+
+window.togglePatchBlockRule = async (ruleId, enabled) => {
+  if (!requireRole('admin', 'Somente admin pode alterar o Patch Guard.')) return;
+  if (!confirm((enabled ? 'Reativar' : 'Desativar') + ' esta regra do Patch Guard?')) return;
+  try {
+    await api('/api/admin/patch-block-rules/' + ruleId, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        enabled,
+        reason: enabled ? 'Regra reativada pela console' : 'Regra desativada pela console',
+      }),
+    });
+    toast(enabled ? 'Regra reativada.' : 'Regra desativada.');
+    await load();
+  } catch (error) {
+    toast('Patch Guard: ' + error.message, 'fail');
+  }
+};
+
+
 function renderCampaigns() {
   $('#campaigns').innerHTML = state.campaigns.length
     ? state.campaigns.map((campaign) => campaignCard(campaign)).join('')
@@ -3729,6 +3803,35 @@ $('#agentRolloutForm').addEventListener('submit', async (event) => {
     toast('Rollout do agente: ' + error.message, 'fail');
   }
 });
+
+
+const patchGuardForm = $('#patchGuardForm');
+if (patchGuardForm) patchGuardForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!requireRole('admin', 'Somente admin pode criar regras do Patch Guard.')) return;
+
+  const form = new FormData(event.target);
+  const expiresAt = form.get('expires_at');
+  try {
+    await api('/api/admin/patch-block-rules', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: String(form.get('name') || '').trim(),
+        patch_ref: String(form.get('patch_ref') || '').trim(),
+        target_os: String(form.get('target_os') || 'all').trim(),
+        target_tag: String(form.get('target_tag') || '').trim(),
+        reason: String(form.get('reason') || '').trim(),
+        expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+      }),
+    });
+    event.target.reset();
+    toast('Patch bloqueado pelo Patch Guard.');
+    await load();
+  } catch (error) {
+    toast('Patch Guard: ' + error.message, 'fail');
+  }
+});
+
 
 $('#campaignForm').addEventListener('submit', async (event) => {
   event.preventDefault();

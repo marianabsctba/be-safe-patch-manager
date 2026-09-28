@@ -326,6 +326,23 @@ class AssetRiskSnapshot(Base):
     agent = relationship("Agent", back_populates="risk_snapshots")
 
 
+class PatchBlockRule(Base):
+    __tablename__ = "patch_block_rules"
+
+    id = Column(String(36), primary_key=True)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    patch_ref = Column(String(255), nullable=False, index=True)
+    target_os = Column(String(32), nullable=False, default="all", index=True)
+    target_tag = Column(String(128), nullable=False, default="", index=True)
+    reason = Column(Text, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    created_by = Column(String(255), nullable=False)
+    updated_by = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class IntegrationState(Base):
     __tablename__ = "integration_states"
 

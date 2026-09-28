@@ -21,8 +21,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, PatchBlockRule, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -32,7 +32,7 @@ from .observability import metrics_response, prometheus_http_middleware, readine
 from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.26.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.27.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -7532,6 +7532,101 @@ def create_agent_update_rollout(
     }
 
 
+
+@app.get("/api/admin/patch-block-rules")
+def list_patch_block_rules(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    reference = now()
+    rules = db.query(PatchBlockRule).order_by(
+        PatchBlockRule.enabled.desc(),
+        PatchBlockRule.patch_ref.asc(),
+        PatchBlockRule.name.asc(),
+    ).all()
+    return {
+        "generated_at": reference.isoformat(),
+        "items": [serialize_patch_block_rule(rule, reference) for rule in rules],
+        "summary": {
+            "total": len(rules),
+            "active": sum(1 for rule in rules if serialize_patch_block_rule(rule, reference)["active"]),
+            "disabled": sum(1 for rule in rules if not rule.enabled),
+            "expired": sum(1 for rule in rules if serialize_patch_block_rule(rule, reference)["expired"]),
+        },
+    }
+
+
+@app.post("/api/admin/patch-block-rules")
+def create_patch_block_rule(
+    body: PatchBlockRuleCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    name = body.name.strip()
+    patch_ref = body.patch_ref.strip()
+    target_os = body.target_os.strip().lower() or "all"
+    target_tag = body.target_tag.strip()
+    reason = body.reason.strip()
+    if target_os not in {"all", "windows", "linux", "macos"}:
+        raise HTTPException(status_code=400, detail="target_os must be all, windows, linux or macos")
+    if db.query(PatchBlockRule).filter(func.lower(PatchBlockRule.name) == name.lower()).first():
+        raise HTTPException(status_code=409, detail="patch block rule name already exists")
+    expires_at = body.expires_at
+    if expires_at is not None:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now():
+            raise HTTPException(status_code=400, detail="expires_at must be in the future")
+
+    rule = PatchBlockRule(
+        id=str(uuid.uuid4()),
+        name=name,
+        patch_ref=patch_ref,
+        target_os=target_os,
+        target_tag=target_tag,
+        reason=reason,
+        enabled=True,
+        expires_at=expires_at,
+        created_by=principal["actor"],
+        updated_by=principal["actor"],
+    )
+    db.add(rule)
+    db.commit()
+    audit(
+        db,
+        principal["actor"],
+        "patch_block_rule.created",
+        "patch_block_rule",
+        rule.id,
+        serialize_patch_block_rule(rule),
+    )
+    return {"ok": True, "rule": serialize_patch_block_rule(rule)}
+
+
+@app.patch("/api/admin/patch-block-rules/{rule_id}")
+def update_patch_block_rule(
+    rule_id: str,
+    body: PatchBlockRuleUpdate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    rule = db.get(PatchBlockRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="patch block rule not found")
+    before = serialize_patch_block_rule(rule)
+    rule.enabled = bool(body.enabled)
+    rule.reason = body.reason.strip()
+    rule.updated_by = principal["actor"]
+    db.commit()
+    after = serialize_patch_block_rule(rule)
+    audit(
+        db,
+        principal["actor"],
+        "patch_block_rule.updated",
+        "patch_block_rule",
+        rule.id,
+        {"before": before, "after": after},
+    )
+    return {"ok": True, "rule": after}
+
+
 @app.post("/api/admin/campaigns")
 def create_campaign(body: CampaignCreate, principal=Depends(require_operator), db: Session = Depends(get_db)):
     if body.action not in {"scan_updates", "install_updates"}:
@@ -7652,6 +7747,109 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
     return serialize_campaign(campaign)
 
 
+
+def serialize_patch_block_rule(rule: PatchBlockRule, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    expires_at = rule.expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    expired = bool(expires_at and expires_at <= reference)
+    return {
+        "id": rule.id,
+        "name": rule.name,
+        "patch_ref": rule.patch_ref,
+        "target_os": rule.target_os,
+        "target_tag": rule.target_tag,
+        "reason": rule.reason,
+        "enabled": rule.enabled,
+        "expired": expired,
+        "active": bool(rule.enabled and not expired),
+        "expires_at": expires_at.isoformat() if expires_at else None,
+        "created_by": rule.created_by,
+        "updated_by": rule.updated_by,
+        "created_at": rule.created_at.isoformat() if rule.created_at else None,
+        "updated_at": rule.updated_at.isoformat() if rule.updated_at else None,
+    }
+
+
+def active_patch_block_rules(db: Session, reference: datetime | None = None) -> list[PatchBlockRule]:
+    reference = reference or now()
+    rules = db.query(PatchBlockRule).filter(PatchBlockRule.enabled.is_(True)).order_by(
+        PatchBlockRule.patch_ref.asc(),
+        PatchBlockRule.name.asc(),
+    ).all()
+    active = []
+    for rule in rules:
+        expires_at = rule.expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at is not None and expires_at <= reference:
+            continue
+        active.append(rule)
+    return active
+
+
+def patch_block_rule_matches(rule: PatchBlockRule, patch_ref: str, agent: Agent) -> bool:
+    if str(rule.patch_ref or "").strip().lower() != str(patch_ref or "").strip().lower():
+        return False
+    target_os = str(rule.target_os or "all").strip().lower()
+    if target_os not in {"", "all"} and str(agent.os_family or "").strip().lower() != target_os:
+        return False
+    target_tag = str(rule.target_tag or "").strip()
+    if target_tag:
+        tags = {str(tag).strip().lower() for tag in load(agent.tags, []) if str(tag).strip()}
+        if target_tag.lower() not in tags:
+            return False
+    return True
+
+
+def campaign_patch_blockers(
+    db: Session,
+    campaign: Campaign,
+    agents: list[Agent],
+    reference: datetime | None = None,
+) -> list[dict]:
+    if campaign.action != "install_updates" or not agents:
+        return []
+    payload = load(campaign.payload_json, {})
+    patch_refs = sorted({
+        str(value).strip()
+        for value in payload.get("packages", [])
+        if str(value).strip()
+    })
+    if not patch_refs:
+        return []
+
+    blockers = []
+    for rule in active_patch_block_rules(db, reference):
+        matched_agents = []
+        matched_refs = []
+        for patch_ref in patch_refs:
+            matching = [agent for agent in agents if patch_block_rule_matches(rule, patch_ref, agent)]
+            if matching:
+                matched_refs.append(patch_ref)
+                matched_agents.extend(matching)
+        if not matched_agents:
+            continue
+        unique_agents = {agent.id: agent for agent in matched_agents}
+        blockers.append({
+            "rule_id": rule.id,
+            "rule_name": rule.name,
+            "patch_ref": rule.patch_ref,
+            "matched_patch_refs": sorted(set(matched_refs)),
+            "target_os": rule.target_os,
+            "target_tag": rule.target_tag,
+            "reason": rule.reason,
+            "expires_at": rule.expires_at.isoformat() if rule.expires_at else None,
+            "matched_assets": len(unique_agents),
+            "assets": [
+                {"agent_id": agent.id, "hostname": agent.hostname}
+                for agent in sorted(unique_agents.values(), key=lambda item: item.hostname.lower())[:20]
+            ],
+        })
+    return blockers
+
+
 def campaign_candidates(db: Session, campaign: Campaign):
     candidates = []
     payload = load(campaign.payload_json, {})
@@ -7720,6 +7918,16 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
     selected = agents_for_ring(db, campaign, campaign.ring_percent)
     if not selected:
         raise HTTPException(status_code=409, detail="no agents matched campaign target")
+
+    blockers = campaign_patch_blockers(db, campaign, selected)
+    if blockers:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "patch deployment blocked by Patch Guard",
+                "blockers": blockers,
+            },
+        )
 
     add_ring_jobs(db, campaign, selected, campaign.ring_percent)
     campaign.status = "deployed"
@@ -7809,6 +8017,17 @@ def advance_campaign(
                 detail={
                     "message": "one or more agents are no longer eligible for rollout advance",
                     "unavailable": unavailable[:20],
+                },
+            )
+
+    if campaign.action == "install_updates":
+        blockers = campaign_patch_blockers(db, campaign, new_agents)
+        if blockers:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "ring advance blocked by Patch Guard",
+                    "blockers": blockers,
                 },
             )
 
