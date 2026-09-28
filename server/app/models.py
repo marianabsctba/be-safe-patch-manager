@@ -235,6 +235,12 @@ class AssetRiskSnapshot(Base):
     external = Column(Boolean, nullable=False, default=False)
     open_findings = Column(Integer, nullable=False, default=0)
     factors_json = Column(Text, nullable=False, default="[]")
+    model_version = Column(String(64), nullable=False, default="be_safe_asset_risk_v1")
+    decomposition_json = Column(Text, nullable=False, default="[]")
+    calculation_json = Column(Text, nullable=False, default="{}")
+    risk_policy_json = Column(Text, nullable=False, default="{}")
+    risk_appetite = Column(Integer, nullable=False, default=700)
+    governance_status = Column(String(64), nullable=False, default="")
     source = Column(String(64), nullable=False, default="manual")
     captured_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
 
