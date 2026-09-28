@@ -1946,6 +1946,15 @@ function remediationProjectBadge(status) {
   return badge('EM ANDAMENTO', 'info');
 }
 
+function remediationProjectAttentionBadge(status) {
+  if (status === 'critical') return badge('CRÍTICO', 'fail');
+  if (status === 'needs_attention') return badge('ATENÇÃO', 'warn');
+  if (status === 'watch') return badge('OBSERVAR', 'info');
+  if (status === 'completed') return badge('CONCLUÍDO', 'ok');
+  if (status === 'cancelled') return badge('CANCELADO', 'muted-badge');
+  return badge('NO TRACK', 'ok');
+}
+
 function renderRemediationProjects() {
   const report = state.remediationProjects || {};
   const summary = report.summary || {};
@@ -1956,29 +1965,39 @@ function renderRemediationProjects() {
 
   stats.innerHTML = [
     ['Ativos', summary.active || 0],
-    ['Aguardando verificação', summary.awaiting_verification || 0],
-    ['Atingidos', summary.achieved || 0],
-    ['Vencidos', summary.overdue || 0],
+    ['Críticos', summary.critical_attention || 0],
+    ['Precisam atenção', summary.needs_attention || 0],
+    ['SLA vencido', summary.sla_breached || 0],
+    ['KEV', summary.kev_findings || 0],
+    ['Risco restante', Number(summary.remaining_risk_reduction || 0).toFixed(1)],
+    ['Risco reduzido', Number(summary.realized_risk_reduction || 0).toFixed(1)],
     ['Findings abertos', summary.open_findings || 0],
   ].map(([label, value]) =>
     '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
   ).join('');
 
   if (!items.length) {
-    table.innerHTML = '<tr><td colspan="9"><div class="empty-state">Nenhum Remediation Project criado.</div></td></tr>';
+    table.innerHTML = '<tr><td colspan="10"><div class="empty-state">Nenhum Remediation Project criado.</div></td></tr>';
     return;
   }
 
   table.innerHTML = items.map((project) =>
     '<tr>' +
       '<td><strong>' + esc(project.name) + '</strong><br><small class="muted">' + esc(project.patch_ref) + '</small></td>' +
-      '<td>' + esc(project.scope_mode) + (project.scope_tag ? '<br><small class="muted">tag:' + esc(project.scope_tag) + '</small>' : '') + '</td>' +
+      '<td>' + esc(project.scope_mode) + (project.scope_tag ? '<br><small class="muted">tag:' + esc(project.scope_tag) + '</small>' : '') +
+        ((project.business_services || []).length ? '<br><small class="muted">' + esc(project.business_services.join(', ')) + '</small>' : '') + '</td>' +
       '<td><strong>' + esc(project.tracked_open_findings == null ? project.current_open_findings : project.tracked_open_findings) + ' / ' + esc(project.baseline_findings) + '</strong>' +
-        '<br><small class="muted">' + esc(project.current_open_findings) + ' no escopo atual · ' + esc(project.new_findings_since_baseline) + ' novos' +
-        (project.scope_departures ? ' · ' + esc(project.scope_departures) + ' saíram do escopo ainda abertos' : '') + '</small></td>' +
-      '<td><strong>' + esc(project.current_assets) + ' / ' + esc(project.baseline_assets) + '</strong></td>' +
-      '<td><strong>' + esc(project.progress_percent) + '%</strong><br><small class="muted">baseline impact -' + esc(project.baseline_risk_reduction) + '</small></td>' +
-      '<td>' + remediationProjectBadge(project.pace_status) + '</td>' +
+        '<br><small class="muted">' + esc(project.current_assets) + ' ativos · ' + esc(project.new_findings_since_baseline) + ' novos' +
+        (project.scope_departures ? ' · ' + esc(project.scope_departures) + ' scope drift' : '') + '</small></td>' +
+      '<td><strong>' + esc(project.realized_risk_reduction) + ' reduzido</strong>' +
+        '<br><small class="muted">' + esc(project.remaining_risk_reduction) + ' restante · baseline ' + esc(project.baseline_risk_reduction) +
+        ' · ' + esc(project.risk_reduction_progress_percent) + '%</small></td>' +
+      '<td><strong>' + esc(project.progress_percent) + '%</strong>' +
+        '<br><small class="muted">esperado ' + esc(project.expected_progress_percent) + '% · Δ ' + esc(project.schedule_variance_percent) + ' pp</small></td>' +
+      '<td><strong>' + esc(project.kev_findings) + ' KEV · ' + esc(project.sla_breached) + ' SLA</strong>' +
+        '<br><small class="muted">' + esc(project.external_assets) + ' externos · age máx ' + esc(project.oldest_age_days) + 'd' +
+        (project.max_epss == null ? '' : ' · EPSS máx ' + esc(Math.round(Number(project.max_epss) * 100)) + '%') + '</small></td>' +
+      '<td>' + remediationProjectAttentionBadge(project.attention_status) + '<br><small class="muted">' + remediationProjectBadge(project.pace_status) + '</small></td>' +
       '<td><strong>' + esc(project.owner) + '</strong></td>' +
       '<td>' + esc(when(project.due_at)) + '</td>' +
       '<td>' +
@@ -2271,18 +2290,22 @@ window.showRemediationProjectHistory = async (projectId) => {
       '<div><span>Projeto</span><strong>' + esc(result.project_name || projectId) + '</strong></div>' +
       '<div><span>Snapshots</span><strong>' + esc(items.length) + '</strong></div>' +
       '<div class="table-wrap"><table><thead><tr>' +
-        '<th>Data</th><th>Backlog rastreado</th><th>Escopo atual</th><th>Ativos</th><th>Fechados</th><th>Novos</th><th>Scope drift</th><th>Progresso</th><th>Pace</th><th>Origem</th>' +
+        '<th>Data</th><th>Backlog</th><th>Progresso</th><th>Esperado</th><th>Δ schedule</th><th>Risco restante</th><th>Risco reduzido</th><th>KEV</th><th>SLA</th><th>Externos</th><th>Aging</th><th>Atenção</th><th>Pace</th><th>Origem</th>' +
       '</tr></thead><tbody>' +
       items.map((item) =>
         '<tr>' +
           '<td>' + esc(shortWhen(item.captured_at)) + '</td>' +
-          '<td><strong>' + esc(item.tracked_open_findings) + '</strong></td>' +
-          '<td>' + esc(item.current_scope_findings) + '</td>' +
-          '<td>' + esc(item.current_assets) + '</td>' +
-          '<td>' + esc(item.closed_from_baseline) + '</td>' +
-          '<td>' + esc(item.new_findings_since_baseline) + '</td>' +
-          '<td>' + esc(item.scope_departures) + '</td>' +
+          '<td><strong>' + esc(item.tracked_open_findings) + '</strong><br><small class="muted">' + esc(item.current_scope_findings) + ' escopo · ' + esc(item.new_findings_since_baseline) + ' novos</small></td>' +
           '<td><strong>' + esc(item.progress_percent) + '%</strong></td>' +
+          '<td>' + esc(item.expected_progress_percent) + '%</td>' +
+          '<td>' + esc(item.schedule_variance_percent) + ' pp</td>' +
+          '<td><strong>' + esc(item.remaining_risk_reduction) + '</strong></td>' +
+          '<td><strong>' + esc(item.realized_risk_reduction) + '</strong><br><small class="muted">' + esc(item.risk_reduction_progress_percent) + '%</small></td>' +
+          '<td>' + esc(item.kev_findings) + '</td>' +
+          '<td>' + esc(item.sla_breached) + '</td>' +
+          '<td>' + esc(item.external_assets) + '</td>' +
+          '<td>' + esc(item.average_age_days) + 'd / ' + esc(item.oldest_age_days) + 'd</td>' +
+          '<td>' + remediationProjectAttentionBadge(item.attention_status) + '</td>' +
           '<td>' + remediationProjectBadge(item.pace_status) + '</td>' +
           '<td><small>' + esc(item.source || '-') + '</small></td>' +
         '</tr>'
