@@ -727,6 +727,101 @@ def risk_reduction_opportunities_report(
     }
 
 
+def risk_reduction_plan_report(
+    db: Session,
+    agent_id: str,
+    reference: datetime | None = None,
+    max_steps: int = 25,
+) -> dict:
+    reference = reference or now()
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    remaining = [
+        finding
+        for finding in (agent.vulnerabilities or [])
+        if finding.status == "open"
+    ]
+    policy = effective_asset_risk_policy(db, agent)
+    current = asset_risk_score(agent, remaining, reference)
+    initial_score = current["score"]
+    steps = []
+    max_steps = max(1, min(max_steps, 100))
+
+    while (
+        remaining
+        and len(steps) < max_steps
+        and current["score"] >= policy["risk_appetite"]
+    ):
+        candidates = []
+        for finding in remaining:
+            after_findings = [
+                candidate for candidate in remaining
+                if candidate.id != finding.id
+            ]
+            after = asset_risk_score(agent, after_findings, reference)
+            marginal = round(max(0.0, current["score"] - after["score"]), 1)
+            recommendation = remediation_recommendation(finding, reference)
+            candidates.append({
+                "finding": finding,
+                "after_findings": after_findings,
+                "after": after,
+                "marginal": marginal,
+                "recommendation": recommendation,
+            })
+
+        candidates.sort(key=lambda item: (
+            -item["marginal"],
+            -item["recommendation"]["priority_score"],
+            -float(item["finding"].cvss or 0),
+            item["finding"].id,
+        ))
+        selected = candidates[0]
+        finding = selected["finding"]
+        after = selected["after"]
+        cumulative = round(max(0.0, initial_score - after["score"]), 1)
+
+        steps.append({
+            "step": len(steps) + 1,
+            "finding_id": finding.id,
+            "cve": finding.cve,
+            "title": finding.title,
+            "severity": finding.severity,
+            "cvss": finding.cvss,
+            "action": selected["recommendation"]["action"],
+            "priority_score": selected["recommendation"]["priority_score"],
+            "before_score": current["score"],
+            "after_score": after["score"],
+            "marginal_reduction": selected["marginal"],
+            "cumulative_reduction": cumulative,
+            "crosses_below_appetite": (
+                current["score"] >= policy["risk_appetite"]
+                and after["score"] < policy["risk_appetite"]
+            ),
+        })
+
+        remaining = selected["after_findings"]
+        current = after
+
+    return {
+        "generated_at": reference.isoformat(),
+        "mode": "simulation_only",
+        "asset": {
+            "agent_id": agent.id,
+            "hostname": agent.hostname,
+        },
+        "risk_appetite": policy["risk_appetite"],
+        "initial_score": initial_score,
+        "projected_score": current["score"],
+        "projected_level": current["level"],
+        "target_reached": current["score"] < policy["risk_appetite"],
+        "steps": steps,
+        "remaining_open_findings": len(remaining),
+        "note": "Greedy marginal plan. Each step is recalculated from the remaining finding set and does not modify real state.",
+    }
+
+
 def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> dict:
     reference = reference or now()
     findings = db.query(VulnerabilityFinding).all()
@@ -3973,6 +4068,16 @@ def admin_asset_risk_report(
     db: Session = Depends(get_db),
 ):
     return asset_risk_report(db)
+
+
+@app.get("/api/admin/agents/{agent_id}/risk-reduction-plan")
+def risk_reduction_plan(
+    agent_id: str,
+    max_steps: int = 25,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return risk_reduction_plan_report(db, agent_id=agent_id, max_steps=max_steps)
 
 
 @app.get("/api/admin/reports/risk-reduction-opportunities")
