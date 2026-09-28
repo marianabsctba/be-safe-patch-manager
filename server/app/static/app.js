@@ -1973,7 +1973,9 @@ function renderRemediationProjects() {
     '<tr>' +
       '<td><strong>' + esc(project.name) + '</strong><br><small class="muted">' + esc(project.patch_ref) + '</small></td>' +
       '<td>' + esc(project.scope_mode) + (project.scope_tag ? '<br><small class="muted">tag:' + esc(project.scope_tag) + '</small>' : '') + '</td>' +
-      '<td><strong>' + esc(project.current_open_findings) + ' / ' + esc(project.baseline_findings) + '</strong><br><small class="muted">' + esc(project.new_findings_since_baseline) + ' novos desde baseline</small></td>' +
+      '<td><strong>' + esc(project.tracked_open_findings == null ? project.current_open_findings : project.tracked_open_findings) + ' / ' + esc(project.baseline_findings) + '</strong>' +
+        '<br><small class="muted">' + esc(project.current_open_findings) + ' no escopo atual · ' + esc(project.new_findings_since_baseline) + ' novos' +
+        (project.scope_departures ? ' · ' + esc(project.scope_departures) + ' saíram do escopo ainda abertos' : '') + '</small></td>' +
       '<td><strong>' + esc(project.current_assets) + ' / ' + esc(project.baseline_assets) + '</strong></td>' +
       '<td><strong>' + esc(project.progress_percent) + '%</strong><br><small class="muted">baseline impact -' + esc(project.baseline_risk_reduction) + '</small></td>' +
       '<td>' + remediationProjectBadge(project.pace_status) + '</td>' +
@@ -2316,7 +2318,7 @@ window.editRemediationProject = async (projectId) => {
   openGovernanceModal({
     kicker: 'REMEDIATION PROJECT',
     title: 'Gerenciar · ' + project.name,
-    context: project.patch_ref + ' · ' + project.current_open_findings + ' findings abertos · ' + project.progress_percent + '% concluído',
+    context: project.patch_ref + ' · ' + (project.tracked_open_findings == null ? project.current_open_findings : project.tracked_open_findings) + ' findings rastreados abertos · ' + project.progress_percent + '% concluído',
     submitLabel: 'Salvar projeto',
     fields: [
       { name: 'owner', label: 'Owner', type: 'text', value: project.owner, required: true, minLength: 2 },
