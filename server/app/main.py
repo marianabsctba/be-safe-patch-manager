@@ -21,8 +21,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -1310,6 +1310,213 @@ def patch_confidence_report(
         },
         "items": items,
         "note": "Patch Confidence uses this environment's own completed deployment history. Bundle jobs are attributed to each package in that bundle and should be interpreted as local operational evidence, not vendor-wide reliability telemetry.",
+    }
+
+
+def _finding_has_patch_ref(finding: VulnerabilityFinding, patch_ref: str) -> bool:
+    target = str(patch_ref or "").strip().lower()
+    if not target:
+        return False
+    return any(
+        str(ref).strip().lower() == target
+        for ref in load(finding.patch_refs_json, [])
+        if str(ref).strip()
+    )
+
+
+def _remediation_project_open_findings(
+    db: Session,
+    patch_ref: str,
+    scope_tag: str = "",
+) -> list[VulnerabilityFinding]:
+    tag = str(scope_tag or "").strip().lower()
+    findings = db.query(VulnerabilityFinding).options(
+        selectinload(VulnerabilityFinding.agent),
+    ).filter(
+        VulnerabilityFinding.status == "open",
+    ).all()
+    items = []
+    for finding in findings:
+        if not _finding_has_patch_ref(finding, patch_ref):
+            continue
+        if tag:
+            if not finding.agent:
+                continue
+            tags = {
+                str(value).strip().lower()
+                for value in load(finding.agent.tags, [])
+                if str(value).strip()
+            }
+            if tag not in tags:
+                continue
+        items.append(finding)
+    return items
+
+
+def _remediation_project_risk_reduction(
+    findings: list[VulnerabilityFinding],
+    reference: datetime | None = None,
+) -> float:
+    reference = reference or now()
+    by_agent: dict[str, list[VulnerabilityFinding]] = {}
+    for finding in findings:
+        if finding.agent_id and finding.agent:
+            by_agent.setdefault(finding.agent_id, []).append(finding)
+
+    reduction = 0.0
+    for project_findings in by_agent.values():
+        agent = project_findings[0].agent
+        all_open = [
+            finding
+            for finding in (agent.vulnerabilities or [])
+            if finding.status == "open"
+        ]
+        excluded = {finding.id for finding in project_findings}
+        after_findings = [
+            finding for finding in all_open
+            if finding.id not in excluded
+        ]
+        before = asset_risk_score(agent, all_open, reference)
+        after = asset_risk_score(agent, after_findings, reference)
+        reduction += max(0.0, before["score"] - after["score"])
+    return round(reduction, 1)
+
+
+def serialize_remediation_project(
+    db: Session,
+    project: RemediationProject,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    snapshot = load(project.scope_snapshot_json, {})
+    baseline_ids = {
+        str(value)
+        for value in snapshot.get("finding_ids", [])
+        if str(value)
+    }
+
+    if project.scope_mode == "dynamic":
+        open_findings = _remediation_project_open_findings(
+            db,
+            project.patch_ref,
+            project.scope_tag,
+        )
+        current_open_ids = {finding.id for finding in open_findings}
+        current_agent_ids = {
+            finding.agent_id
+            for finding in open_findings
+            if finding.agent_id
+        }
+        new_findings = current_open_ids - baseline_ids
+    else:
+        rows = (
+            db.query(VulnerabilityFinding).options(
+                selectinload(VulnerabilityFinding.agent),
+            ).filter(
+                VulnerabilityFinding.id.in_(baseline_ids)
+            ).all()
+            if baseline_ids
+            else []
+        )
+        open_findings = [
+            finding for finding in rows
+            if finding.status == "open"
+        ]
+        current_open_ids = {finding.id for finding in open_findings}
+        current_agent_ids = {
+            finding.agent_id
+            for finding in open_findings
+            if finding.agent_id
+        }
+        new_findings = set()
+
+    baseline_count = int(project.baseline_findings or 0)
+    current_count = len(current_open_ids)
+    closed_from_baseline = len(baseline_ids - current_open_ids)
+    progress = (
+        max(0.0, min(100.0, ((baseline_count - current_count) / baseline_count) * 100.0))
+        if baseline_count > 0
+        else 100.0
+    )
+
+    due_at = project.due_at
+    if due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=timezone.utc)
+    achieved = current_count == 0
+    if project.status == "completed":
+        pace_status = "completed"
+    elif project.status == "cancelled":
+        pace_status = "cancelled"
+    elif achieved:
+        pace_status = "achieved"
+    elif reference > due_at:
+        pace_status = "overdue"
+    elif project.status == "awaiting_verification":
+        pace_status = "awaiting_verification"
+    else:
+        pace_status = "in_progress"
+
+    return {
+        "id": project.id,
+        "name": project.name,
+        "patch_ref": project.patch_ref,
+        "scope_mode": project.scope_mode,
+        "scope_tag": project.scope_tag,
+        "owner": project.owner,
+        "due_at": due_at.isoformat(),
+        "status": project.status,
+        "pace_status": pace_status,
+        "achieved": achieved,
+        "baseline_findings": baseline_count,
+        "baseline_assets": int(project.baseline_assets or 0),
+        "baseline_risk_reduction": round(float(project.baseline_risk_reduction or 0.0), 1),
+        "current_open_findings": current_count,
+        "current_assets": len(current_agent_ids),
+        "closed_from_baseline": closed_from_baseline,
+        "new_findings_since_baseline": len(new_findings),
+        "progress_percent": round(progress, 1),
+        "campaign_ready": 0 < len(current_agent_ids) <= 500,
+        "current_agent_ids": sorted(current_agent_ids) if len(current_agent_ids) <= 500 else [],
+        "current_finding_ids": sorted(current_open_ids) if len(current_open_ids) <= 1000 else [],
+        "reason": project.reason,
+        "created_by": project.created_by,
+        "updated_by": project.updated_by,
+        "completed_at": project.completed_at.isoformat() if project.completed_at else None,
+        "created_at": project.created_at.isoformat() if project.created_at else None,
+        "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+    }
+
+
+def remediation_projects_report(
+    db: Session,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    projects = db.query(RemediationProject).order_by(
+        RemediationProject.status.asc(),
+        RemediationProject.due_at.asc(),
+        RemediationProject.name.asc(),
+    ).all()
+    items = [
+        serialize_remediation_project(db, project, reference)
+        for project in projects
+    ]
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": {
+            "total": len(items),
+            "active": sum(1 for item in items if item["status"] in {"active", "awaiting_verification"}),
+            "awaiting_verification": sum(1 for item in items if item["status"] == "awaiting_verification"),
+            "achieved": sum(1 for item in items if item["pace_status"] in {"achieved", "completed"}),
+            "overdue": sum(1 for item in items if item["pace_status"] == "overdue"),
+            "open_findings": sum(
+                item["current_open_findings"]
+                for item in items
+                if item["status"] in {"active", "awaiting_verification"}
+            ),
+        },
+        "items": items,
+        "note": "Projects govern remediation work. They do not deploy patches or mutate vulnerability evidence.",
     }
 
 
@@ -5179,6 +5386,165 @@ def patch_confidence(
     db: Session = Depends(get_db),
 ):
     return patch_confidence_report(db, limit=limit)
+
+
+@app.get("/api/admin/remediation-projects")
+def list_remediation_projects(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return remediation_projects_report(db)
+
+
+@app.post("/api/admin/remediation-projects")
+def create_remediation_project(
+    body: RemediationProjectCreate,
+    principal=Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    name = body.name.strip()
+    patch_ref = body.patch_ref.strip()
+    scope_mode = body.scope_mode.strip().lower()
+    scope_tag = body.scope_tag.strip().lower()
+    owner = body.owner.strip()
+    reason = body.reason.strip()
+    if len(name) < 3:
+        raise HTTPException(status_code=400, detail="project name must contain at least 3 non-space characters")
+    if not patch_ref:
+        raise HTTPException(status_code=400, detail="patch reference is required")
+    if scope_mode not in {"static", "dynamic"}:
+        raise HTTPException(status_code=400, detail="scope mode must be static or dynamic")
+    if len(owner) < 2:
+        raise HTTPException(status_code=400, detail="project owner must contain at least 2 non-space characters")
+    if len(reason) < 5:
+        raise HTTPException(status_code=400, detail="project reason must contain at least 5 non-space characters")
+    if db.query(RemediationProject).filter(RemediationProject.name == name).first():
+        raise HTTPException(status_code=409, detail="remediation project name already exists")
+
+    due_at = body.due_at
+    if due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=timezone.utc)
+    reference = now()
+    if due_at <= reference:
+        raise HTTPException(status_code=400, detail="project due date must be in the future")
+    if due_at > reference + timedelta(days=1095):
+        raise HTTPException(status_code=400, detail="project due date cannot exceed 3 years")
+
+    findings = _remediation_project_open_findings(db, patch_ref, scope_tag)
+    if not findings:
+        raise HTTPException(status_code=409, detail="project scope has no open findings for this patch reference")
+
+    finding_ids = sorted({finding.id for finding in findings})
+    agent_ids = sorted({
+        finding.agent_id for finding in findings
+        if finding.agent_id
+    })
+    cves = sorted({
+        finding.cve for finding in findings
+        if finding.cve
+    })
+    project = RemediationProject(
+        id=str(uuid.uuid4()),
+        name=name,
+        patch_ref=patch_ref,
+        scope_mode=scope_mode,
+        scope_tag=scope_tag,
+        owner=owner,
+        due_at=due_at,
+        status="active",
+        baseline_findings=len(finding_ids),
+        baseline_assets=len(agent_ids),
+        baseline_risk_reduction=_remediation_project_risk_reduction(findings, reference),
+        scope_snapshot_json=dump({
+            "finding_ids": finding_ids,
+            "agent_ids": agent_ids,
+            "cves": cves,
+            "captured_at": reference.isoformat(),
+        }),
+        reason=reason,
+        created_by=principal["actor"],
+        updated_by=principal["actor"],
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    result = serialize_remediation_project(db, project, reference)
+    audit(
+        db,
+        principal["actor"],
+        "remediation_project.created",
+        "remediation_project",
+        project.id,
+        result,
+    )
+    return {"ok": True, "project": result}
+
+
+@app.put("/api/admin/remediation-projects/{project_id}")
+def update_remediation_project(
+    project_id: str,
+    body: RemediationProjectUpdate,
+    principal=Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    project = db.query(RemediationProject).filter(
+        RemediationProject.id == project_id
+    ).with_for_update().first()
+    if not project:
+        raise HTTPException(status_code=404, detail="remediation project not found")
+
+    before = serialize_remediation_project(db, project)
+    reason = body.reason.strip()
+    if len(reason) < 5:
+        raise HTTPException(status_code=400, detail="project reason must contain at least 5 non-space characters")
+
+    if body.owner is not None:
+        owner = body.owner.strip()
+        if len(owner) < 2:
+            raise HTTPException(status_code=400, detail="project owner must contain at least 2 non-space characters")
+        project.owner = owner
+
+    if body.due_at is not None:
+        due_at = body.due_at
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+        project.due_at = due_at
+
+    if body.status is not None:
+        status = body.status.strip().lower()
+        if status not in {"active", "awaiting_verification", "completed", "cancelled"}:
+            raise HTTPException(status_code=400, detail="unsupported remediation project status")
+        current = serialize_remediation_project(db, project)
+        if status == "completed" and current["current_open_findings"] > 0:
+            raise HTTPException(status_code=409, detail="project cannot be completed while scoped findings remain open")
+        if status == "completed":
+            project.completed_at = now()
+        elif status in {"active", "awaiting_verification"}:
+            due_at = project.due_at
+            if due_at.tzinfo is None:
+                due_at = due_at.replace(tzinfo=timezone.utc)
+            if due_at <= now():
+                raise HTTPException(status_code=409, detail="expired project requires a future due date before reactivation")
+            project.completed_at = None
+        else:
+            project.completed_at = None
+        project.status = status
+
+    project.reason = reason
+    project.updated_by = principal["actor"]
+    project.updated_at = now()
+    db.commit()
+    db.refresh(project)
+    after = serialize_remediation_project(db, project)
+    audit(
+        db,
+        principal["actor"],
+        "remediation_project.updated",
+        "remediation_project",
+        project.id,
+        {"before": before, "after": after},
+    )
+    return {"ok": True, "project": after}
 
 
 @app.get("/api/admin/reports/remediation-hub")
