@@ -743,6 +743,140 @@ Timeline e Risk Reduction Plan são visões somente leitura e estão disponívei
 
 Ações que alteram contexto ou governança continuam restritas ao papel apropriado, como Risk Profile, Treatment Plan e Risk Acceptance.
 
+## 7.10. Asset Accountability
+
+A v0.20 adiciona contexto de responsabilidade ao `AssetRiskProfile`:
+
+- `owner`;
+- `business_service`;
+- `environment`.
+
+Esses campos são contexto operacional e executivo.
+
+Eles **não alteram diretamente o Asset Risk**. A finalidade é permitir respostas como:
+
+```text
+ativo crítico sem owner
+ativo de produção sem business service
+ativos de um mesmo serviço com risco acima do appetite
+```
+
+O relatório de Asset Risk expõe:
+
+- `assets_with_owner`;
+- `assets_without_owner`;
+- `assets_with_business_service`;
+- `critical_high_without_owner`.
+
+Migration:
+
+```text
+0013_asset_accountability
+```
+
+## 7.11. Remediation Hub
+
+O Remediation Hub agrupa findings abertos pela mesma referência de patch.
+
+Endpoint:
+
+```http
+GET /api/admin/reports/remediation-hub
+```
+
+Para cada patch reference, o sistema identifica:
+
+- findings cobertos;
+- CVEs cobertas;
+- ativos afetados;
+- sistemas operacionais;
+- Asset Risk agregado atual;
+- Asset Risk agregado projetado;
+- redução projetada;
+- quantidade de ativos que cruzariam abaixo do appetite;
+- Patch Confidence local, quando disponível.
+
+A matemática evita soma de simulações independentes.
+
+Para cada ativo afetado, o Asset Risk é recalculado removendo **todo o conjunto de findings daquele grupo**. Somente depois os resultados por ativo são agregados.
+
+Isso permite avaliar o impacto de uma ação real de remediação em vez de olhar apenas para CVEs isoladas.
+
+## 7.12. Active Threat Watch
+
+Endpoint:
+
+```http
+GET /api/admin/reports/active-threat-watch
+```
+
+O Active Threat Watch destaca CVEs abertas quando existe pelo menos um dos sinais:
+
+- presença no CISA KEV;
+- ransomware use conhecido;
+- EPSS acima do threshold operacional.
+
+O relatório agrupa por CVE e mostra:
+
+- sinais de ameaça;
+- maior EPSS;
+- maior Detection Risk;
+- CVSS máximo;
+- findings;
+- ativos afetados;
+- ativos externos;
+- ativos críticos;
+- patch references conhecidas.
+
+Essa visão é **signal-based**.
+
+Ela não afirma que o Be Safe mantém um time próprio de threat research nem classifica uma vulnerabilidade como emergent threat por pesquisa independente.
+
+## 7.13. Patch Confidence
+
+Endpoint:
+
+```http
+GET /api/admin/reports/patch-confidence
+```
+
+Patch Confidence usa o histórico **local** de jobs `install_updates`.
+
+Por patch reference são calculados:
+
+- jobs concluídos;
+- sucessos;
+- falhas;
+- stalled;
+- blocked;
+- success rate;
+- ativos observados;
+- campanhas observadas;
+- última execução.
+
+Classificação atual:
+
+```text
+high
+  >= 10 jobs concluídos
+  e success rate >= 95%
+
+medium
+  >= 5 jobs concluídos
+  e success rate >= 80%
+
+low
+  >= 5 jobs concluídos
+  e success rate < 80%
+
+insufficient_data
+  < 5 jobs concluídos
+```
+
+Quando uma campanha contém vários packages, o resultado do job é atribuído a cada package do bundle.
+
+Por isso, Patch Confidence deve ser interpretado como **evidência operacional da própria frota**, e não como reliability global fornecida por fabricante.
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
