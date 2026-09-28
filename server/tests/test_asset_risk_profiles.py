@@ -280,3 +280,43 @@ def test_create_and_update_risk_policy_are_audited(db):
         "asset_risk.policy.created",
         "asset_risk.policy.updated",
     ]
+
+
+
+def test_risk_policy_rejects_whitespace_only_fields(db):
+    with pytest.raises(main.HTTPException) as exc:
+        main.create_asset_risk_policy(
+            AssetRiskPolicyCreate(
+                name="   ",
+                target_tag="   ",
+                risk_appetite=500,
+                priority=100,
+                enabled=True,
+                reason="     ",
+            ),
+            principal={"actor": "user:admin", "role": "admin"},
+            db=db,
+        )
+
+    assert exc.value.status_code == 400
+
+
+def test_risk_profile_rejects_whitespace_reason(db):
+    agent = make_agent()
+    db.add(agent)
+    db.commit()
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.update_asset_risk_profile(
+            agent.id,
+            AssetRiskProfileUpdate(
+                criticality=3,
+                external=False,
+                compensating_controls=[],
+                reason="     ",
+            ),
+            principal={"actor": "user:admin", "role": "admin"},
+            db=db,
+        )
+
+    assert exc.value.status_code == 400
