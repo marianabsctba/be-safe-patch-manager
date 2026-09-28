@@ -926,7 +926,7 @@ window.showRiskReductionPlan = async (agentId) => {
 
     const body = steps.length
       ? '<div class="table-wrap"><table><thead><tr>' +
-          '<th>#</th><th>Finding</th><th>Ação</th><th>Score</th><th>Marginal</th><th>Cumulativa</th>' +
+          '<th>#</th><th>Finding</th><th>Ação</th><th>Score</th><th>Marginal</th><th>Cumulativa</th><th></th>' +
         '</tr></thead><tbody>' +
         steps.map((step) =>
           '<tr>' +
@@ -936,6 +936,11 @@ window.showRiskReductionPlan = async (agentId) => {
             '<td><strong>' + esc(step.before_score) + ' → ' + esc(step.after_score) + '</strong></td>' +
             '<td><strong>-' + esc(step.marginal_reduction) + '</strong></td>' +
             '<td><strong>-' + esc(step.cumulative_reduction) + '</strong></td>' +
+            '<td>' + (
+              step.eligible_for_campaign && roleAtLeast('operator')
+                ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + step.finding_id + '\')">Preparar campanha</button>'
+                : '<small class="muted">somente análise</small>'
+            ) + '</td>' +
           '</tr>'
         ).join('') +
         '</tbody></table></div>'
