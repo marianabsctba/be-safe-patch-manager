@@ -17,6 +17,8 @@
 - listagem de vulnerabilidades passa a ordenar por risco antes de aplicar o limit, evitando ocultar finding antigo e urgente;
 - Threat Intel expõe freshness, age, degraded e stale em Prometheus;
 - adicionados alertas de Threat Intel stale/degraded e novos painéis Grafana;
+- overview executivo passa a mostrar risco aceito, em tratamento, treatment vencido e risco acima do appetite sem ação;
+- exceções de SLA passam a impor máximo de 365 dias, validação pós-trim e lock concorrente no finding;
 - documentação e imagens de features foram atualizadas para refletir a arquitetura e a console atuais.
 
 ## 0.18.0
