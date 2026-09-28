@@ -20,8 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationRescanRequest, RingAdvance, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -721,6 +721,54 @@ ASSET_RISK_SEVERITY_WEIGHTS = {
 }
 
 
+def serialize_asset_risk_treatment(
+    treatment: AssetRiskTreatment,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    due_at = treatment.due_at
+    if due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=timezone.utc)
+    completed_at = treatment.completed_at
+    if completed_at and completed_at.tzinfo is None:
+        completed_at = completed_at.replace(tzinfo=timezone.utc)
+    active = treatment.status in {"planned", "in_progress"}
+    overdue = active and due_at < reference
+    return {
+        "id": treatment.id,
+        "agent_id": treatment.agent_id,
+        "owner": treatment.owner,
+        "action": treatment.action,
+        "due_at": due_at.isoformat(),
+        "status": treatment.status,
+        "active": active,
+        "overdue": overdue,
+        "created_by": treatment.created_by,
+        "updated_by": treatment.updated_by,
+        "completion_evidence": treatment.completion_evidence,
+        "completed_at": completed_at.isoformat() if completed_at else None,
+        "created_at": treatment.created_at.isoformat() if treatment.created_at else None,
+        "updated_at": treatment.updated_at.isoformat() if treatment.updated_at else None,
+    }
+
+
+def active_asset_risk_treatment(
+    agent: Agent,
+    reference: datetime | None = None,
+) -> AssetRiskTreatment | None:
+    active = [
+        treatment for treatment in (agent.risk_treatments or [])
+        if treatment.status in {"planned", "in_progress"}
+    ]
+    if not active:
+        return None
+    active.sort(
+        key=lambda treatment: treatment.updated_at or treatment.created_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return active[0]
+
+
 def serialize_asset_risk_acceptance(
     acceptance: AssetRiskAcceptance,
     reference: datetime | None = None,
@@ -1169,11 +1217,16 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
         risk = asset_risk_score(agent, findings, reference)
         policy = effective_asset_risk_policy(db, agent)
         acceptance = active_asset_risk_acceptance(agent, reference)
+        treatment = active_asset_risk_treatment(agent, reference)
         risk["risk_appetite"] = policy["risk_appetite"]
         risk["above_risk_appetite"] = risk["score"] >= policy["risk_appetite"]
         risk["governance_status"] = (
             "accepted"
             if risk["above_risk_appetite"] and acceptance
+            else "treatment_overdue"
+            if risk["above_risk_appetite"] and treatment and serialize_asset_risk_treatment(treatment, reference)["overdue"]
+            else "in_treatment"
+            if risk["above_risk_appetite"] and treatment
             else "above_appetite"
             if risk["above_risk_appetite"]
             else "within_appetite"
@@ -1187,6 +1240,7 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
             "risk_profile": serialize_asset_risk_profile(agent.risk_profile),
             "risk_policy": policy,
             "risk_acceptance": serialize_asset_risk_acceptance(acceptance, reference) if acceptance else None,
+            "risk_treatment": serialize_asset_risk_treatment(treatment, reference) if treatment else None,
             "risk": risk,
         })
 
@@ -1252,6 +1306,14 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
         "unaccepted_above_appetite": sum(
             1 for row in rows
             if row["risk"]["governance_status"] == "above_appetite"
+        ),
+        "in_treatment_above_appetite": sum(
+            1 for row in rows
+            if row["risk"]["governance_status"] == "in_treatment"
+        ),
+        "overdue_treatment_above_appetite": sum(
+            1 for row in rows
+            if row["risk"]["governance_status"] == "treatment_overdue"
         ),
         "average_score": round(
             sum(row["risk"]["score"] for row in rows) / len(rows), 1
@@ -3793,6 +3855,145 @@ def remediation_queue(
 @app.get("/api/admin/reports/vulnerability-sla")
 def admin_vulnerability_sla_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return vulnerability_sla_report(db)
+
+
+@app.get("/api/admin/agents/{agent_id}/risk-treatments")
+def list_asset_risk_treatments(
+    agent_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return [
+        serialize_asset_risk_treatment(item)
+        for item in sorted(
+            agent.risk_treatments or [],
+            key=lambda treatment: treatment.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+    ]
+
+
+@app.post("/api/admin/agents/{agent_id}/risk-treatments")
+def create_asset_risk_treatment(
+    agent_id: str,
+    body: AssetRiskTreatmentCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    due_at = body.due_at
+    if due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=timezone.utc)
+    if due_at <= now():
+        raise HTTPException(status_code=400, detail="risk treatment due date must be in the future")
+
+    existing = active_asset_risk_treatment(agent)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "asset already has an active treatment plan", "id": existing.id},
+        )
+
+    treatment = AssetRiskTreatment(
+        id=str(uuid.uuid4()),
+        agent=agent,
+        owner=body.owner.strip(),
+        action=body.action.strip(),
+        due_at=due_at,
+        status="planned",
+        created_by=principal["actor"],
+        updated_by=principal["actor"],
+    )
+    db.add(treatment)
+    db.commit()
+    db.refresh(treatment)
+
+    result = serialize_asset_risk_treatment(treatment)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.treatment.created",
+        "agent",
+        agent.id,
+        result,
+    )
+    return {"ok": True, "treatment": result}
+
+
+@app.put("/api/admin/agents/{agent_id}/risk-treatments/{treatment_id}")
+def update_asset_risk_treatment(
+    agent_id: str,
+    treatment_id: str,
+    body: AssetRiskTreatmentUpdate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    treatment = db.get(AssetRiskTreatment, treatment_id)
+    if not treatment or treatment.agent_id != agent.id:
+        raise HTTPException(status_code=404, detail="risk treatment not found")
+
+    before = serialize_asset_risk_treatment(treatment)
+    allowed_statuses = {"planned", "in_progress", "completed", "cancelled"}
+    if body.status is not None and body.status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="unsupported risk treatment status")
+
+    if body.owner is not None:
+        treatment.owner = body.owner.strip()
+    if body.action is not None:
+        treatment.action = body.action.strip()
+    if body.due_at is not None:
+        due_at = body.due_at
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+        if due_at <= now() and (body.status or treatment.status) not in {"completed", "cancelled"}:
+            raise HTTPException(status_code=400, detail="active risk treatment due date must be in the future")
+        treatment.due_at = due_at
+    if body.completion_evidence is not None:
+        treatment.completion_evidence = body.completion_evidence.strip()
+    if body.status is not None:
+        if body.status == "completed":
+            evidence = (
+                body.completion_evidence.strip()
+                if body.completion_evidence is not None
+                else treatment.completion_evidence.strip()
+            )
+            if len(evidence) < 5:
+                raise HTTPException(
+                    status_code=400,
+                    detail="completion evidence is required to complete a treatment plan",
+                )
+            treatment.completion_evidence = evidence
+            treatment.completed_at = now()
+        elif treatment.status == "completed" and body.status != "completed":
+            raise HTTPException(status_code=409, detail="completed treatment plans cannot be reopened")
+        else:
+            treatment.completed_at = None
+        treatment.status = body.status
+
+    treatment.updated_by = principal["actor"]
+    treatment.updated_at = now()
+    db.commit()
+    db.refresh(treatment)
+
+    after = serialize_asset_risk_treatment(treatment)
+    audit(
+        db,
+        principal["actor"],
+        "asset_risk.treatment.updated",
+        "agent",
+        agent.id,
+        {"before": before, "after": after},
+    )
+    return {"ok": True, "treatment": after}
 
 
 @app.get("/api/admin/agents/{agent_id}/risk-acceptances")
