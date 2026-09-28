@@ -5428,7 +5428,7 @@ def campaign_rollout_governance(c: Campaign, reference: datetime | None = None) 
         if isinstance(value, (int, float)) and 1 <= int(value) <= 100
     })
     if not plan:
-        plan = [c.ring_percent, 100] if c.ring_percent < 100 else [100]
+        plan = default_rollout_plan(c.ring_percent)
     if c.ring_percent not in plan:
         plan = sorted(set(plan + [c.ring_percent]))
     if plan[-1] != 100:
@@ -9610,6 +9610,16 @@ def update_patch_block_rule(
 
 
 @app.post("/api/admin/campaigns")
+def default_rollout_plan(ring_percent: int) -> list[int]:
+    ring = max(1, min(int(ring_percent), 100))
+    if ring >= 100:
+        return [100]
+    legacy_steps = [5, 10, 30, 100]
+    plan = [ring]
+    plan.extend(step for step in legacy_steps if step > ring)
+    return sorted(set(plan))
+
+
 def create_campaign(body: CampaignCreate, principal=Depends(require_operator), db: Session = Depends(get_db)):
     if body.action not in {"scan_updates", "install_updates"}:
         raise HTTPException(status_code=400, detail="unsupported action")
@@ -9682,10 +9692,8 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             raise HTTPException(status_code=400, detail="rollout_plan must start at campaign ring_percent")
         if rollout_plan[-1] != 100:
             raise HTTPException(status_code=400, detail="rollout_plan must end at 100")
-    elif body.ring_percent < 100:
-        rollout_plan = [body.ring_percent, 100]
     else:
-        rollout_plan = [100]
+        rollout_plan = default_rollout_plan(body.ring_percent)
 
     reboot_policy = body.reboot_policy
     if body.allow_reboot and reboot_policy == "never":
