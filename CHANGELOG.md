@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.37.0
+
+- control plane e dashboard passam para versão 0.37.0; agente permanece em 0.16.0;
+- adicionado Progressive Rollout Governance com rollout_plan, soak_minutes, promotion_min_success_rate e pause_on_failure;
+- campanhas passam a expor estados DRAFT, RUNNING, SOAK, PROMOTE, PAUSE e COMPLETE;
+- avanço de ring respeita o próximo ring configurado e bloqueia promoção durante soak ou pause, mantendo override explícito auditável;
+- campaign_health passa a usar o threshold configurado de sucesso para campanhas de patch;
+- adicionada migration 0029_campaign_ring_decisions para histórico imutável de deploy/promoções;
+- deploy inicial e cada promoção persistem from_ring, to_ring, decisão, ator, motivo e snapshot de health;
+- console ganha configuração de plano/soak/threshold e usa o next_ring da campanha no lugar de preset global;
+- adicionados testes de SOAK, PROMOTE, PAUSE, COMPLETE e threshold configurável.
+
 ## 0.36.0
 
 - control plane e dashboard passam para versão 0.36.0; agente permanece em 0.16.0;

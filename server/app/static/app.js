@@ -3371,8 +3371,9 @@ function campaignCard(campaign, compact = false) {
   const progress = total ? Math.round((finished / total) * 100) : 0;
   const health = campaign.health || {};
   const validation = health.validation || {};
-  const nextRing = nextRingPercent(campaign.ring_percent);
-  const ringReady = Boolean(health.ready);
+  const rollout = campaign.rollout_governance || {};
+  const nextRing = rollout.next_ring || nextRingPercent(campaign.ring_percent);
+  const ringReady = rollout.state ? rollout.state === 'PROMOTE' : Boolean(health.ready);
   const healthRate = Number(health.success_rate || 0);
   const payload = campaign.payload || {};
   const healthPolicy = payload.health_policy || {};
@@ -3404,8 +3405,10 @@ function campaignCard(campaign, compact = false) {
     }
   } else if (canControlCampaign && campaign.status === 'deployed' && nextRing) {
     action = ringReady
-      ? '<button onclick="advanceCampaign(\'' + campaign.id + '\',' + nextRing + ')">Avançar para ' + nextRing + '%</button>'
-      : '<button disabled title="' + esc(healthReasonLabel(health.reason)) + '">Gate aguardando</button>';
+      ? '<button onclick="advanceCampaign(\'' + campaign.id + '\',' + nextRing + ')">Promover para ' + nextRing + '%</button>'
+      : '<button disabled title="' + esc(rollout.reason || healthReasonLabel(health.reason)) + '">' +
+        (rollout.state === 'SOAK' ? 'Soak em andamento' : rollout.state === 'PAUSE' ? 'Rollout pausado' : 'Gate aguardando') +
+        '</button>';
   }
 
   return `
@@ -3415,6 +3418,7 @@ function campaignCard(campaign, compact = false) {
           <h3>${esc(campaign.name)}</h3>
           ${badge(statusLabel(campaign.status), campaign.status === 'deployed' ? 'ok' : 'info')}
           ${campaign.rollout_complete ? badge('100% liberado', 'ok') : ''}
+          ${campaign.status === 'deployed' && rollout.state ? badge('ROLLOUT ' + String(rollout.state).toUpperCase(), rollout.state === 'PROMOTE' || rollout.state === 'COMPLETE' ? 'ok' : rollout.state === 'PAUSE' ? 'fail' : 'warn') : ''}
         </div>
 
         ${compact ? '' : `<p>${esc(campaign.description || 'Sem descrição')}</p>`}
@@ -3452,6 +3456,9 @@ function campaignCard(campaign, compact = false) {
               ? '<span>Apps: <strong>' + esc((healthPolicy.application_checks || []).length) + '</strong></span>'
               : ''}
             <span>Rollback: <strong>${payload.prepare_rollback === false ? 'desativado' : payload.rollback_required ? 'checkpoint obrigatório' : 'checkpoint best effort'}</strong></span>
+            <span>Rollout: <strong>${esc((rollout.plan || [campaign.ring_percent]).join(' → '))}%</strong></span>
+            <span>Soak: <strong>${esc(rollout.soak_minutes || 0)} min</strong></span>
+            <span>Promoção: <strong>${esc(rollout.promotion_min_success_rate || health.required_success_rate || 90)}% sucesso mínimo</strong></span>
           `}
         </div>
 
@@ -3734,6 +3741,23 @@ window.deploy = async (id) => {
     await load();
   } catch (error) {
     toast(error.message, 'fail');
+  }
+};
+
+window.showRingHistory = async (campaignId) => {
+  try {
+    const items = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/ring-history?limit=50');
+    if (!items.length) {
+      alert('Nenhuma promoção de ring registrada.');
+      return;
+    }
+    alert(items.map((item) =>
+      when(item.created_at) + ' · ' + item.actor + ' · ' +
+      item.decision + ' · ' + item.from_ring + '% → ' + item.to_ring + '%\n' +
+      item.reason
+    ).join('\n\n'));
+  } catch (error) {
+    toast('Histórico de rings: ' + error.message, 'fail');
   }
 };
 
@@ -4361,6 +4385,10 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     rollback_required: form.get('rollback_required') === 'on',
     approval_required: form.get('approval_required') === 'on',
     approval_reason: String(form.get('approval_reason') || '').trim(),
+    rollout_plan: String(form.get('rollout_plan') || '').split(',').map((value) => Number(value.trim())).filter((value) => Number.isFinite(value) && value >= 1 && value <= 100),
+    soak_minutes: Number(form.get('soak_minutes') || 0),
+    promotion_min_success_rate: Number(form.get('promotion_min_success_rate') || 90),
+    pause_on_failure: form.get('pause_on_failure') === 'on',
     target_agent_id: form.get('target_agent_id') || '',
     target_agent_ids: Array.isArray(state.campaignTargetAgentIds) ? state.campaignTargetAgentIds : [],
     target_finding_id: form.get('target_finding_id') || '',
@@ -4378,6 +4406,10 @@ $('#campaignForm').addEventListener('submit', async (event) => {
 
     event.target.reset();
     event.target.elements.ring_percent.value = 10;
+    event.target.elements.rollout_plan.value = '10,30,100';
+    event.target.elements.soak_minutes.value = 60;
+    event.target.elements.promotion_min_success_rate.value = 90;
+    event.target.elements.pause_on_failure.checked = true;
     event.target.elements.maintenance_timezone.value = 'America/Sao_Paulo';
     event.target.elements.post_patch_validation.checked = true;
     event.target.elements.health_gate_enabled.checked = true;

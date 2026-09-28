@@ -105,6 +105,10 @@ class CampaignCreate(BaseModel):
     target_finding_id: str = ""
     approval_required: bool = False
     approval_reason: str = Field(default="", max_length=1000)
+    rollout_plan: List[int] = Field(default_factory=list, max_length=10)
+    soak_minutes: int = Field(default=0, ge=0, le=10080)
+    promotion_min_success_rate: float = Field(default=90.0, ge=0.0, le=100.0)
+    pause_on_failure: bool = True
 
 
 class CampaignApprovalDecision(BaseModel):

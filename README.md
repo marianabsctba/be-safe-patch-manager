@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.36; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.37; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -957,3 +957,9 @@ Apache License 2.0. Veja [LICENSE](LICENSE).
 - decisões elegíveis incluem blast radius explícito (ativos selecionados, percentual e quantidade do ring inicial) e amostra dos endpoints.
 - Decision Ledger persiste cada avaliação explícita com ator, modo, resumo e snapshot completo das decisões; GET de histórico não reexecuta policies.
 - o ledger permite comparar por que uma patch estava ready/blocked/hold em momentos diferentes sem depender do estado atual do catálogo.
+
+- Progressive Rollout Governance adiciona plano explícito de rings, soak entre rings, sucesso mínimo de promoção e pause_on_failure.
+- o estado de rollout é calculado como DRAFT, RUNNING, SOAK, PROMOTE, PAUSE ou COMPLETE; health gate continua sendo evidência, não score opaco.
+- promoção fora do próximo ring configurado é bloqueada; soak ativo e pause por falha também bloqueiam avanço, salvo override explícito já auditado.
+- cada deploy inicial e promoção de ring é persistido em campaign_ring_decisions com ator, origem/destino, decisão, motivo e snapshot de health.
+- a console usa o próximo ring da própria campanha e exibe estado, plano, soak e threshold de promoção.

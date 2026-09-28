@@ -57,6 +57,20 @@ class Campaign(Base):
     approval = relationship("CampaignApproval", back_populates="campaign", uselist=False, cascade="all, delete-orphan")
 
 
+class CampaignRingDecision(Base):
+    __tablename__ = "campaign_ring_decisions"
+
+    id = Column(String(36), primary_key=True)
+    campaign_id = Column(String(36), ForeignKey("campaigns.id"), nullable=False, index=True)
+    from_ring = Column(Integer, nullable=False)
+    to_ring = Column(Integer, nullable=False)
+    decision = Column(String(32), nullable=False, index=True)
+    reason = Column(Text, nullable=False)
+    health_json = Column(Text, nullable=False, default="{}")
+    actor = Column(String(255), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+
 class CampaignApproval(Base):
     __tablename__ = "campaign_approvals"
 

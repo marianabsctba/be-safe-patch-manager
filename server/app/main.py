@@ -21,7 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignRingDecision, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
 from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.36.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.37.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -5370,7 +5370,10 @@ def campaign_health(c: Campaign):
     active = counts["pending"] + counts["blocked"] + counts["claimed"] + counts["running"] + counts["stalled"]
     terminal = counts["success"] + counts["failed"] + counts["skipped"]
     success_rate = round((counts["success"] / terminal * 100), 1) if terminal else 0.0
-    required_success_rate = 100.0 if c.action == "activate_agent_update" else 90.0
+    rollout_governance = load(c.payload_json, {}).get("rollout_governance")
+    rollout_governance = rollout_governance if isinstance(rollout_governance, dict) else {}
+    configured_min_success = float(rollout_governance.get("promotion_min_success_rate", 90.0) or 90.0)
+    required_success_rate = 100.0 if c.action == "activate_agent_update" else configured_min_success
     validation_blocked = validations["failed"] > 0 or validations["waiting"] > 0
     ready = (
         bool(jobs)
@@ -5414,6 +5417,114 @@ def campaign_health(c: Campaign):
     }
 
 
+
+def campaign_rollout_governance(c: Campaign, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    payload = load(c.payload_json, {})
+    governance = payload.get("rollout_governance") if isinstance(payload.get("rollout_governance"), dict) else {}
+    raw_plan = governance.get("plan") if isinstance(governance.get("plan"), list) else []
+    plan = sorted({
+        int(value) for value in raw_plan
+        if isinstance(value, (int, float)) and 1 <= int(value) <= 100
+    })
+    if not plan:
+        plan = [c.ring_percent, 100] if c.ring_percent < 100 else [100]
+    if c.ring_percent not in plan:
+        plan = sorted(set(plan + [c.ring_percent]))
+    if plan[-1] != 100:
+        plan.append(100)
+
+    health = campaign_health(c)
+    current_index = plan.index(c.ring_percent) if c.ring_percent in plan else 0
+    next_ring = plan[current_index + 1] if current_index + 1 < len(plan) else None
+    soak_minutes = max(0, int(governance.get("soak_minutes", 0) or 0))
+    pause_on_failure = bool(governance.get("pause_on_failure", True))
+    jobs = campaign_ring_jobs(c)
+    terminal_finished = [
+        job.finished_at if job.finished_at.tzinfo else job.finished_at.replace(tzinfo=timezone.utc)
+        for job in jobs
+        if job.finished_at is not None
+    ]
+    ring_completed_at = max(terminal_finished) if terminal_finished and health["active"] == 0 else None
+    soak_until = ring_completed_at + timedelta(minutes=soak_minutes) if ring_completed_at else None
+    soak_remaining_seconds = (
+        max(0, int((soak_until - reference).total_seconds()))
+        if soak_until and soak_until > reference else 0
+    )
+
+    if c.status != "deployed":
+        state = "DRAFT"
+        reason = "campaign not deployed"
+    elif c.ring_percent >= 100:
+        state = "COMPLETE"
+        reason = "rollout reached 100%"
+    elif health["counts"].get("failed", 0) > 0 and pause_on_failure:
+        state = "PAUSE"
+        reason = "current ring has failed jobs and pause_on_failure is enabled"
+    elif not health["ready"]:
+        state = "RUNNING"
+        reason = health["reason"]
+    elif soak_remaining_seconds > 0:
+        state = "SOAK"
+        reason = "health gate passed; waiting for soak time"
+    else:
+        state = "PROMOTE"
+        reason = "health gate passed and soak time elapsed"
+
+    return {
+        "state": state,
+        "reason": reason,
+        "plan": plan,
+        "current_ring": c.ring_percent,
+        "next_ring": next_ring,
+        "soak_minutes": soak_minutes,
+        "ring_completed_at": ring_completed_at.isoformat() if ring_completed_at else None,
+        "soak_until": soak_until.isoformat() if soak_until else None,
+        "soak_remaining_seconds": soak_remaining_seconds,
+        "pause_on_failure": pause_on_failure,
+        "promotion_min_success_rate": float(governance.get("promotion_min_success_rate", 90.0) or 90.0),
+        "health": health,
+    }
+
+
+def serialize_campaign_ring_decision(item: CampaignRingDecision) -> dict:
+    return {
+        "id": item.id,
+        "campaign_id": item.campaign_id,
+        "from_ring": item.from_ring,
+        "to_ring": item.to_ring,
+        "decision": item.decision,
+        "reason": item.reason,
+        "health": load(item.health_json, {}),
+        "actor": item.actor,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
+def record_campaign_ring_decision(
+    db: Session,
+    campaign: Campaign,
+    from_ring: int,
+    to_ring: int,
+    decision: str,
+    reason: str,
+    health: dict,
+    actor: str,
+):
+    item = CampaignRingDecision(
+        id=str(uuid.uuid4()),
+        campaign_id=campaign.id,
+        from_ring=int(from_ring),
+        to_ring=int(to_ring),
+        decision=decision,
+        reason=reason,
+        health_json=dump(health),
+        actor=actor,
+    )
+    db.add(item)
+    return item
+
+
 def serialize_campaign_approval(c: Campaign) -> dict:
     payload = load(c.payload_json, {})
     required = bool(payload.get("approval_required", False))
@@ -5454,6 +5565,7 @@ def serialize_campaign(c: Campaign):
         "job_counts": counts,
         "jobs_total": len(c.jobs),
         "health": campaign_health(c),
+        "rollout_governance": campaign_rollout_governance(c),
         "rollout_complete": c.ring_percent >= 100,
         "approval": serialize_campaign_approval(c),
     }
@@ -9554,6 +9666,27 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
     if body.approval_required and len(approval_reason) < 5:
         raise HTTPException(status_code=400, detail="approval_reason is required when approval_required is true")
 
+    rollout_plan = []
+    for value in body.rollout_plan:
+        percent = int(value)
+        if percent < 1 or percent > 100:
+            raise HTTPException(status_code=400, detail="rollout_plan values must be between 1 and 100")
+        if percent not in rollout_plan:
+            rollout_plan.append(percent)
+    rollout_plan = sorted(rollout_plan)
+    if rollout_plan:
+        if body.ring_percent not in rollout_plan:
+            rollout_plan.append(body.ring_percent)
+            rollout_plan = sorted(set(rollout_plan))
+        if rollout_plan[0] != body.ring_percent:
+            raise HTTPException(status_code=400, detail="rollout_plan must start at campaign ring_percent")
+        if rollout_plan[-1] != 100:
+            raise HTTPException(status_code=400, detail="rollout_plan must end at 100")
+    elif body.ring_percent < 100:
+        rollout_plan = [body.ring_percent, 100]
+    else:
+        rollout_plan = [100]
+
     reboot_policy = body.reboot_policy
     if body.allow_reboot and reboot_policy == "never":
         reboot_policy = "if_required"
@@ -9579,6 +9712,12 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
         "source_cve": target_finding.cve if target_finding else "",
         "approval_required": body.approval_required,
         "approval_reason": approval_reason if body.approval_required else "",
+        "rollout_governance": {
+            "plan": rollout_plan,
+            "soak_minutes": int(body.soak_minutes),
+            "promotion_min_success_rate": float(body.promotion_min_success_rate),
+            "pause_on_failure": bool(body.pause_on_failure),
+        },
     }
 
     campaign = Campaign(
@@ -9628,6 +9767,10 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             "source_finding_id": target_finding.id if target_finding else "",
             "approval_required": body.approval_required,
             "approval_reason": approval_reason if body.approval_required else "",
+            "rollout_plan": rollout_plan,
+            "soak_minutes": int(body.soak_minutes),
+            "promotion_min_success_rate": float(body.promotion_min_success_rate),
+            "pause_on_failure": bool(body.pause_on_failure),
         },
     )
     return serialize_campaign(campaign)
@@ -9913,6 +10056,16 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
 
     add_ring_jobs(db, campaign, selected, campaign.ring_percent)
     campaign.status = "deployed"
+    record_campaign_ring_decision(
+        db,
+        campaign,
+        0,
+        campaign.ring_percent,
+        "DEPLOY",
+        "initial ring deployed",
+        campaign_health(campaign),
+        principal["actor"],
+    )
     db.commit()
     audit(
         db,
@@ -9928,6 +10081,34 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
         "ring_percent": campaign.ring_percent,
         "campaign": serialize_campaign(campaign),
     }
+
+
+
+@app.get("/api/admin/campaigns/{campaign_id}/rollout-governance")
+def get_campaign_rollout_governance(
+    campaign_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return campaign_rollout_governance(campaign)
+
+
+@app.get("/api/admin/campaigns/{campaign_id}/ring-history")
+def get_campaign_ring_history(
+    campaign_id: str,
+    limit: int = 100,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    if not db.get(Campaign, campaign_id):
+        raise HTTPException(status_code=404, detail="campaign not found")
+    items = db.query(CampaignRingDecision).filter(
+        CampaignRingDecision.campaign_id == campaign_id
+    ).order_by(CampaignRingDecision.created_at.desc()).limit(max(1, min(limit, 500))).all()
+    return [serialize_campaign_ring_decision(item) for item in items]
 
 
 @app.post("/api/admin/campaigns/{campaign_id}/advance")
@@ -9949,6 +10130,27 @@ def advance_campaign(
         raise HTTPException(status_code=403, detail="admin role required to advance agent update rollout")
 
     health = campaign_health(campaign)
+    rollout_state = campaign_rollout_governance(campaign)
+    if rollout_state["state"] == "SOAK" and not body.override_health_gate:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "rollout soak time has not elapsed", "rollout": rollout_state},
+        )
+    if rollout_state["state"] == "PAUSE" and not body.override_health_gate:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "rollout governance paused ring promotion", "rollout": rollout_state},
+        )
+    configured_next = rollout_state.get("next_ring")
+    if configured_next is not None and body.target_percent != configured_next and not body.override_health_gate:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "target ring does not match configured rollout plan",
+                "expected_target_percent": configured_next,
+                "rollout": rollout_state,
+            },
+        )
     if campaign.action == "activate_agent_update" and body.override_health_gate:
         raise HTTPException(
             status_code=400,
@@ -10025,6 +10227,16 @@ def advance_campaign(
         campaign.payload_json = dump(payload)
     add_ring_jobs(db, campaign, new_agents, body.target_percent)
     campaign.ring_percent = body.target_percent
+    record_campaign_ring_decision(
+        db,
+        campaign,
+        previous_ring,
+        body.target_percent,
+        "PROMOTE_OVERRIDE" if body.override_health_gate else "PROMOTE",
+        "ring promotion approved with health override" if body.override_health_gate else "rollout governance allowed ring promotion",
+        health,
+        principal["actor"],
+    )
     db.commit()
 
     audit(
