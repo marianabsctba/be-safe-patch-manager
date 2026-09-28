@@ -877,6 +877,58 @@ Quando uma campanha contém vários packages, o resultado do job é atribuído a
 
 Por isso, Patch Confidence deve ser interpretado como **evidência operacional da própria frota**, e não como reliability global fornecida por fabricante.
 
+## 7.14. Business Context Segments
+
+Endpoint:
+
+```http
+GET /api/admin/reports/business-context
+```
+
+O relatório segmenta os ativos por:
+
+- owner;
+- business service;
+- environment.
+
+Cada segmento reutiliza o Asset Risk existente e retorna:
+
+- quantidade de ativos;
+- risco médio e máximo;
+- ativos acima do appetite;
+- ativos sem ação;
+- governance coverage;
+- owner coverage;
+- findings abertos.
+
+Nenhum novo multiplicador é aplicado ao score. A segmentação existe para traduzir risco técnico em responsabilidade e contexto de negócio.
+
+## 7.15. Remediation Performance
+
+Endpoint:
+
+```http
+GET /api/admin/reports/remediation-performance
+```
+
+O relatório usa dados reais do ambiente para medir:
+
+- findings remediados;
+- MTTR mediano;
+- MTTR médio;
+- cumprimento bruto do target de SLA;
+- taxa de evidência verificada;
+- success rate de jobs `install_updates`;
+- duração mediana de patch jobs;
+- breaches de SLA ainda abertos;
+- MTTR por severidade.
+
+MTTR é calculado de `first_seen` até `resolved_at`.
+
+O campo `raw_sla_target_met_percent` é explicitamente bruto: compara a duração ao target por severidade sem reconstruir pausas históricas de SLA exception.
+
+Isso evita apresentar uma precisão histórica que o modelo ainda não possui.
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
