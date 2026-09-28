@@ -442,6 +442,36 @@
             <div class="panel-subsection">
               <div class="panel-head">
                 <div>
+                  <p class="section-kicker">REMEDIATION PROJECTS</p>
+                  <h3>Owner, prazo, escopo e progresso</h3>
+                </div>
+              </div>
+              <div id="remediationProjectStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Projeto governa o trabalho de remediação. Static congela o escopo inicial; dynamic inclui novos findings da mesma patch/tag. Projeto não executa patch automaticamente.
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Projeto</th>
+                      <th>Escopo</th>
+                      <th>Findings</th>
+                      <th>Ativos</th>
+                      <th>Progresso</th>
+                      <th>Status</th>
+                      <th>Owner</th>
+                      <th>Prazo</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="remediationProjectTable"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
                   <p class="section-kicker">RISK REDUCTION OPPORTUNITIES</p>
                   <h3>Maior redução de risco primeiro</h3>
                 </div>
