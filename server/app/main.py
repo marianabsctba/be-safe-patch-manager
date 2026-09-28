@@ -738,6 +738,199 @@ def risk_reduction_opportunities_report(
     }
 
 
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def business_context_report(
+    db: Session,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    report = asset_risk_report(db, reference)
+
+    def aggregate(field: str, unassigned: str) -> list[dict]:
+        buckets: dict[str, dict] = {}
+        for row in report["assets"]:
+            profile = row.get("risk_profile") or {}
+            raw_label = str(profile.get(field) or "").strip()
+            label = raw_label or unassigned
+            bucket = buckets.setdefault(label, {
+                "name": label,
+                "asset_count": 0,
+                "scores": [],
+                "critical": 0,
+                "high": 0,
+                "open_findings": 0,
+                "above_appetite": 0,
+                "accepted": 0,
+                "in_treatment": 0,
+                "treatment_overdue": 0,
+                "untreated": 0,
+                "with_owner": 0,
+            })
+            risk = row["risk"]
+            bucket["asset_count"] += 1
+            bucket["scores"].append(float(risk["score"]))
+            bucket["critical"] += 1 if risk["level"] == "critical" else 0
+            bucket["high"] += 1 if risk["level"] == "high" else 0
+            bucket["open_findings"] += int(risk.get("open_findings") or 0)
+            bucket["above_appetite"] += 1 if risk.get("above_risk_appetite") else 0
+            status = str(risk.get("governance_status") or "")
+            bucket["accepted"] += 1 if status == "accepted" else 0
+            bucket["in_treatment"] += 1 if status == "in_treatment" else 0
+            bucket["treatment_overdue"] += 1 if status == "treatment_overdue" else 0
+            bucket["untreated"] += 1 if status == "above_appetite" else 0
+            bucket["with_owner"] += 1 if str(profile.get("owner") or "").strip() else 0
+
+        items = []
+        for bucket in buckets.values():
+            above = bucket["above_appetite"]
+            governed = bucket["accepted"] + bucket["in_treatment"] + bucket["treatment_overdue"]
+            items.append({
+                "name": bucket["name"],
+                "asset_count": bucket["asset_count"],
+                "average_risk": round(sum(bucket["scores"]) / len(bucket["scores"]), 1) if bucket["scores"] else 0.0,
+                "max_risk": round(max(bucket["scores"]), 1) if bucket["scores"] else 0.0,
+                "critical": bucket["critical"],
+                "high": bucket["high"],
+                "open_findings": bucket["open_findings"],
+                "above_appetite": above,
+                "accepted": bucket["accepted"],
+                "in_treatment": bucket["in_treatment"],
+                "treatment_overdue": bucket["treatment_overdue"],
+                "untreated": bucket["untreated"],
+                "governance_coverage_percent": round(governed / above * 100.0, 1) if above else 100.0,
+                "owner_coverage_percent": round(bucket["with_owner"] / bucket["asset_count"] * 100.0, 1) if bucket["asset_count"] else 0.0,
+            })
+        items.sort(key=lambda item: (-item["average_risk"], -item["asset_count"], item["name"].lower()))
+        return items
+
+    return {
+        "generated_at": reference.isoformat(),
+        "by_owner": aggregate("owner", "sem owner"),
+        "by_business_service": aggregate("business_service", "sem business service"),
+        "by_environment": aggregate("environment", "sem environment"),
+        "summary": {
+            "assets": report["summary"]["assets"],
+            "owner_coverage_percent": (
+                round(
+                    report["summary"]["assets_with_owner"] / report["summary"]["assets"] * 100.0,
+                    1,
+                )
+                if report["summary"]["assets"]
+                else 0.0
+            ),
+            "critical_high_without_owner": report["summary"]["critical_high_without_owner"],
+        },
+        "note": "Business Context segments reuse the existing Asset Risk model. No additional hidden score multiplier is applied.",
+    }
+
+
+def remediation_performance_report(
+    db: Session,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    remediated = db.query(VulnerabilityFinding).filter(
+        VulnerabilityFinding.status == "remediated",
+        VulnerabilityFinding.resolved_at.is_not(None),
+    ).all()
+
+    mttr_hours = []
+    by_severity_raw: dict[str, list[float]] = {}
+    target_met = 0
+    target_measured = 0
+
+    for finding in remediated:
+        first_seen = finding.first_seen or finding.created_at
+        resolved_at = finding.resolved_at
+        if not first_seen or not resolved_at:
+            continue
+        if first_seen.tzinfo is None:
+            first_seen = first_seen.replace(tzinfo=timezone.utc)
+        if resolved_at.tzinfo is None:
+            resolved_at = resolved_at.replace(tzinfo=timezone.utc)
+        duration = max(0.0, (resolved_at - first_seen).total_seconds() / 3600.0)
+        mttr_hours.append(duration)
+        severity = str(finding.severity or "unknown").lower()
+        by_severity_raw.setdefault(severity, []).append(duration)
+        target = VULNERABILITY_SLA_HOURS.get(severity, VULNERABILITY_SLA_HOURS["unknown"])
+        target_measured += 1
+        target_met += 1 if duration <= target else 0
+
+    evidence_counts = {
+        str(status or "unknown"): int(count)
+        for status, count in db.query(
+            RemediationEvidence.status,
+            func.count(RemediationEvidence.id),
+        ).group_by(RemediationEvidence.status).all()
+    }
+    evidence_terminal = sum(
+        evidence_counts.get(status, 0)
+        for status in ("verified", "still_detected", "error")
+    )
+    evidence_verified = evidence_counts.get("verified", 0)
+
+    patch_jobs = db.query(PatchJob).filter(
+        PatchJob.action == "install_updates",
+        PatchJob.status.in_(["success", "failed"]),
+    ).all()
+    job_durations = []
+    success_jobs = 0
+    failed_jobs = 0
+    for job in patch_jobs:
+        success_jobs += 1 if job.status == "success" else 0
+        failed_jobs += 1 if job.status == "failed" else 0
+        if job.started_at and job.finished_at:
+            started = job.started_at
+            finished = job.finished_at
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            if finished.tzinfo is None:
+                finished = finished.replace(tzinfo=timezone.utc)
+            job_durations.append(max(0.0, (finished - started).total_seconds() / 60.0))
+
+    sla = vulnerability_sla_report(db, reference)
+    by_severity = {
+        severity: {
+            "remediated": len(values),
+            "median_mttr_hours": round(_median(values), 1) if _median(values) is not None else None,
+            "average_mttr_hours": round(sum(values) / len(values), 1) if values else None,
+        }
+        for severity, values in sorted(by_severity_raw.items())
+    }
+
+    completed_jobs = success_jobs + failed_jobs
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": {
+            "remediated_findings": len(mttr_hours),
+            "median_mttr_hours": round(_median(mttr_hours), 1) if _median(mttr_hours) is not None else None,
+            "average_mttr_hours": round(sum(mttr_hours) / len(mttr_hours), 1) if mttr_hours else None,
+            "raw_sla_target_met_percent": round(target_met / target_measured * 100.0, 1) if target_measured else None,
+            "verified_evidence_rate_percent": round(evidence_verified / evidence_terminal * 100.0, 1) if evidence_terminal else None,
+            "patch_job_success_rate_percent": round(success_jobs / completed_jobs * 100.0, 1) if completed_jobs else None,
+            "median_patch_job_minutes": round(_median(job_durations), 1) if _median(job_durations) is not None else None,
+            "open_sla_breaches": sla["summary"]["breached"],
+        },
+        "evidence": evidence_counts,
+        "patch_jobs": {
+            "success": success_jobs,
+            "failed": failed_jobs,
+            "completed": completed_jobs,
+        },
+        "by_severity": by_severity,
+        "note": "MTTR uses first_seen to resolved_at for findings marked remediated. raw_sla_target_met_percent compares that duration to the severity target without reconstructing historical exception pause intervals.",
+    }
+
+
 def active_threat_watch_report(
     db: Session,
     reference: datetime | None = None,
@@ -4622,6 +4815,22 @@ def risk_reduction_plan(
     db: Session = Depends(get_db),
 ):
     return risk_reduction_plan_report(db, agent_id=agent_id, max_steps=max_steps)
+
+
+@app.get("/api/admin/reports/business-context")
+def business_context(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return business_context_report(db)
+
+
+@app.get("/api/admin/reports/remediation-performance")
+def remediation_performance(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return remediation_performance_report(db)
 
 
 @app.get("/api/admin/reports/active-threat-watch")
