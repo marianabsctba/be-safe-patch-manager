@@ -683,6 +683,41 @@ Preparar a campanha **não**:
 
 Deploy permanece uma ação explícita e separada do operador.
 
+## 7.8. Auditable Asset Risk History
+
+Cada snapshot de Asset Risk persiste o contexto necessário para explicar o score histórico sem depender de recálculo futuro.
+
+Além de score, level, criticidade, exposição e findings abertos, o snapshot guarda:
+
+- `model_version`;
+- decomposition;
+- cálculo intermediário;
+- policy efetiva;
+- appetite efetivo;
+- estado de governança;
+- origem do snapshot.
+
+O cálculo persistido inclui:
+
+```text
+base_weighted
+criticality_multiplier
+exposure_multiplier
+compensating_multiplier
+pre_compensation
+raw_score
+score_cap
+capped
+```
+
+Isso permite responder por que determinado ativo tinha um score específico naquele momento, mesmo se tags, policies ou regras evoluírem depois.
+
+A migration correspondente é:
+
+```text
+0012_risk_snapshot_details
+```
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
