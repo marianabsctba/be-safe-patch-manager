@@ -26,6 +26,8 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 
 
 AGENT_ONLINE_SECONDS = _env_int("AGENT_ONLINE_SECONDS", 300, minimum=60)
+THREAT_INTEL_SYNC_INTERVAL = _env_int("THREAT_INTEL_SYNC_INTERVAL", 21600, minimum=300)
+THREAT_INTEL_STALE_SECONDS = _env_int("THREAT_INTEL_STALE_SECONDS", max(3600, THREAT_INTEL_SYNC_INTERVAL * 2), minimum=300)
 BACKUP_STATUS_FILE = Path(os.getenv("BACKUP_STATUS_FILE", "/runtime/backup-status.json"))
 
 HTTP_REQUESTS = Counter(
@@ -463,11 +465,17 @@ class PatchManagerCollector:
             threat_intel = db.get(IntegrationState, "threat_intel")
             threat_enabled = 1 if threat_intel and threat_intel.enabled else 0
             threat_healthy = 1 if threat_intel and threat_intel.status in {"ok", "degraded"} else 0
+            threat_degraded = 1 if threat_intel and threat_intel.status == "degraded" else 0
             threat_last_success = _as_utc(threat_intel.last_success_at) if threat_intel else None
+            threat_age = max(0.0, (current - threat_last_success).total_seconds()) if threat_last_success else 0.0
+            threat_stale = 1 if threat_enabled and (not threat_last_success or threat_age > THREAT_INTEL_STALE_SECONDS) else 0
 
             for name, description, value in [
                 ("patch_manager_threat_intel_enabled", "Whether EPSS/KEV enrichment is enabled.", threat_enabled),
                 ("patch_manager_threat_intel_sync_healthy", "Whether the latest threat-intel sync is usable.", threat_healthy),
+                ("patch_manager_threat_intel_degraded", "Whether only part of the configured threat-intel sources succeeded.", threat_degraded),
+                ("patch_manager_threat_intel_stale", "Whether threat-intel data is older than the configured freshness threshold.", threat_stale),
+                ("patch_manager_threat_intel_age_seconds", "Age in seconds of the latest usable threat-intel sync.", threat_age),
                 (
                     "patch_manager_threat_intel_last_success_timestamp_seconds",
                     "Unix timestamp of the latest usable threat-intel sync.",
