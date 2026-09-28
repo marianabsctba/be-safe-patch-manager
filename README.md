@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.22; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.23; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -39,6 +39,8 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - Business Context Segments e Remediation Performance com MTTR, evidência e patch success;
 - Risk Reduction Goals persistentes com baseline congelado, escopo dinâmico por tag, owner, prazo, target, progresso e pace (`on_track`, `at_risk`, `overdue`, `achieved`);
 - Risk Program Overview executivo combinando exposure backlog, threat-active assets, ownership, MTTR, evidência, patch success, goals e maior alavanca de remediação sem score composto oculto;
+- Remediation Projects persistentes por patch/ação, com owner, prazo, baseline, escopo `static` ou `dynamic`, scope drift explícito, progresso e lifecycle separado de campanha/deploy;
+- Remediation Projects podem nascer do Remediation Hub e preparar um draft de campanha multi-asset exato, mantendo revisão humana e health gates antes do deploy;
 - etapas elegíveis do plano podem pré-preencher um draft de campanha, mantendo criação e deploy sob controle explícito do operador;
 - criação de campanha a partir de finding correlacionado;
 - evidência de remediação vinculando finding, campanha, job e endpoint;
