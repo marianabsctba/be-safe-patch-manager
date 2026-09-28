@@ -297,3 +297,93 @@ def test_asset_risk_report_aggregates_top_contributors(db):
 
     assert report["top_contributors"]
     assert report["top_contributors"][0]["raw"] > 0
+
+
+
+def test_boolish_false_strings_do_not_enable_threat_flags():
+    assert main.parse_boolish("false") is False
+    assert main.parse_boolish("0") is False
+    assert main.parse_boolish("unknown") is False
+    assert main.parse_boolish(False) is False
+    assert main.parse_boolish("true") is True
+    assert main.parse_boolish("known") is True
+
+
+def test_epss_normalization_accepts_percent_and_rejects_out_of_range():
+    assert main.normalize_epss("90%") == 0.9
+    assert main.normalize_epss("0.42") == 0.42
+    assert main.normalize_epss(1) == 1.0
+    assert main.normalize_epss(1.2) is None
+    assert main.normalize_epss("-2%") is None
+
+
+def test_detection_risk_does_not_treat_false_string_as_kev():
+    agent = make_agent("boolish-asset", ["prod"])
+    item = make_finding(
+        "boolish-f",
+        agent,
+        "high",
+        8.0,
+        {"threat_intel": {"epss": "90%", "kev": "false"}, "ransomware": "false"},
+    )
+
+    result = main.finding_detection_risk(item, REFERENCE)
+
+    assert result["epss"] == 0.9
+    assert result["kev"] is False
+    assert result["ransomware"] is False
+
+
+def test_exposure_tags_do_not_raise_asset_criticality():
+    agent = make_agent("exposure-only", ["internet-facing", "dmz", "public"])
+
+    criticality = main.asset_criticality(agent)
+    exposure = main.asset_exposure(agent)
+
+    assert criticality["score"] == 2
+    assert criticality["source"] == "default"
+    assert exposure["external"] is True
+    assert exposure["source"] == "tags"
+
+
+def test_trend_uses_previous_snapshot_when_latest_matches_current(db):
+    agent = make_agent("trend-after-snapshot", ["prod"])
+    finding = make_finding("trend-after-f", agent, "critical", 9.8, {})
+    db.add_all([agent, finding])
+    db.commit()
+
+    current = main.asset_risk_score(agent, [finding], REFERENCE)
+    previous_score = max(0.0, current["score"] - 100.0)
+
+    db.add_all([
+        AssetRiskSnapshot(
+            agent_id=agent.id,
+            score=previous_score,
+            level="medium",
+            criticality=4,
+            external=False,
+            open_findings=1,
+            factors_json="[]",
+            source="previous",
+            captured_at=REFERENCE - timedelta(hours=2),
+        ),
+        AssetRiskSnapshot(
+            agent_id=agent.id,
+            score=current["score"],
+            level=current["level"],
+            criticality=current["asset_criticality"]["score"],
+            external=current["exposure"]["external"],
+            open_findings=current["open_findings"],
+            factors_json="[]",
+            source="latest",
+            captured_at=REFERENCE - timedelta(hours=1),
+        ),
+    ])
+    db.commit()
+
+    report = main.asset_risk_report(db, REFERENCE)
+    trend = report["assets"][0]["risk"]["trend"]
+
+    assert trend["direction"] == "up"
+    assert trend["previous_score"] == previous_score
+    assert trend["delta"] == round(current["score"] - previous_score, 1)
