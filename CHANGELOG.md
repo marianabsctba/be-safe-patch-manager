@@ -3,7 +3,7 @@
 ## 0.24.0
 
 - control plane e dashboard passam para versão 0.24.0; agente permanece em 0.16.0;
-- migration `0017_remediation_project_intelligence` enriquece o histórico de Remediation Projects;
+- migration `0017_project_intel` enriquece o histórico de Remediation Projects;
 - projetos passam a calcular risco restante, risco reduzido desde o baseline e progresso percentual de redução de risco;
 - progresso operacional passa a ser comparado com progresso esperado pelo prazo, expondo schedule variance;
 - Project Intelligence inclui KEV, SLA vencido/próximo, ativos externos, aging médio/máximo, EPSS médio/máximo e contexto de business service/owner;
