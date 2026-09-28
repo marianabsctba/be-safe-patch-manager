@@ -191,6 +191,10 @@ class AgentMtlsBindRequest(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+class AssetRiskSimulationRequest(BaseModel):
+    finding_ids: List[str] = Field(min_length=1, max_length=500)
+
+
 class AssetRiskTreatmentCreate(BaseModel):
     owner: str = Field(min_length=2, max_length=255)
     action: str = Field(min_length=5, max_length=2000)
