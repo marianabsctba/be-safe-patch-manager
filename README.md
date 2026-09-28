@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.32; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.33; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -48,6 +48,8 @@ Patch management **agent-based** para Windows e Linux, com inventário, campanha
 - Patch Feed Orchestrator gerencia providers independentes com prioridade, TTL, intervalo, health, contadores de falha e circuit breaker;
 - sync manual e worker agendado usam o mesmo enrichment engine, evitando caminhos diferentes entre operação humana e automação;
 - provider `curated` é o primeiro adapter funcional; o core de orquestração fica desacoplado para adapters Microsoft/Linux futuros;
+- Change Freeze / Blackout Calendar bloqueia deploy e avanço de ring em janelas ativas por SO/tag;
+- emergency override é por campanha, exige admin + justificativa, pode ser revogado e fica integralmente auditado;
 - Active Threat Watch baseado em CISA KEV, EPSS e ransomware known;
 - Patch Confidence a partir do histórico local de deploys;
 - Asset Accountability com owner, business service e environment;

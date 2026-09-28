@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.32</small>
+          <small>dashboard v0.33</small>
         </div>
       </div>
     </aside>
@@ -382,6 +382,25 @@
             </div>
 
 
+
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">CHANGE FREEZE</p>
+                  <h3>Blackout calendar</h3>
+                </div>
+              </div>
+              <div id="freezeWindowStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Deploy e avanço de ring são bloqueados em janelas ativas por SO/tag. Emergency override exige admin, justificativa e auditoria explícita.
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Janela</th><th>Status</th><th>OS</th><th>Tag</th><th>Período</th><th>Motivo</th><th></th></tr></thead>
+                  <tbody id="freezeWindowTable"></tbody>
+                </table>
+              </div>
+            </div>
             <div class="panel-subsection">
               <div class="panel-head">
                 <div>

@@ -17,6 +17,7 @@ const state = {
   patchConfidence: null,
   patchCatalog: null,
   patchFeeds: null,
+  freezeWindows: null,
   patchBlockRules: null,
   businessContext: null,
   remediationPerformance: null,
@@ -247,7 +248,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchCatalog, patchFeeds, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchCatalog, patchFeeds, freezeWindows, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -260,6 +261,7 @@ async function load() {
       api('/api/admin/reports/patch-confidence'),
       api('/api/admin/reports/patch-catalog'),
       api('/api/admin/patch-feeds'),
+      api('/api/admin/freeze-windows'),
       api('/api/admin/patch-block-rules'),
       api('/api/admin/reports/business-context'),
       api('/api/admin/reports/remediation-performance'),
@@ -286,6 +288,7 @@ async function load() {
     state.patchConfidence = patchConfidence;
     state.patchCatalog = patchCatalog;
     state.patchFeeds = patchFeeds;
+    state.freezeWindows = freezeWindows;
     state.patchBlockRules = patchBlockRules;
     state.businessContext = businessContext;
     state.remediationPerformance = remediationPerformance;
@@ -333,6 +336,7 @@ function renderAll() {
   renderPatchConfidence();
   renderPatchCatalog();
   renderPatchFeeds();
+  renderFreezeWindows();
   renderBusinessContext();
   renderRemediationPerformance();
   renderRiskGoals();
@@ -1892,6 +1896,53 @@ window.editPatchLifecycle = async (encodedPatchRef) => {
   }
 };
 
+
+
+
+function renderFreezeWindows() {
+  const report = state.freezeWindows || {};
+  const summary = report.summary || {};
+  const items = Array.isArray(report.items) ? report.items : [];
+  const stats = $('#freezeWindowStats');
+  const table = $('#freezeWindowTable');
+  if (!stats || !table) return;
+  stats.innerHTML = [
+    ['Janelas', summary.windows || 0],
+    ['Ativas agora', summary.active || 0],
+    ['Habilitadas', summary.enabled || 0],
+  ].map(([label, value]) => '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>').join('');
+  if (!items.length) {
+    table.innerHTML = '<tr><td colspan="7"><div class="empty-state">Nenhuma change freeze configurada.</div></td></tr>';
+    return;
+  }
+  table.innerHTML = items.map((item) =>
+    '<tr>' +
+      '<td><strong>' + esc(item.name) + '</strong></td>' +
+      '<td>' + (item.active ? badge('ATIVA', 'fail') : item.enabled ? badge('AGENDADA', 'warn') : badge('DISABLED', 'muted-badge')) + '</td>' +
+      '<td>' + esc(item.target_os || 'all') + '</td>' +
+      '<td>' + esc(item.target_tag || '-') + '</td>' +
+      '<td><small>' + esc(when(item.starts_at)) + '<br>→ ' + esc(when(item.ends_at)) + '</small></td>' +
+      '<td><small>' + esc(item.reason) + '</small></td>' +
+      '<td>' + (roleAtLeast('admin') ? '<button class="row-action" onclick="toggleFreezeWindow(\'' + esc(item.id) + '\',' + (!item.enabled) + ')">' + (item.enabled ? 'Desativar' : 'Ativar') + '</button>' : '') + '</td>' +
+    '</tr>'
+  ).join('');
+}
+
+window.toggleFreezeWindow = async (id, enabled) => {
+  if (!requireRole('admin')) return;
+  const reason = prompt('Motivo da alteração:');
+  if (!reason || reason.trim().length < 5) return;
+  try {
+    await api('/api/admin/freeze-windows/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled, reason: reason.trim() }),
+    });
+    toast('Freeze window atualizada.');
+    await load();
+  } catch (error) {
+    toast('Freeze window: ' + error.message, 'fail');
+  }
+};
 
 
 function renderPatchFeeds() {

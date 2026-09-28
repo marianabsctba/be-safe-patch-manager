@@ -349,6 +349,28 @@ class PatchCatalogLifecycleUpdate(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
 
 
+class PatchFreezeWindowCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
+    target_os: str = Field(default="all", max_length=32)
+    target_tag: str = Field(default="", max_length=128)
+    starts_at: datetime
+    ends_at: datetime
+    reason: str = Field(min_length=5, max_length=1000)
+
+
+class PatchFreezeWindowUpdate(BaseModel):
+    enabled: bool
+    reason: str = Field(min_length=5, max_length=1000)
+
+
+class CampaignFreezeOverrideCreate(BaseModel):
+    reason: str = Field(min_length=10, max_length=1000)
+
+
+class CampaignFreezeOverrideRevoke(BaseModel):
+    reason: str = Field(min_length=5, max_length=1000)
+
+
 class PatchBlockRuleCreate(BaseModel):
     name: str = Field(min_length=3, max_length=128)
     patch_ref: str = Field(min_length=1, max_length=255)

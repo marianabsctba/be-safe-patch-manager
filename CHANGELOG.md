@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.33.0
+
+- control plane e dashboard passam para versão 0.33.0; agente permanece em 0.16.0;
+- adicionado Change Freeze / Blackout Calendar persistente com migration 0025_change_freeze;
+- janelas podem ser segmentadas por sistema operacional e tag;
+- deploy de campanha e avanço de ring falham fechado durante freeze ativa;
+- emergency override por campanha exige administrador e justificativa auditada;
+- override pode ser revogado e volta a bloquear a campanha imediatamente;
+- console ganha painel Change Freeze com status ativo/agendado, escopo e período;
+- adicionados testes de matching, bloqueio, override e revogação.
+
 ## 0.32.0
 
 - control plane e dashboard passam para versão 0.32.0; agente permanece em 0.16.0;

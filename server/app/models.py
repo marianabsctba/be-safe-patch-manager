@@ -433,6 +433,36 @@ class PatchFeedProvider(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class PatchFreezeWindow(Base):
+    __tablename__ = "patch_freeze_windows"
+
+    id = Column(String(36), primary_key=True)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    target_os = Column(String(32), nullable=False, default="all", index=True)
+    target_tag = Column(String(128), nullable=False, default="", index=True)
+    starts_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    ends_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    reason = Column(Text, nullable=False)
+    created_by = Column(String(255), nullable=False)
+    updated_by = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class CampaignFreezeOverride(Base):
+    __tablename__ = "campaign_freeze_overrides"
+
+    id = Column(String(36), primary_key=True)
+    campaign_id = Column(String(36), ForeignKey("campaigns.id"), nullable=False, unique=True, index=True)
+    reason = Column(Text, nullable=False)
+    approved_by = Column(String(255), nullable=False)
+    approved_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    revoked_by = Column(String(255), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoke_reason = Column(Text, nullable=False, default="")
+
+
 class PatchBlockRule(Base):
     __tablename__ = "patch_block_rules"
 

@@ -21,8 +21,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -32,7 +32,7 @@ from .observability import metrics_response, prometheus_http_middleware, readine
 from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.32.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.33.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -6719,6 +6719,129 @@ def active_threat_watch(
 
 
 
+
+@app.get("/api/admin/freeze-windows")
+def list_freeze_windows(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    reference = now()
+    items = db.query(PatchFreezeWindow).order_by(PatchFreezeWindow.starts_at.asc()).all()
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": {
+            "windows": len(items),
+            "active": sum(1 for item in items if serialize_freeze_window(item, reference)["active"]),
+            "enabled": sum(1 for item in items if item.enabled),
+        },
+        "items": [serialize_freeze_window(item, reference) for item in items],
+    }
+
+
+@app.post("/api/admin/freeze-windows")
+def create_freeze_window(
+    body: PatchFreezeWindowCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    starts_at = body.starts_at if body.starts_at.tzinfo else body.starts_at.replace(tzinfo=timezone.utc)
+    ends_at = body.ends_at if body.ends_at.tzinfo else body.ends_at.replace(tzinfo=timezone.utc)
+    if ends_at <= starts_at:
+        raise HTTPException(status_code=400, detail="freeze window end must be after start")
+    if db.query(PatchFreezeWindow).filter(func.lower(PatchFreezeWindow.name) == body.name.strip().lower()).first():
+        raise HTTPException(status_code=409, detail="freeze window name already exists")
+    item = PatchFreezeWindow(
+        id=str(uuid.uuid4()),
+        name=body.name.strip(),
+        target_os=body.target_os.strip().lower() or "all",
+        target_tag=body.target_tag.strip(),
+        starts_at=starts_at,
+        ends_at=ends_at,
+        enabled=True,
+        reason=body.reason.strip(),
+        created_by=principal["actor"],
+        updated_by=principal["actor"],
+    )
+    db.add(item)
+    db.commit()
+    audit(db, principal["actor"], "patch_freeze.created", "patch_freeze", item.id, serialize_freeze_window(item))
+    return serialize_freeze_window(item)
+
+
+@app.patch("/api/admin/freeze-windows/{window_id}")
+def update_freeze_window(
+    window_id: str,
+    body: PatchFreezeWindowUpdate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    item = db.get(PatchFreezeWindow, window_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="freeze window not found")
+    item.enabled = body.enabled
+    item.updated_by = principal["actor"]
+    db.commit()
+    audit(db, principal["actor"], "patch_freeze.updated", "patch_freeze", item.id, {
+        "enabled": body.enabled,
+        "reason": body.reason.strip(),
+    })
+    return serialize_freeze_window(item)
+
+
+@app.post("/api/admin/campaigns/{campaign_id}/freeze-override")
+def approve_campaign_freeze_override(
+    campaign_id: str,
+    body: CampaignFreezeOverrideCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    windows = active_freeze_windows_for_campaign(db, campaign)
+    if not windows:
+        raise HTTPException(status_code=409, detail="campaign is not currently blocked by a freeze window")
+    existing = active_campaign_freeze_override(db, campaign.id)
+    if existing:
+        return {"ok": True, "override_id": existing.id, "already_active": True}
+    item = CampaignFreezeOverride(
+        id=str(uuid.uuid4()),
+        campaign_id=campaign.id,
+        reason=body.reason.strip(),
+        approved_by=principal["actor"],
+        approved_at=now(),
+    )
+    db.add(item)
+    db.commit()
+    audit(db, principal["actor"], "campaign.freeze_override.approved", "campaign", campaign.id, {
+        "override_id": item.id,
+        "reason": item.reason,
+        "freeze_window_ids": [window.id for window in windows],
+    })
+    return {"ok": True, "override_id": item.id}
+
+
+@app.post("/api/admin/campaigns/{campaign_id}/freeze-override/revoke")
+def revoke_campaign_freeze_override(
+    campaign_id: str,
+    body: CampaignFreezeOverrideRevoke,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    item = active_campaign_freeze_override(db, campaign_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="active freeze override not found")
+    item.revoked_by = principal["actor"]
+    item.revoked_at = now()
+    item.revoke_reason = body.reason.strip()
+    db.commit()
+    audit(db, principal["actor"], "campaign.freeze_override.revoked", "campaign", campaign_id, {
+        "override_id": item.id,
+        "reason": item.revoke_reason,
+    })
+    return {"ok": True}
+
+
 @app.get("/api/admin/patch-feeds")
 def list_patch_feeds(
     _=Depends(require_viewer),
@@ -8960,6 +9083,91 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
 
 
 
+
+def serialize_freeze_window(item: PatchFreezeWindow, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    starts = item.starts_at if item.starts_at.tzinfo else item.starts_at.replace(tzinfo=timezone.utc)
+    ends = item.ends_at if item.ends_at.tzinfo else item.ends_at.replace(tzinfo=timezone.utc)
+    return {
+        "id": item.id,
+        "name": item.name,
+        "target_os": item.target_os,
+        "target_tag": item.target_tag,
+        "starts_at": starts.isoformat(),
+        "ends_at": ends.isoformat(),
+        "enabled": item.enabled,
+        "active": bool(item.enabled and starts <= reference < ends),
+        "reason": item.reason,
+        "created_by": item.created_by,
+        "updated_by": item.updated_by,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+    }
+
+
+def freeze_window_matches_campaign(window: PatchFreezeWindow, campaign: Campaign, reference: datetime | None = None) -> bool:
+    reference = reference or now()
+    if not window.enabled:
+        return False
+    starts = window.starts_at if window.starts_at.tzinfo else window.starts_at.replace(tzinfo=timezone.utc)
+    ends = window.ends_at if window.ends_at.tzinfo else window.ends_at.replace(tzinfo=timezone.utc)
+    if not (starts <= reference < ends):
+        return False
+    target_os = str(window.target_os or "all").lower()
+    campaign_os = str(campaign.target_os or "all").lower()
+    if target_os not in {"", "all"} and target_os != campaign_os:
+        return False
+    target_tag = str(window.target_tag or "").strip()
+    campaign_tag = str(campaign.target_tag or "").strip()
+    if target_tag and target_tag != campaign_tag:
+        return False
+    return True
+
+
+def active_freeze_windows_for_campaign(db: Session, campaign: Campaign, reference: datetime | None = None) -> list[PatchFreezeWindow]:
+    reference = reference or now()
+    candidates = db.query(PatchFreezeWindow).filter(PatchFreezeWindow.enabled.is_(True)).all()
+    return [item for item in candidates if freeze_window_matches_campaign(item, campaign, reference)]
+
+
+def active_campaign_freeze_override(db: Session, campaign_id: str) -> CampaignFreezeOverride | None:
+    return db.query(CampaignFreezeOverride).filter(
+        CampaignFreezeOverride.campaign_id == campaign_id,
+        CampaignFreezeOverride.revoked_at.is_(None),
+    ).first()
+
+
+def campaign_freeze_guard(db: Session, campaign: Campaign, reference: datetime | None = None) -> dict:
+    windows = active_freeze_windows_for_campaign(db, campaign, reference)
+    override = active_campaign_freeze_override(db, campaign.id)
+    return {
+        "blocked": bool(windows and not override),
+        "windows": [serialize_freeze_window(item, reference) for item in windows],
+        "override": {
+            "id": override.id,
+            "reason": override.reason,
+            "approved_by": override.approved_by,
+            "approved_at": override.approved_at.isoformat() if override.approved_at else None,
+        } if override else None,
+    }
+
+
+def enforce_campaign_freeze_guard(db: Session, campaign: Campaign):
+    guard = campaign_freeze_guard(db, campaign)
+    if guard["blocked"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "campaign blocked by active change freeze window",
+                "freeze_windows": [
+                    {"id": item["id"], "name": item["name"], "reason": item["reason"], "ends_at": item["ends_at"]}
+                    for item in guard["windows"]
+                ],
+            },
+        )
+    return guard
+
+
 def serialize_patch_block_rule(rule: PatchBlockRule, reference: datetime | None = None) -> dict:
     reference = reference or now()
     expires_at = rule.expires_at
@@ -9126,6 +9334,7 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
         raise HTTPException(status_code=404, detail="campaign not found")
     if campaign.status != "draft":
         raise HTTPException(status_code=409, detail="campaign already deployed")
+    enforce_campaign_freeze_guard(db, campaign)
 
     approval_state = serialize_campaign_approval(campaign)
     if approval_state["required"] and approval_state["status"] != "approved":
@@ -9182,6 +9391,7 @@ def advance_campaign(
         raise HTTPException(status_code=404, detail="campaign not found")
     if campaign.status != "deployed":
         raise HTTPException(status_code=409, detail="campaign must be deployed before advancing")
+    enforce_campaign_freeze_guard(db, campaign)
     if body.target_percent <= campaign.ring_percent:
         raise HTTPException(status_code=400, detail="target ring must be greater than current ring")
     if campaign.action == "activate_agent_update" and principal.get("role") != "admin":
