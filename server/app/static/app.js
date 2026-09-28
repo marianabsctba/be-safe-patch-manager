@@ -1984,8 +1984,14 @@ function renderRemediationProjects() {
   table.innerHTML = items.map((project) =>
     '<tr>' +
       '<td><strong>' + esc(project.name) + '</strong><br><small class="muted">' + esc(project.patch_ref) + '</small></td>' +
-      '<td>' + esc(project.scope_mode) + (project.scope_tag ? '<br><small class="muted">tag:' + esc(project.scope_tag) + '</small>' : '') +
-        ((project.business_services || []).length ? '<br><small class="muted">' + esc(project.business_services.join(', ')) + '</small>' : '') + '</td>' +
+      '<td>' + esc(project.scope_mode) +
+        (project.scope_tag ? '<br><small class="muted">tag:' + esc(project.scope_tag) + '</small>' : '') +
+        ((project.scope_filter || {}).business_service ? '<br><small class="muted">service:' + esc(project.scope_filter.business_service) + '</small>' : '') +
+        ((project.scope_filter || {}).environment ? '<br><small class="muted">env:' + esc(project.scope_filter.environment) + '</small>' : '') +
+        ((project.scope_filter || {}).owner ? '<br><small class="muted">asset owner:' + esc(project.scope_filter.owner) + '</small>' : '') +
+        ((project.scope_filter || {}).external === true ? '<br><small class="muted">external only</small>' : '') +
+        ((project.scope_filter || {}).external === false ? '<br><small class="muted">internal only</small>' : '') +
+        ((project.scope_filter || {}).min_criticality ? '<br><small class="muted">crit ≥ ' + esc(project.scope_filter.min_criticality) + '</small>' : '') + '</td>' +
       '<td><strong>' + esc(project.tracked_open_findings == null ? project.current_open_findings : project.tracked_open_findings) + ' / ' + esc(project.baseline_findings) + '</strong>' +
         '<br><small class="muted">' + esc(project.current_assets) + ' ativos · ' + esc(project.new_findings_since_baseline) + ' novos' +
         (project.scope_departures ? ' · ' + esc(project.scope_departures) + ' scope drift' : '') + '</small></td>' +
@@ -2332,7 +2338,7 @@ window.createRemediationProjectFromHub = async (encodedPatchRef) => {
   openGovernanceModal({
     kicker: 'REMEDIATION PROJECT',
     title: 'Criar projeto · ' + patchRef,
-    context: String(group.finding_count || 0) + ' findings · ' + String(group.asset_count || 0) + ' ativos · redução projetada ' + String(group.risk_reduction || 0),
+    context: String(group.finding_count || 0) + ' findings · ' + String(group.asset_count || 0) + ' ativos · redução projetada ' + String(group.risk_reduction || 0) + ' · filtros de escopo ficam congelados como regra do projeto',
     submitLabel: 'Criar projeto',
     fields: [
       { name: 'name', label: 'Nome', type: 'text', value: 'Remediação · ' + patchRef, required: true, minLength: 3 },
@@ -2347,7 +2353,35 @@ window.createRemediationProjectFromHub = async (encodedPatchRef) => {
         ],
       },
       { name: 'scope_tag', label: 'Tag adicional', type: 'text', hint: 'Opcional. Restringe o projeto aos ativos com essa tag.' },
-      { name: 'owner', label: 'Owner', type: 'text', required: true, minLength: 2 },
+      { name: 'scope_business_service', label: 'Business service', type: 'text', hint: 'Opcional. Usa o contexto explícito do Asset Accountability.' },
+      { name: 'scope_environment', label: 'Environment', type: 'text', hint: 'Opcional. Ex.: production, staging, lab.' },
+      { name: 'scope_owner', label: 'Asset owner', type: 'text', hint: 'Opcional. Filtra pelo owner do ativo, não pelo owner do projeto.' },
+      {
+        name: 'scope_external',
+        label: 'Exposição',
+        type: 'select',
+        value: '',
+        options: [
+          { value: '', label: 'Qualquer exposição' },
+          { value: 'true', label: 'Somente externos' },
+          { value: 'false', label: 'Somente internos' },
+        ],
+      },
+      {
+        name: 'scope_min_criticality',
+        label: 'Criticidade mínima',
+        type: 'select',
+        value: '',
+        options: [
+          { value: '', label: 'Qualquer criticidade' },
+          { value: '1', label: '1+' },
+          { value: '2', label: '2+' },
+          { value: '3', label: '3+' },
+          { value: '4', label: '4+' },
+          { value: '5', label: '5' },
+        ],
+      },
+      { name: 'owner', label: 'Owner do projeto', type: 'text', required: true, minLength: 2 },
       { name: 'due_at', label: 'Prazo', type: 'datetime-local', value: localDue, required: true },
       { name: 'reason', label: 'Objetivo / contexto', type: 'textarea', required: true, minLength: 5, wide: true },
     ],
@@ -2359,6 +2393,11 @@ window.createRemediationProjectFromHub = async (encodedPatchRef) => {
           patch_ref: patchRef,
           scope_mode: String(values.scope_mode || 'static'),
           scope_tag: String(values.scope_tag || '').trim().toLowerCase(),
+          scope_business_service: String(values.scope_business_service || '').trim() || null,
+          scope_environment: String(values.scope_environment || '').trim() || null,
+          scope_owner: String(values.scope_owner || '').trim() || null,
+          scope_external: values.scope_external === '' ? null : String(values.scope_external) === 'true',
+          scope_min_criticality: values.scope_min_criticality === '' ? null : Number(values.scope_min_criticality),
           owner: String(values.owner || '').trim(),
           due_at: new Date(values.due_at).toISOString(),
           reason: String(values.reason || '').trim(),
