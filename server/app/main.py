@@ -5264,24 +5264,33 @@ def create_vulnerability_sla_exception(
     principal=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    finding = db.get(VulnerabilityFinding, finding_id)
+    finding = db.query(VulnerabilityFinding).filter(
+        VulnerabilityFinding.id == finding_id
+    ).with_for_update().first()
     if not finding:
         raise HTTPException(status_code=404, detail="vulnerability finding not found")
     if finding.status != "open":
         raise HTTPException(status_code=409, detail="SLA exception requires an open vulnerability")
 
+    reason = body.reason.strip()
+    if len(reason) < 5:
+        raise HTTPException(status_code=400, detail="SLA exception reason must contain at least 5 non-space characters")
+
+    current = now()
     expires_at = body.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at <= now():
+    if expires_at <= current:
         raise HTTPException(status_code=400, detail="SLA exception expiry must be in the future")
-    if active_sla_exception(finding):
+    if expires_at > current + timedelta(days=365):
+        raise HTTPException(status_code=400, detail="SLA exception cannot exceed 365 days")
+    if active_sla_exception(finding, current):
         raise HTTPException(status_code=409, detail="an active SLA exception already exists")
 
     item = VulnerabilitySlaException(
         id=str(uuid.uuid4()),
         finding=finding,
-        reason=body.reason.strip(),
+        reason=reason,
         approved_by=principal["actor"],
         expires_at=expires_at,
     )
@@ -5317,9 +5326,13 @@ def revoke_vulnerability_sla_exception(
     if item.revoked_at is not None:
         raise HTTPException(status_code=409, detail="SLA exception is already revoked")
 
+    revoke_reason = body.reason.strip()
+    if len(revoke_reason) < 5:
+        raise HTTPException(status_code=400, detail="SLA exception revoke reason must contain at least 5 non-space characters")
+
     item.revoked_at = now()
     item.revoked_by = principal["actor"]
-    item.revoke_reason = body.reason.strip()
+    item.revoke_reason = revoke_reason
     db.commit()
     audit(
         db,
