@@ -21,7 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
 from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
@@ -1496,6 +1496,88 @@ def serialize_remediation_project(
         "completed_at": project.completed_at.isoformat() if project.completed_at else None,
         "created_at": project.created_at.isoformat() if project.created_at else None,
         "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+    }
+
+
+def capture_remediation_project_snapshots(
+    db: Session,
+    source: str,
+    reference: datetime | None = None,
+    minimum_interval_seconds: int = 3600,
+    project_ids: set[str] | None = None,
+) -> dict:
+    reference = reference or now()
+    query = db.query(RemediationProject).filter(
+        RemediationProject.status.in_(["active", "awaiting_verification"])
+    )
+    if project_ids:
+        query = query.filter(RemediationProject.id.in_(project_ids))
+    projects = query.all()
+    created = 0
+    skipped = 0
+    for project in projects:
+        latest = db.query(RemediationProjectSnapshot).filter(
+            RemediationProjectSnapshot.project_id == project.id
+        ).order_by(RemediationProjectSnapshot.captured_at.desc()).first()
+        if latest and minimum_interval_seconds > 0:
+            captured = latest.captured_at
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=timezone.utc)
+            if (reference - captured).total_seconds() < minimum_interval_seconds:
+                skipped += 1
+                continue
+        data = serialize_remediation_project(db, project, reference)
+        db.add(RemediationProjectSnapshot(
+            project_id=project.id,
+            tracked_open_findings=data["tracked_open_findings"],
+            current_scope_findings=data["current_open_findings"],
+            current_assets=data["current_assets"],
+            closed_from_baseline=data["closed_from_baseline"],
+            new_findings_since_baseline=data["new_findings_since_baseline"],
+            scope_departures=data["scope_departures"],
+            progress_percent=data["progress_percent"],
+            pace_status=data["pace_status"],
+            source=source,
+            captured_at=reference,
+        ))
+        created += 1
+    db.commit()
+    return {
+        "created": created,
+        "skipped": skipped,
+        "source": source,
+        "captured_at": reference.isoformat(),
+    }
+
+
+def remediation_project_history(
+    db: Session,
+    project_id: str,
+    limit: int = 200,
+) -> dict:
+    project = db.get(RemediationProject, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="remediation project not found")
+    rows = db.query(RemediationProjectSnapshot).filter(
+        RemediationProjectSnapshot.project_id == project_id
+    ).order_by(RemediationProjectSnapshot.captured_at.desc()).limit(
+        max(1, min(limit, 1000))
+    ).all()
+    return {
+        "project_id": project_id,
+        "project_name": project.name,
+        "items": [{
+            "tracked_open_findings": row.tracked_open_findings,
+            "current_scope_findings": row.current_scope_findings,
+            "current_assets": row.current_assets,
+            "closed_from_baseline": row.closed_from_baseline,
+            "new_findings_since_baseline": row.new_findings_since_baseline,
+            "scope_departures": row.scope_departures,
+            "progress_percent": row.progress_percent,
+            "pace_status": row.pace_status,
+            "source": row.source,
+            "captured_at": row.captured_at.isoformat() if row.captured_at else None,
+        } for row in rows],
     }
 
 
@@ -3282,6 +3364,7 @@ def run_greenbone_sync():
         state.details_json = dump(details)
         db.commit()
         capture_asset_risk_snapshots(db, source="greenbone_sync")
+        capture_remediation_project_snapshots(db, source="greenbone_sync")
         audit(db, "integration:greenbone", "greenbone.sync.success", "integration", "greenbone", details)
         return details
     except Exception as exc:
@@ -5400,6 +5483,16 @@ def patch_confidence(
     return patch_confidence_report(db, limit=limit)
 
 
+@app.get("/api/admin/remediation-projects/{project_id}/history")
+def get_remediation_project_history(
+    project_id: str,
+    limit: int = 200,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return remediation_project_history(db, project_id, limit)
+
+
 @app.get("/api/admin/remediation-projects")
 def list_remediation_projects(
     _=Depends(require_viewer),
@@ -5481,6 +5574,11 @@ def create_remediation_project(
     db.commit()
     db.refresh(project)
     result = serialize_remediation_project(db, project, reference)
+    capture_remediation_project_snapshots(
+        db, source=f"project_created:{principal['actor']}",
+        reference=reference, minimum_interval_seconds=0,
+        project_ids={project.id},
+    )
     audit(
         db,
         principal["actor"],
@@ -5548,6 +5646,10 @@ def update_remediation_project(
     db.commit()
     db.refresh(project)
     after = serialize_remediation_project(db, project)
+    capture_remediation_project_snapshots(
+        db, source=f"project_updated:{principal['actor']}",
+        minimum_interval_seconds=0, project_ids={project.id},
+    )
     audit(
         db,
         principal["actor"],
@@ -6585,6 +6687,7 @@ def import_vulnerabilities(
         raise HTTPException(status_code=400, detail="invalid vulnerability source")
 
     stats = upsert_vulnerability_findings(db, source, body.scan_id, body.findings)
+    capture_remediation_project_snapshots(db, source=f"vulnerability_import:{source}")
     audit(
         db,
         principal["actor"],
@@ -6739,6 +6842,11 @@ def update_vulnerability_status(
     finding.status = status
     finding.resolved_at = now() if status == "remediated" else None
     db.commit()
+    capture_remediation_project_snapshots(
+        db,
+        source=f"vulnerability_status:{principal['actor']}",
+        minimum_interval_seconds=0,
+    )
     audit(
         db,
         principal["actor"],
