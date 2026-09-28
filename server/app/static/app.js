@@ -16,6 +16,7 @@ const state = {
   patchConfidence: null,
   businessContext: null,
   remediationPerformance: null,
+  campaignTargetAgentIds: [],
   riskReduction: null,
   assetRisk: null,
   riskPolicies: [],
@@ -1479,11 +1480,9 @@ function renderRemediationHub() {
     const topAssets = assets.slice(0, 3).map((asset) =>
       esc(asset.hostname) + ' (-' + esc(asset.risk_reduction) + ')'
     ).join('<br>');
-    const campaignButton = (
-      item.single_asset_campaign_ready && item.primary_finding_id && roleAtLeast('operator')
-        ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + item.primary_finding_id + '\')">Preparar campanha</button>'
-        : '<small class="muted">' + (item.asset_count > 1 ? 'multi-asset · revisar escopo' : 'análise') + '</small>'
-    );
+    const campaignButton = roleAtLeast('operator')
+      ? '<button class="row-action" onclick="prepareCampaignFromRemediationGroup(\'' + encodeURIComponent(item.patch_ref) + '\')">Preparar campanha</button>'
+      : '<small class="muted">somente análise</small>';
 
     return '<tr>' +
       '<td><strong>#' + esc(index + 1) + '</strong></td>' +
@@ -1764,8 +1763,65 @@ window.retryRemediationRescan = async (evidenceId) => {
   }
 };
 
+window.prepareCampaignFromRemediationGroup = (encodedPatchRef) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+  const patchRef = decodeURIComponent(encodedPatchRef);
+  const items = state.remediationHub && Array.isArray(state.remediationHub.items)
+    ? state.remediationHub.items
+    : [];
+  const group = items.find((item) => item.patch_ref === patchRef);
+  if (!group) {
+    toast('Grupo de remediação não encontrado.', 'fail');
+    return;
+  }
+
+  const assets = Array.isArray(group.affected_assets) ? group.affected_assets : [];
+  const agentIds = [...new Set(assets.map((item) => item.agent_id).filter(Boolean))];
+  if (!agentIds.length) {
+    toast('O grupo não possui endpoints gerenciados.', 'fail');
+    return;
+  }
+  if (agentIds.length > 500) {
+    toast('O grupo excede o limite de 500 endpoints por snapshot de campanha.', 'fail');
+    return;
+  }
+
+  const form = $('#campaignForm');
+  state.campaignTargetAgentIds = agentIds;
+  form.elements.target_agent_id.value = '';
+  form.elements.target_finding_id.value = '';
+  form.elements.name.value = 'Remediation Hub · ' + patchRef;
+  const families = Array.isArray(group.os_families) ? group.os_families : [];
+  form.elements.target_os.value = families.length === 1 ? families[0] : 'all';
+  form.elements.target_tag.value = '';
+  form.elements.ring_percent.value = agentIds.length > 10 ? 10 : 100;
+  form.elements.action.value = 'install_updates';
+  form.elements.packages.value = patchRef;
+  form.elements.description.value =
+    'Remediação agrupada por patch ' + patchRef +
+    ' · ' + String(group.finding_count || 0) + ' findings' +
+    ' · ' + String(group.cve_count || 0) + ' CVEs' +
+    ' · ' + String(agentIds.length) + ' ativos' +
+    ' · redução projetada ' + String(group.risk_reduction || 0) +
+    ' · população congelada no momento da criação';
+
+  const context = $('#campaignSourceContext');
+  context.hidden = false;
+  context.innerHTML =
+    '<strong>Origem da campanha</strong>' +
+    '<span>Remediation Hub · ' + esc(patchRef) +
+    ' · ' + esc(agentIds.length) + ' endpoints exatos' +
+    ' · ' + esc(group.finding_count || 0) + ' findings</span>';
+
+  setView('campaigns');
+  form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  toast('Draft multi-asset pré-preenchido. Revise ring, janela e health gate antes de criar.');
+};
+
+
 window.prepareCampaignFromFinding = (findingId) => {
   if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+  state.campaignTargetAgentIds = [];
   const finding = state.vulnerabilities.find((item) => item.id === findingId);
   if (!finding || !finding.matched || !finding.agent_id) {
     toast('O finding precisa estar correlacionado a um endpoint gerenciado.', 'fail');
@@ -2951,6 +3007,7 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     prepare_rollback: form.get('prepare_rollback') === 'on',
     rollback_required: form.get('rollback_required') === 'on',
     target_agent_id: form.get('target_agent_id') || '',
+    target_agent_ids: Array.isArray(state.campaignTargetAgentIds) ? state.campaignTargetAgentIds : [],
     target_finding_id: form.get('target_finding_id') || '',
     not_before: form.get('not_before')
       ? new Date(form.get('not_before')).toISOString()
@@ -2971,6 +3028,7 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     event.target.elements.health_gate_enabled.checked = true;
     event.target.elements.health_gate_require_telemetry.checked = true;
     event.target.elements.prepare_rollback.checked = true;
+    state.campaignTargetAgentIds = [];
     $('#campaignSourceContext').hidden = true;
     $('#campaignSourceContext').innerHTML = '';
     toast('Campanha criada.');
