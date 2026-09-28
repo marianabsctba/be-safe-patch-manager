@@ -941,6 +941,26 @@
     </form>
   </div>
 
+  <div id="governanceModal" class="governance-modal" hidden aria-hidden="true">
+    <button id="governanceModalBackdrop" class="governance-modal-backdrop" type="button" aria-label="Fechar"></button>
+    <form id="governanceForm" class="governance-modal-card">
+      <div class="governance-modal-head">
+        <div>
+          <p id="governanceKicker" class="section-kicker">GOVERNANÇA</p>
+          <h2 id="governanceTitle">-</h2>
+          <p id="governanceContext" class="governance-modal-context"></p>
+        </div>
+        <button id="governanceModalClose" class="icon-button" type="button" title="Fechar">×</button>
+      </div>
+      <div id="governanceFields" class="governance-fields"></div>
+      <p id="governanceError" class="auth-error" hidden></p>
+      <div class="governance-modal-actions">
+        <button id="governanceCancel" type="button">Cancelar</button>
+        <button id="governanceSubmit" type="submit" class="primary">Salvar</button>
+      </div>
+    </form>
+  </div>
+
   <div id="toast" class="toast" aria-live="polite"></div>
   <script src="/static/app.js"></script>
 </body>
