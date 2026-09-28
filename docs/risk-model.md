@@ -760,12 +760,17 @@ Contributor negativo:
 
 - `compensating_controls`
 
-Cada item contém:
+Cada item da decomposition por ativo contém:
 
 - `name`
 - `category`
 - `raw`
 - `percent`
+
+No agregado `top_contributors`, cada contributor também inclui:
+
+- `assets_affected`
+- `share_percent`
 
 O percentual é calculado sobre os contributors positivos. Controles compensatórios aparecem como redução negativa e não são usados no denominador positivo.
 
@@ -816,6 +821,14 @@ São criados:
 - manualmente pela console.
 
 Snapshots automáticos possuem intervalo mínimo de uma hora para reduzir ruído.
+
+A retenção padrão é de 180 dias e pode ser alterada com:
+
+```text
+ASSET_RISK_HISTORY_RETENTION_DAYS
+```
+
+Snapshots mais antigos que a retenção são removidos durante novas capturas. Mudanças de Risk Profile, Risk Policy, Risk Acceptance e Treatment Plan geram snapshots imediatos dos ativos afetados para preservar a linha do tempo da governança.
 
 A tendência do score é:
 
@@ -906,6 +919,26 @@ raw.threat_intel
 O raw do scanner é preservado.
 
 Falha de uma fonte pode resultar em estado `degraded`, mantendo a outra utilizável.
+
+A observabilidade separa saúde de freshness:
+
+- `patch_manager_threat_intel_sync_healthy`
+- `patch_manager_threat_intel_degraded`
+- `patch_manager_threat_intel_stale`
+- `patch_manager_threat_intel_age_seconds`
+
+O limite de freshness pode ser configurado por `THREAT_INTEL_STALE_SECONDS`. Assim, um último sync tecnicamente bem-sucedido não permanece verde indefinidamente quando os dados envelhecem.
+
+## 13.1. Integridade da governança
+
+Decisões de Asset Risk são validadas no backend:
+
+- Risk Acceptance exige ativo acima do appetite efetivo;
+- Treatment Plan exige ativo acima do appetite efetivo;
+- apenas um aceite ativo e um treatment ativo são permitidos por ativo pela lógica transacional;
+- criação usa lock do ativo para serializar decisões concorrentes em produção;
+- motivos, owners, ações e nomes relevantes são validados após trim;
+- mudanças de governança geram audit event e snapshot histórico.
 
 ## 14. Princípios de segurança
 
