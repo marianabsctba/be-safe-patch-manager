@@ -14,6 +14,8 @@ const state = {
   remediationHub: null,
   activeThreatWatch: null,
   patchConfidence: null,
+  businessContext: null,
+  remediationPerformance: null,
   riskReduction: null,
   assetRisk: null,
   riskPolicies: [],
@@ -239,7 +241,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, activeThreatWatch, patchConfidence, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, activeThreatWatch, patchConfidence, businessContext, remediationPerformance, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -249,6 +251,8 @@ async function load() {
       api('/api/admin/reports/remediation-hub'),
       api('/api/admin/reports/active-threat-watch'),
       api('/api/admin/reports/patch-confidence'),
+      api('/api/admin/reports/business-context'),
+      api('/api/admin/reports/remediation-performance'),
       api('/api/admin/reports/risk-reduction-opportunities'),
       api('/api/admin/reports/asset-risk'),
       api('/api/admin/risk-policies'),
@@ -268,6 +272,8 @@ async function load() {
     state.remediationHub = remediationHub;
     state.activeThreatWatch = activeThreatWatch;
     state.patchConfidence = patchConfidence;
+    state.businessContext = businessContext;
+    state.remediationPerformance = remediationPerformance;
     state.riskReduction = riskReduction;
     state.assetRisk = assetRisk;
     state.riskPolicies = riskPolicies;
@@ -308,6 +314,8 @@ function renderAll() {
   renderRemediationHub();
   renderActiveThreatWatch();
   renderPatchConfidence();
+  renderBusinessContext();
+  renderRemediationPerformance();
   renderRiskReductionOpportunities();
   renderAssetRisk();
   renderVulnerabilities();
@@ -1272,6 +1280,88 @@ window.editAssetRiskProfile = async (agentId) => {
     toast('Perfil de risco: ' + error.message, 'fail');
   }
 };
+
+
+function renderBusinessContext() {
+  const report = state.businessContext || {};
+  const summary = report.summary || {};
+  const owner = Array.isArray(report.by_owner) ? report.by_owner.slice(0, 10) : [];
+  const service = Array.isArray(report.by_business_service) ? report.by_business_service.slice(0, 10) : [];
+  const environment = Array.isArray(report.by_environment) ? report.by_environment.slice(0, 10) : [];
+
+  const stats = $('#businessContextStats');
+  if (stats) {
+    stats.innerHTML = [
+      ['Ativos', summary.assets || 0],
+      ['Owner coverage', (summary.owner_coverage_percent || 0) + '%'],
+      ['Crít./alto sem owner', summary.critical_high_without_owner || 0],
+    ].map(([label, value]) =>
+      '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+    ).join('');
+  }
+
+  const renderTable = (targetId, items) => {
+    const table = $(targetId);
+    if (!table) return;
+    if (!items.length) {
+      table.innerHTML = '<tr><td colspan="8"><div class="empty-state">Sem dados de contexto.</div></td></tr>';
+      return;
+    }
+    table.innerHTML = items.map((item) =>
+      '<tr>' +
+        '<td><strong>' + esc(item.name) + '</strong></td>' +
+        '<td>' + esc(item.asset_count) + '</td>' +
+        '<td><strong>' + esc(item.average_risk) + '</strong><br><small class="muted">max ' + esc(item.max_risk) + '</small></td>' +
+        '<td>' + esc(item.above_appetite) + '</td>' +
+        '<td>' + esc(item.untreated) + '</td>' +
+        '<td>' + esc(item.governance_coverage_percent) + '%</td>' +
+        '<td>' + esc(item.owner_coverage_percent) + '%</td>' +
+        '<td><small>' + esc(item.open_findings) + ' findings</small></td>' +
+      '</tr>'
+    ).join('');
+  };
+
+  renderTable('#businessContextOwner', owner);
+  renderTable('#businessContextService', service);
+  renderTable('#businessContextEnvironment', environment);
+}
+
+
+function renderRemediationPerformance() {
+  const report = state.remediationPerformance || {};
+  const summary = report.summary || {};
+  const stats = $('#remediationPerformanceStats');
+  if (stats) {
+    stats.innerHTML = [
+      ['Remediados', summary.remediated_findings || 0],
+      ['MTTR mediano', summary.median_mttr_hours == null ? '-' : summary.median_mttr_hours + 'h'],
+      ['MTTR médio', summary.average_mttr_hours == null ? '-' : summary.average_mttr_hours + 'h'],
+      ['SLA target bruto', summary.raw_sla_target_met_percent == null ? '-' : summary.raw_sla_target_met_percent + '%'],
+      ['Evidência verificada', summary.verified_evidence_rate_percent == null ? '-' : summary.verified_evidence_rate_percent + '%'],
+      ['Patch success', summary.patch_job_success_rate_percent == null ? '-' : summary.patch_job_success_rate_percent + '%'],
+      ['Job mediano', summary.median_patch_job_minutes == null ? '-' : summary.median_patch_job_minutes + ' min'],
+      ['Breaches abertos', summary.open_sla_breaches || 0],
+    ].map(([label, value]) =>
+      '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+    ).join('');
+  }
+
+  const table = $('#remediationPerformanceBySeverity');
+  if (!table) return;
+  const rows = Object.entries(report.by_severity || {});
+  if (!rows.length) {
+    table.innerHTML = '<tr><td colspan="4"><div class="empty-state">Sem findings remediados com tempo mensurável.</div></td></tr>';
+    return;
+  }
+  table.innerHTML = rows.map(([severity, item]) =>
+    '<tr>' +
+      '<td>' + badge(severity.toUpperCase(), severity === 'critical' ? 'fail' : severity === 'high' ? 'warn' : 'info') + '</td>' +
+      '<td>' + esc(item.remediated) + '</td>' +
+      '<td><strong>' + esc(item.median_mttr_hours == null ? '-' : item.median_mttr_hours + 'h') + '</strong></td>' +
+      '<td>' + esc(item.average_mttr_hours == null ? '-' : item.average_mttr_hours + 'h') + '</td>' +
+    '</tr>'
+  ).join('');
+}
 
 
 function renderActiveThreatWatch() {
