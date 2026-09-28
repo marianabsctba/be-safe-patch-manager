@@ -182,3 +182,75 @@ def test_opportunity_report_is_read_only(db, monkeypatch):
 
     assert report["items"]
     assert finding.status == before_status == "open"
+
+
+
+def test_risk_reduction_plan_recalculates_marginal_steps(db, monkeypatch):
+    agent = make_agent()
+    critical = make_finding("plan-critical", "critical", 9.8, 0.95, True)
+    high = make_finding("plan-high", "high", 8.5, 0.6, False)
+    medium = make_finding("plan-medium", "medium", 5.0, 0.1, False)
+    for finding in (critical, high, medium):
+        finding.agent = agent
+    db.add_all([agent, critical, high, medium])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 1)
+
+    report = main.risk_reduction_plan_report(
+        db,
+        agent_id=agent.id,
+        reference=REFERENCE,
+        max_steps=3,
+    )
+
+    assert report["mode"] == "simulation_only"
+    assert report["steps"]
+    assert report["steps"][0]["marginal_reduction"] >= 0
+    assert report["steps"][0]["before_score"] == report["initial_score"]
+    for index in range(1, len(report["steps"])):
+        assert report["steps"][index]["before_score"] == report["steps"][index - 1]["after_score"]
+
+
+def test_risk_reduction_plan_stops_when_appetite_reached(db, monkeypatch):
+    agent = make_agent()
+    finding = make_finding("plan-one", "critical", 9.8, 0.95, True)
+    finding.agent = agent
+    db.add_all([agent, finding])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 700)
+
+    report = main.risk_reduction_plan_report(
+        db,
+        agent_id=agent.id,
+        reference=REFERENCE,
+        max_steps=10,
+    )
+
+    if report["initial_score"] < report["risk_appetite"]:
+        assert report["steps"] == []
+        assert report["target_reached"] is True
+    else:
+        assert len(report["steps"]) <= 1
+        assert report["projected_score"] <= report["initial_score"]
+
+
+def test_risk_reduction_plan_is_read_only(db, monkeypatch):
+    agent = make_agent()
+    finding = make_finding("plan-readonly", "high", 8.0, 0.4, False)
+    finding.agent = agent
+    db.add_all([agent, finding])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 1)
+
+    main.risk_reduction_plan_report(
+        db,
+        agent_id=agent.id,
+        reference=REFERENCE,
+        max_steps=5,
+    )
+    db.refresh(finding)
+
+    assert finding.status == "open"
