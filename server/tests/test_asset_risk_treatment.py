@@ -90,6 +90,7 @@ def test_create_treatment_blocks_duplicate_active_plan(db, monkeypatch):
     db.add_all([agent, existing])
     db.commit()
     monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 0)
 
     with pytest.raises(main.HTTPException) as exc:
         main.create_asset_risk_treatment(
@@ -139,6 +140,7 @@ def test_create_and_complete_treatment_are_audited(db, monkeypatch):
     db.add(agent)
     db.commit()
     monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 0)
 
     created = main.create_asset_risk_treatment(
         agent.id,
@@ -229,3 +231,48 @@ def test_asset_report_distinguishes_in_treatment_and_overdue(db, monkeypatch):
     assert rows["overdue-treatment"]["risk"]["governance_status"] == "treatment_overdue"
     assert report["summary"]["in_treatment_above_appetite"] == 1
     assert report["summary"]["overdue_treatment_above_appetite"] == 1
+
+
+
+def test_treatment_is_rejected_when_asset_is_within_appetite(db, monkeypatch):
+    agent = make_agent()
+    db.add(agent)
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 700)
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.create_asset_risk_treatment(
+            agent.id,
+            AssetRiskTreatmentCreate(
+                owner="Infra",
+                action="Aplicar correção planejada",
+                due_at=REFERENCE + timedelta(days=10),
+            ),
+            principal={"actor": "user:admin", "role": "admin"},
+            db=db,
+        )
+
+    assert exc.value.status_code == 409
+
+
+def test_treatment_rejects_whitespace_fields_after_strip(db, monkeypatch):
+    agent = make_agent()
+    db.add(agent)
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 0)
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.create_asset_risk_treatment(
+            agent.id,
+            AssetRiskTreatmentCreate(
+                owner="  ",
+                action="     ",
+                due_at=REFERENCE + timedelta(days=10),
+            ),
+            principal={"actor": "user:admin", "role": "admin"},
+            db=db,
+        )
+
+    assert exc.value.status_code == 400
