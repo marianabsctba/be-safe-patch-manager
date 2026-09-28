@@ -709,7 +709,9 @@ function renderAssetRisk() {
     ['Políticas', summary.risk_policies || 0],
     ['Acima', summary.above_risk_appetite || 0],
     ['Aceitos', summary.accepted_above_appetite || 0],
-    ['Sem aceite', summary.unaccepted_above_appetite || 0],
+    ['Em tratamento', summary.in_treatment_above_appetite || 0],
+    ['Tratamento vencido', summary.overdue_treatment_above_appetite || 0],
+    ['Sem ação', summary.untreated_above_appetite || summary.unaccepted_above_appetite || 0],
   ].map(([label, value]) =>
     '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
   ).join('');
@@ -740,6 +742,7 @@ function renderAssetRisk() {
     const policy = item.risk_policy || {};
     const policyData = policy.policy || {};
     const acceptance = item.risk_acceptance || null;
+    const treatment = item.risk_treatment || null;
     const factors = Array.isArray(risk.top_factors) ? risk.top_factors : [];
     return '<tr>' +
       '<td><strong>' + esc(item.hostname || item.agent_id) + '</strong><br><small class="muted">' + esc(item.ip_address || '') + '</small></td>' +
@@ -748,6 +751,12 @@ function renderAssetRisk() {
         ' · ' + esc(policy.source === 'policy' ? (policyData.name || 'policy') : 'global') + '</small>' +
         (risk.governance_status === 'accepted'
           ? '<br>' + badge('RISCO ACEITO', 'info') + '<br><small class="muted">até ' + esc(when(acceptance && acceptance.expires_at)) + '</small>'
+          : risk.governance_status === 'treatment_overdue'
+            ? '<br>' + badge('TRATAMENTO VENCIDO', 'fail') +
+              '<br><small class="muted">' + esc((treatment && treatment.owner) || '-') + ' · ' + esc(when(treatment && treatment.due_at)) + '</small>'
+          : risk.governance_status === 'in_treatment'
+            ? '<br>' + badge('EM TRATAMENTO', 'warn') +
+              '<br><small class="muted">' + esc((treatment && treatment.owner) || '-') + ' · até ' + esc(when(treatment && treatment.due_at)) + '</small>'
           : risk.above_risk_appetite
             ? '<br>' + badge('acima do apetite', 'fail')
             : '') +
@@ -773,6 +782,11 @@ function renderAssetRisk() {
       '<td>' + (
         roleAtLeast('admin')
           ? '<button class="row-action" onclick="editAssetRiskProfile(\'' + item.agent_id + '\')">Perfil de risco</button>' +
+            (treatment && treatment.active
+              ? ' <button class="row-action" onclick="editAssetRiskTreatment(\'' + item.agent_id + '\', \'' + treatment.id + '\')">Atualizar plano</button>'
+              : risk.above_risk_appetite
+                ? ' <button class="row-action" onclick="createAssetRiskTreatment(\'' + item.agent_id + '\')">Plano de tratamento</button>'
+                : '') +
             (acceptance && acceptance.active
               ? ' <button class="row-action" onclick="revokeAssetRiskAcceptance(\'' + item.agent_id + '\', \'' + acceptance.id + '\')">Revogar aceite</button>'
               : risk.above_risk_appetite
@@ -887,6 +901,88 @@ window.editRiskPolicy = async (policyId) => {
     await load();
   } catch (error) {
     toast('Política de risco: ' + error.message, 'fail');
+  }
+};
+
+
+window.createAssetRiskTreatment = async (agentId) => {
+  if (!requireRole('admin', 'Somente admin pode criar plano de tratamento.')) return;
+
+  const owner = prompt('Owner do plano de tratamento:');
+  if (!owner || owner.trim().length < 2) return;
+  const action = prompt('Ação planejada:');
+  if (!action || action.trim().length < 5) return;
+  const daysRaw = prompt('Prazo em dias:', '30');
+  const days = Number(daysRaw);
+  if (!Number.isInteger(days) || days < 1 || days > 3650) {
+    toast('Prazo inválido.', 'fail');
+    return;
+  }
+
+  try {
+    await api('/api/admin/agents/' + agentId + '/risk-treatments', {
+      method: 'POST',
+      body: JSON.stringify({
+        owner: owner.trim(),
+        action: action.trim(),
+        due_at: new Date(Date.now() + days * 86400000).toISOString(),
+      }),
+    });
+    toast('Plano de tratamento criado.');
+    await load();
+  } catch (error) {
+    toast('Plano de tratamento: ' + error.message, 'fail');
+  }
+};
+
+window.editAssetRiskTreatment = async (agentId, treatmentId) => {
+  if (!requireRole('admin', 'Somente admin pode alterar plano de tratamento.')) return;
+  const item = state.assetRisk && Array.isArray(state.assetRisk.assets)
+    ? state.assetRisk.assets.find((asset) => asset.agent_id === agentId)
+    : null;
+  const treatment = item && item.risk_treatment ? item.risk_treatment : null;
+  if (!treatment || treatment.id !== treatmentId) {
+    toast('Plano ativo não encontrado.', 'fail');
+    return;
+  }
+
+  const owner = prompt('Owner:', treatment.owner || '');
+  if (owner === null || owner.trim().length < 2) return;
+  const action = prompt('Ação:', treatment.action || '');
+  if (action === null || action.trim().length < 5) return;
+  const status = prompt(
+    'Status: planned, in_progress, completed ou cancelled',
+    treatment.status || 'planned'
+  );
+  if (status === null || !['planned', 'in_progress', 'completed', 'cancelled'].includes(status.trim())) {
+    toast('Status inválido.', 'fail');
+    return;
+  }
+
+  let evidence = treatment.completion_evidence || '';
+  if (status.trim() === 'completed') {
+    const entered = prompt('Evidência de conclusão (obrigatória):', evidence);
+    if (!entered || entered.trim().length < 5) {
+      toast('Informe evidência de conclusão.', 'fail');
+      return;
+    }
+    evidence = entered.trim();
+  }
+
+  try {
+    await api('/api/admin/agents/' + agentId + '/risk-treatments/' + treatmentId, {
+      method: 'PUT',
+      body: JSON.stringify({
+        owner: owner.trim(),
+        action: action.trim(),
+        status: status.trim(),
+        completion_evidence: evidence,
+      }),
+    });
+    toast('Plano de tratamento atualizado.');
+    await load();
+  } catch (error) {
+    toast('Plano de tratamento: ' + error.message, 'fail');
   }
 };
 
