@@ -441,3 +441,24 @@ def test_remediation_hub_includes_patch_confidence(db, monkeypatch):
 
     assert item["patch_confidence"] is not None
     assert item["patch_confidence"]["success_rate"] == 100.0
+    assert item["patch_confidence"]["confidence"] == "medium"
+    assert item["deployment_guidance"]["mode"] == "pilot_then_expand"
+    assert item["deployment_guidance"]["suggested_ring_percent"] == 10
+
+
+
+def test_remediation_hub_guidance_is_conservative_without_history(db, monkeypatch):
+    agent = make_agent("hub-guidance-none")
+    finding = make_finding("hub-guidance-none-f", "critical", 9.8, 0.95, True)
+    finding.agent = agent
+    finding.patch_refs_json = main.dump(["pkg-no-history"])
+    db.add_all([agent, finding])
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+
+    report = main.remediation_hub_report(db, REFERENCE)
+    item = next(row for row in report["items"] if row["patch_ref"] == "pkg-no-history")
+
+    assert item["patch_confidence"] is None
+    assert item["deployment_guidance"]["mode"] == "pilot_collect_evidence"
+    assert item["deployment_guidance"]["suggested_ring_percent"] == 10
