@@ -245,3 +245,57 @@ def test_dynamic_project_separates_scope_departure_from_remediation(db, monkeypa
     assert data["tracked_open_findings"] == 1
     assert data["progress_percent"] == 0.0
     assert data["achieved"] is False
+
+
+
+def test_project_snapshot_history_tracks_burndown(db, monkeypatch):
+    agent = make_agent("history-agent", ["prod"])
+    f1 = make_finding("history-f1", agent)
+    f2 = make_finding("history-f2", agent)
+    db.add_all([agent, f1, f2])
+    db.commit()
+
+    result = create_project(db, monkeypatch, name="History project")
+    project_id = result["project"]["id"]
+
+    initial = main.remediation_project_history(db, project_id)
+    assert len(initial["items"]) == 1
+    assert initial["items"][0]["tracked_open_findings"] == 2
+    assert initial["items"][0]["progress_percent"] == 0.0
+
+    f1.status = "remediated"
+    f1.resolved_at = REFERENCE
+    db.commit()
+
+    main.capture_remediation_project_snapshots(
+        db,
+        source="test-burndown",
+        reference=REFERENCE + timedelta(hours=1),
+        minimum_interval_seconds=0,
+        project_ids={project_id},
+    )
+    history = main.remediation_project_history(db, project_id)
+    assert len(history["items"]) == 2
+    assert history["items"][0]["tracked_open_findings"] == 1
+    assert history["items"][0]["progress_percent"] == 50.0
+    assert history["items"][0]["source"] == "test-burndown"
+
+
+def test_project_snapshot_interval_prevents_noise(db, monkeypatch):
+    agent = make_agent("history-interval-agent", ["prod"])
+    db.add_all([agent, make_finding("history-interval-f", agent)])
+    db.commit()
+
+    result = create_project(db, monkeypatch, name="Interval project")
+    project_id = result["project"]["id"]
+
+    capture = main.capture_remediation_project_snapshots(
+        db,
+        source="too-soon",
+        reference=REFERENCE + timedelta(minutes=10),
+        minimum_interval_seconds=3600,
+        project_ids={project_id},
+    )
+
+    assert capture["created"] == 0
+    assert capture["skipped"] == 1
