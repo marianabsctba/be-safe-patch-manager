@@ -4601,6 +4601,13 @@ def create_asset_risk_policy(
 ):
     name = body.name.strip()
     target_tag = body.target_tag.strip().lower()
+    reason = body.reason.strip()
+    if len(name) < 3:
+        raise HTTPException(status_code=400, detail="risk policy name must contain at least 3 non-space characters")
+    if not target_tag:
+        raise HTTPException(status_code=400, detail="risk policy target tag is required")
+    if len(reason) < 5:
+        raise HTTPException(status_code=400, detail="risk policy reason must contain at least 5 non-space characters")
     if db.query(AssetRiskPolicy).filter(AssetRiskPolicy.name == name).first():
         raise HTTPException(status_code=409, detail="risk policy name already exists")
 
@@ -4611,7 +4618,7 @@ def create_asset_risk_policy(
         risk_appetite=body.risk_appetite,
         priority=body.priority,
         enabled=body.enabled,
-        reason=body.reason.strip(),
+        reason=reason,
         created_by=principal["actor"],
         updated_by=principal["actor"],
     )
@@ -4655,6 +4662,8 @@ def update_asset_risk_policy(
     previous_target_tag = str(policy.target_tag or "").strip().lower()
     if body.name is not None:
         name = body.name.strip()
+        if len(name) < 3:
+            raise HTTPException(status_code=400, detail="risk policy name must contain at least 3 non-space characters")
         duplicate = db.query(AssetRiskPolicy).filter(
             AssetRiskPolicy.name == name,
             AssetRiskPolicy.id != policy.id,
@@ -4663,14 +4672,20 @@ def update_asset_risk_policy(
             raise HTTPException(status_code=409, detail="risk policy name already exists")
         policy.name = name
     if body.target_tag is not None:
-        policy.target_tag = body.target_tag.strip().lower()
+        target_tag = body.target_tag.strip().lower()
+        if not target_tag:
+            raise HTTPException(status_code=400, detail="risk policy target tag is required")
+        policy.target_tag = target_tag
     if body.risk_appetite is not None:
         policy.risk_appetite = body.risk_appetite
     if body.priority is not None:
         policy.priority = body.priority
     if body.enabled is not None:
         policy.enabled = body.enabled
-    policy.reason = body.reason.strip()
+    reason = body.reason.strip()
+    if len(reason) < 5:
+        raise HTTPException(status_code=400, detail="risk policy reason must contain at least 5 non-space characters")
+    policy.reason = reason
     policy.updated_by = principal["actor"]
     policy.updated_at = now()
     db.commit()
@@ -4763,7 +4778,10 @@ def update_asset_risk_profile(
         if normalized_controls is not None
         else None
     )
-    profile.reason = body.reason.strip()
+    reason = body.reason.strip()
+    if len(reason) < 5:
+        raise HTTPException(status_code=400, detail="risk profile reason must contain at least 5 non-space characters")
+    profile.reason = reason
     profile.updated_by = principal["actor"]
     profile.updated_at = now()
     db.commit()
