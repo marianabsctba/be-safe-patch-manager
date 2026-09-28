@@ -122,6 +122,24 @@ groups:
           description: Um ou mais agentes não conseguem coletar alguma métrica de saúde esperada.
 
 
+      - alert: PatchManagerRemediationProjectOverdue
+        expr: patch_manager_remediation_projects_overdue > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Remediation Project vencido
+          description: Existe pelo menos um Remediation Project ativo ou aguardando verificação após o prazo definido.
+
+      - alert: PatchManagerRiskGoalOverdue
+        expr: patch_manager_risk_goals_overdue > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Risk Reduction Goal vencido
+          description: Existe pelo menos uma meta ativa de redução de risco após o prazo definido.
+
       - alert: PatchManagerRemediationEvidenceErrors
         expr: patch_manager_remediation_evidence{status="error"} > 0
         for: 10m
