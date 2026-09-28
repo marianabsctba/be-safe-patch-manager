@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.20.0
+
+- control plane e dashboard passam para versão 0.20.0; agente permanece em 0.16.0;
+- adicionado Remediation Hub agrupando findings pela mesma patch reference;
+- impacto do Remediation Hub é recalculado por ativo antes da agregação, evitando soma incorreta de deltas independentes;
+- grupos exibem findings cobertos, ativos afetados, CVEs, redução projetada e quantidade de ativos que cruzariam abaixo do appetite;
+- adicionado Asset Accountability em `AssetRiskProfile` com owner, business service e environment;
+- migration `0013_asset_accountability` adiciona o contexto de accountability sem alterar a fórmula do Asset Risk;
+- relatório de Asset Risk passa a mostrar cobertura de owner e ativos críticos/altos sem owner;
+- console exibe accountability por ativo e permite editar o contexto no perfil de risco;
+- adicionado Active Threat Watch baseado em sinais objetivos de CISA KEV, EPSS alto e ransomware known;
+- Active Threat Watch agrupa por CVE e mostra ativos afetados, exposição externa, criticidade, patch refs e sinais de ameaça;
+- adicionado Patch Confidence baseado no histórico local de jobs `install_updates`;
+- Patch Confidence mostra success rate, amostra, falhas, stalled/blocked e classificação high/medium/low/insufficient_data;
+- Remediation Hub passa a exibir Patch Confidence quando existe histórico local da mesma patch reference;
+- documentação deixa explícito que Active Threat Watch não é classificação própria de threat research e que Patch Confidence não representa telemetria global de fabricante.
+
 ## 0.19.0
 
 - control plane e dashboard passam para versão 0.19.0; agente permanece em 0.16.0;
