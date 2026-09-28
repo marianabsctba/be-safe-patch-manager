@@ -1238,6 +1238,9 @@ function renderVulnerabilities() {
       </td>
       <td>${when(item.last_seen)}</td>
       <td>
+        ${item.status === 'open' && item.matched
+          ? '<button class="row-action" onclick="simulateFindingRiskImpact(\'' + item.id + '\')">Simular impacto</button>'
+          : ''}
         ${item.status === 'open' && item.matched && roleAtLeast('operator')
           ? '<button class="row-action" onclick="prepareCampaignFromFinding(\'' + item.id + '\')">Criar campanha</button>'
           : ''}
@@ -1254,6 +1257,38 @@ function renderVulnerabilities() {
     </tr>
   `).join('');
 }
+
+window.simulateFindingRiskImpact = async (findingId) => {
+  const finding = state.vulnerabilities.find((item) => item.id === findingId);
+  if (!finding || !finding.agent_id) {
+    toast('Finding não correlacionado a um ativo.', 'fail');
+    return;
+  }
+
+  try {
+    const result = await api('/api/admin/agents/' + finding.agent_id + '/risk-simulation', {
+      method: 'POST',
+      body: JSON.stringify({ finding_ids: [findingId] }),
+    });
+    const before = result.before || {};
+    const after = result.after || {};
+    const impact = result.impact || {};
+    const target = $('#riskSimulationResult');
+    if (target) {
+      target.innerHTML =
+        '<div><span>Ativo</span><strong>' + esc((result.asset || {}).hostname || finding.hostname || finding.agent_id) + '</strong></div>' +
+        '<div><span>Score atual</span><strong>' + esc(before.score == null ? '-' : before.score) + '</strong></div>' +
+        '<div><span>Score projetado</span><strong>' + esc(after.score == null ? '-' : after.score) + '</strong></div>' +
+        '<div><span>Redução</span><strong>' + esc((impact.delta || 0) + ' (' + (impact.reduction_percent || 0) + '%)') + '</strong></div>' +
+        '<div><span>Apetite</span><strong>' + esc(result.risk_appetite == null ? '-' : result.risk_appetite) + '</strong></div>' +
+        '<div><span>Cruza abaixo</span><strong>' + esc(impact.crosses_below_appetite ? 'sim' : 'não') + '</strong></div>';
+    }
+    toast('Simulação calculada. Nenhum finding foi alterado.');
+  } catch (error) {
+    toast('Simulação de risco: ' + error.message, 'fail');
+  }
+};
+
 
 window.createSlaException = async (findingId) => {
   if (!requireRole('admin', 'Perfil admin necessário.')) return;
