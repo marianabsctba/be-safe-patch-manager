@@ -14,7 +14,7 @@ from .database import SessionLocal
 from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding
 
 
-APP_VERSION = "0.23.0"
+APP_VERSION = "0.24.0"
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
