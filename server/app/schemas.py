@@ -191,6 +191,20 @@ class AgentMtlsBindRequest(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+class AssetRiskTreatmentCreate(BaseModel):
+    owner: str = Field(min_length=2, max_length=255)
+    action: str = Field(min_length=5, max_length=2000)
+    due_at: datetime
+
+
+class AssetRiskTreatmentUpdate(BaseModel):
+    owner: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    action: Optional[str] = Field(default=None, min_length=5, max_length=2000)
+    due_at: Optional[datetime] = None
+    status: Optional[str] = None
+    completion_evidence: Optional[str] = Field(default=None, max_length=4000)
+
+
 class AssetRiskAcceptanceCreate(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
     expires_at: datetime
