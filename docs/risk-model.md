@@ -1339,7 +1339,7 @@ Exemplos de sinais que elevam atenção:
 - atraso relevante contra o progresso esperado;
 - novos findings surgindo em escopo dynamic.
 
-A migration `0017_remediation_project_intelligence` persiste esses sinais nos snapshots históricos, permitindo acompanhar backlog e risk burndown separadamente.
+A migration `0017_project_intel` persiste esses sinais nos snapshots históricos, permitindo acompanhar backlog e risk burndown separadamente.
 
 
 ## 14. Princípios de segurança
