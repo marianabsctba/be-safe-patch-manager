@@ -11,7 +11,7 @@ from prometheus_client.core import GaugeMetricFamily
 from sqlalchemy import func, text
 
 from .database import SessionLocal
-from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RiskReductionGoal, VulnerabilityFinding
+from .models import AdminUser, Agent, Campaign, IntegrationState, PatchJob, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding
 
 
 APP_VERSION = "0.23.0"
@@ -454,6 +454,70 @@ class PatchManagerCollector:
             )
             overdue_project_metric.add_metric([], overdue_projects)
             yield overdue_project_metric
+
+            active_project_ids = {
+                project_id
+                for (project_id,) in db.query(RemediationProject.id).filter(
+                    RemediationProject.status.in_(["active", "awaiting_verification"])
+                ).all()
+            }
+            latest_project_snapshots = {}
+            if active_project_ids:
+                for snapshot in db.query(RemediationProjectSnapshot).filter(
+                    RemediationProjectSnapshot.project_id.in_(active_project_ids)
+                ).order_by(
+                    RemediationProjectSnapshot.project_id.asc(),
+                    RemediationProjectSnapshot.captured_at.desc(),
+                ).all():
+                    latest_project_snapshots.setdefault(snapshot.project_id, snapshot)
+
+            attention_counts = {}
+            remaining_risk_reduction = 0.0
+            realized_risk_reduction = 0.0
+            project_kev_findings = 0
+            project_sla_breached = 0
+            for snapshot in latest_project_snapshots.values():
+                attention = str(snapshot.attention_status or "unknown")
+                attention_counts[attention] = attention_counts.get(attention, 0) + 1
+                remaining_risk_reduction += float(snapshot.remaining_risk_reduction or 0.0)
+                realized_risk_reduction += float(snapshot.realized_risk_reduction or 0.0)
+                project_kev_findings += int(snapshot.kev_findings or 0)
+                project_sla_breached += int(snapshot.sla_breached or 0)
+
+            project_attention = GaugeMetricFamily(
+                "patch_manager_remediation_projects_attention",
+                "Active Remediation Projects by attention state.",
+                labels=["status"],
+            )
+            for status in ("critical", "needs_attention", "watch", "on_track"):
+                project_attention.add_metric([status], attention_counts.get(status, 0))
+            yield project_attention
+
+            for name, description, value in [
+                (
+                    "patch_manager_remediation_projects_remaining_risk_reduction",
+                    "Projected Asset Risk reduction still available in active Remediation Projects.",
+                    remaining_risk_reduction,
+                ),
+                (
+                    "patch_manager_remediation_projects_realized_risk_reduction",
+                    "Asset Risk reduction realized from project baselines.",
+                    realized_risk_reduction,
+                ),
+                (
+                    "patch_manager_remediation_projects_kev_findings",
+                    "Open KEV findings tracked by active Remediation Projects.",
+                    project_kev_findings,
+                ),
+                (
+                    "patch_manager_remediation_projects_sla_breached",
+                    "Open SLA-breached findings tracked by active Remediation Projects.",
+                    project_sla_breached,
+                ),
+            ]:
+                metric = GaugeMetricFamily(name, description)
+                metric.add_metric([], value)
+                yield metric
 
             risk_goals = GaugeMetricFamily(
                 "patch_manager_risk_goals",
