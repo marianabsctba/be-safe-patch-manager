@@ -137,6 +137,7 @@ class RemediationProject(Base):
     patch_ref = Column(String(255), nullable=False, index=True)
     scope_mode = Column(String(32), nullable=False, default="static")
     scope_tag = Column(String(128), nullable=False, default="", index=True)
+    scope_filter_json = Column(Text, nullable=False, default="{}")
     owner = Column(String(255), nullable=False)
     due_at = Column(DateTime(timezone=True), nullable=False, index=True)
     status = Column(String(32), nullable=False, default="active", index=True)
