@@ -101,6 +101,7 @@ class CampaignCreate(BaseModel):
     prepare_rollback: bool = True
     rollback_required: bool = False
     target_agent_id: str = ""
+    target_agent_ids: List[str] = Field(default_factory=list, max_length=500)
     target_finding_id: str = ""
 
 
