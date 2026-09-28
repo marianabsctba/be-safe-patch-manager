@@ -5167,10 +5167,16 @@ def list_vulnerabilities(
     status: str | None = None,
     severity: str | None = None,
     agent_id: str | None = None,
+    limit: int = 1000,
     _=Depends(require_viewer),
     db: Session = Depends(get_db),
 ):
-    q = db.query(VulnerabilityFinding).order_by(
+    q = db.query(VulnerabilityFinding).options(
+        selectinload(VulnerabilityFinding.agent),
+        selectinload(VulnerabilityFinding.sla_exceptions),
+        selectinload(VulnerabilityFinding.remediation_evidence).selectinload(RemediationEvidence.campaign),
+        selectinload(VulnerabilityFinding.remediation_evidence).selectinload(RemediationEvidence.agent),
+    ).order_by(
         VulnerabilityFinding.last_seen.desc(),
     )
     if status:
@@ -5179,13 +5185,17 @@ def list_vulnerabilities(
         q = q.filter(VulnerabilityFinding.severity == severity.lower())
     if agent_id:
         q = q.filter(VulnerabilityFinding.agent_id == agent_id)
-    items = [serialize_vulnerability(item) for item in q.limit(1000).all()]
+    # Risk is calculated from scanner + threat-intel context in Python.
+    # Apply the response limit only after risk ordering so an older urgent
+    # finding cannot be hidden by a recency-first SQL LIMIT.
+    items = [serialize_vulnerability(item) for item in q.all()]
     items.sort(key=lambda item: (
         item["status"] != "open",
         -(item.get("risk") or {}).get("score", 0),
         -float(item.get("cvss") or 0),
+        -(datetime.fromisoformat(item["last_seen"]).timestamp() if item.get("last_seen") else 0),
     ))
-    return items
+    return items[:max(1, min(limit, 5000))]
 
 
 @app.post("/api/admin/vulnerabilities/import")
