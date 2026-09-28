@@ -321,6 +321,7 @@ function renderAll() {
   renderBusinessContext();
   renderRemediationPerformance();
   renderRiskGoals();
+  renderRiskProgramOverview();
   renderRiskReductionOpportunities();
   renderAssetRisk();
   renderVulnerabilities();
@@ -388,6 +389,61 @@ function renderSummary(summary) {
     </article>
   `).join('');
 }
+
+function renderRiskProgramOverview() {
+  const target = $('#riskProgramOverview');
+  if (!target) return;
+
+  const risk = (state.assetRisk || {}).summary || {};
+  const threat = (state.activeThreatWatch || {}).summary || {};
+  const hub = state.remediationHub || {};
+  const hubSummary = hub.summary || {};
+  const perf = (state.remediationPerformance || {}).summary || {};
+  const business = (state.businessContext || {}).summary || {};
+  const goals = (state.riskGoals || {}).summary || {};
+  const topRemediation = Array.isArray(hub.items) && hub.items.length ? hub.items[0] : null;
+  const topThreat = state.activeThreatWatch && Array.isArray(state.activeThreatWatch.items) && state.activeThreatWatch.items.length
+    ? state.activeThreatWatch.items[0]
+    : null;
+
+  const metric = (label, value, hint) =>
+    '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong>' +
+    (hint ? '<small class="muted">' + esc(hint) + '</small>' : '') + '</div>';
+
+  const metrics = [
+    metric('Acima do appetite', risk.above_risk_appetite || 0, (risk.untreated_above_appetite || 0) + ' sem ação'),
+    metric('Threat-active assets', threat.affected_assets || 0, (threat.external_asset_exposures || 0) + ' exposições externas'),
+    metric('Owner coverage', (business.owner_coverage_percent == null ? 0 : business.owner_coverage_percent) + '%', (business.critical_high_without_owner || 0) + ' critical/high sem owner'),
+    metric('MTTR mediano', perf.median_mttr_hours == null ? '-' : perf.median_mttr_hours + 'h', 'finding first_seen → resolved_at'),
+    metric('Evidência verificada', perf.verified_evidence_rate_percent == null ? '-' : perf.verified_evidence_rate_percent + '%', 'ciclos terminais'),
+    metric('Patch success', perf.patch_job_success_rate_percent == null ? '-' : perf.patch_job_success_rate_percent + '%', 'jobs concluídos'),
+    metric('Goals at risk', goals.at_risk || 0, (goals.overdue || 0) + ' overdue'),
+    metric('Remediation groups', hubSummary.remediation_groups || 0, (hubSummary.findings_covered || 0) + ' findings cobertos'),
+  ];
+
+  let decision = '<div class="empty-state">Sem recomendação agregada disponível.</div>';
+  if (topRemediation || topThreat) {
+    decision = '<div class="risk-contributor"><span><strong>Próxima maior alavanca</strong><br><small class="muted">' +
+      esc(topRemediation
+        ? topRemediation.patch_ref + ' · ' + topRemediation.asset_count + ' ativos · ' + topRemediation.finding_count + ' findings'
+        : 'sem grupo de patch disponível') +
+      '</small></span><strong>' +
+      esc(topRemediation ? '-' + topRemediation.risk_reduction : '-') +
+      '</strong></div>' +
+      '<div class="risk-contributor"><span><strong>Threat Watch prioritário</strong><br><small class="muted">' +
+      esc(topThreat
+        ? topThreat.cve + ' · ' + (topThreat.signals || []).join(' · ')
+        : 'sem sinal ativo') +
+      '</small></span><strong>' +
+      esc(topThreat ? topThreat.asset_count + ' ativos' : '-') +
+      '</strong></div>';
+  }
+
+  target.innerHTML =
+    '<div class="integration-details">' + metrics.join('') + '</div>' +
+    '<div class="panel-subsection">' + decision + '</div>';
+}
+
 
 function riskGoalPaceBadge(status) {
   if (status === 'achieved' || status === 'completed') return badge('ATINGIDA', 'ok');
