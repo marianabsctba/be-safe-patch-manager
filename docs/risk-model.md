@@ -514,6 +514,58 @@ above_appetite
 
 Se houver aceite e plano ativos simultaneamente, o estado principal exibido é `accepted`, mas o plano continua registrado e consultável.
 
+## 7.4. Risk Reduction Simulation
+
+A simulação estima o impacto da remediação de um ou mais findings no Asset Risk sem alterar nenhum dado real.
+
+Entrada:
+
+```json
+{
+  "finding_ids": ["finding-id-1", "finding-id-2"]
+}
+```
+
+Endpoint:
+
+```http
+POST /api/admin/agents/{agent_id}/risk-simulation
+```
+
+A resposta inclui:
+
+- score antes;
+- score projetado;
+- quantidade de findings antes/depois;
+- delta absoluto;
+- percentual de redução;
+- appetite efetivo;
+- indicação de cruzamento abaixo do appetite;
+- policy efetiva.
+
+A simulação usa o mesmo `asset_risk_score` da produção. Os findings informados são removidos apenas do conjunto temporário usado no cálculo.
+
+Ela **não**:
+
+- muda status do finding;
+- altera evidência;
+- cria campanha;
+- grava snapshot;
+- altera histórico;
+- fecha vulnerabilidade.
+
+Exemplo:
+
+```text
+score atual: 812
+score projetado: 641
+redução: 171 (21.1%)
+appetite: 700
+cruza abaixo do appetite: sim
+```
+
+A intenção é apoiar priorização de remediação antes da execução.
+
 ## 8. Decomposição do Asset Risk
 
 O endpoint de Asset Risk retorna `decomposition`.
