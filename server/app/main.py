@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
 from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, IntegrationState, PatchJob, RemediationEvidence, VulnerabilityFinding, VulnerabilitySlaException
@@ -1022,18 +1022,23 @@ def serialize_asset_risk_policy(policy: AssetRiskPolicy) -> dict:
     }
 
 
-def effective_asset_risk_policy(db: Session, agent: Agent) -> dict:
+def effective_asset_risk_policy(
+    db: Session,
+    agent: Agent,
+    policies: list[AssetRiskPolicy] | None = None,
+) -> dict:
     tags = {
         str(tag).strip().lower()
         for tag in load(agent.tags, [])
         if str(tag).strip()
     }
-    policies = db.query(AssetRiskPolicy).filter(
-        AssetRiskPolicy.enabled.is_(True)
-    ).order_by(
-        AssetRiskPolicy.priority.desc(),
-        AssetRiskPolicy.name.asc(),
-    ).all()
+    if policies is None:
+        policies = db.query(AssetRiskPolicy).filter(
+            AssetRiskPolicy.enabled.is_(True)
+        ).order_by(
+            AssetRiskPolicy.priority.desc(),
+            AssetRiskPolicy.name.asc(),
+        ).all()
 
     for policy in policies:
         if str(policy.target_tag or "").strip().lower() in tags:
@@ -1373,9 +1378,10 @@ def capture_asset_risk_snapshots(
     source: str = "manual",
     reference: datetime | None = None,
     minimum_interval_seconds: int = 3600,
+    agent_ids: set[str] | None = None,
 ) -> dict:
     reference = reference or now()
-    report = asset_risk_report(db, reference)
+    report = asset_risk_report(db, reference, agent_ids=agent_ids)
     created = 0
     skipped = 0
 
@@ -1455,14 +1461,33 @@ def asset_risk_history(db: Session, agent_id: str | None = None, limit: int = 50
     }
 
 
-def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
+def asset_risk_report(
+    db: Session,
+    reference: datetime | None = None,
+    agent_ids: set[str] | None = None,
+) -> dict:
     reference = reference or now()
-    agents = db.query(Agent).order_by(Agent.hostname.asc()).all()
+    agent_query = db.query(Agent).options(
+        selectinload(Agent.vulnerabilities),
+        selectinload(Agent.risk_profile),
+        selectinload(Agent.risk_acceptances),
+        selectinload(Agent.risk_treatments),
+    )
+    if agent_ids:
+        agent_query = agent_query.filter(Agent.id.in_(agent_ids))
+    agents = agent_query.order_by(Agent.hostname.asc()).all()
+    policies = db.query(AssetRiskPolicy).filter(
+        AssetRiskPolicy.enabled.is_(True)
+    ).order_by(
+        AssetRiskPolicy.priority.desc(),
+        AssetRiskPolicy.name.asc(),
+    ).all()
+
     rows = []
     for agent in agents:
         findings = list(agent.vulnerabilities or [])
         risk = asset_risk_score(agent, findings, reference)
-        policy = effective_asset_risk_policy(db, agent)
+        policy = effective_asset_risk_policy(db, agent, policies=policies)
         acceptance = active_asset_risk_acceptance(agent, reference)
         treatment = active_asset_risk_treatment(agent, reference)
         risk["risk_appetite"] = policy["risk_appetite"]
@@ -1545,7 +1570,7 @@ def asset_risk_report(db: Session, reference: datetime | None = None) -> dict:
         "low": sum(1 for row in rows if row["risk"]["level"] == "low"),
         "external": sum(1 for row in rows if row["risk"]["exposure"]["external"]),
         "risk_appetite": min(1000, ASSET_RISK_APPETITE),
-        "risk_policies": db.query(AssetRiskPolicy).filter(AssetRiskPolicy.enabled.is_(True)).count(),
+        "risk_policies": len(policies),
         "above_risk_appetite": sum(
             1 for row in rows
             if row["risk"]["above_risk_appetite"]
@@ -4609,6 +4634,7 @@ def update_asset_risk_profile(
         db,
         source=f"risk_profile:{principal['actor']}",
         minimum_interval_seconds=0,
+        agent_ids={agent.id},
     )
     result = serialize_asset_risk_profile(profile)
     audit(
