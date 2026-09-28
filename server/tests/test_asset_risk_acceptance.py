@@ -107,6 +107,7 @@ def test_acceptance_create_and_revoke_are_audited(db, monkeypatch):
     db.add(agent)
     db.commit()
     monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 0)
 
     created = main.create_asset_risk_acceptance(
         agent.id,
@@ -154,6 +155,7 @@ def test_duplicate_active_acceptance_is_blocked(db, monkeypatch):
     db.add_all([agent, acceptance])
     db.commit()
     monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 0)
 
     with pytest.raises(main.HTTPException) as exc:
         main.create_asset_risk_acceptance(
@@ -205,3 +207,47 @@ def test_asset_report_marks_above_appetite_as_accepted(db, monkeypatch):
     assert row["risk_acceptance"]["active"] is True
     assert report["summary"]["accepted_above_appetite"] == 1
     assert report["summary"]["unaccepted_above_appetite"] == 0
+
+
+
+def test_acceptance_is_rejected_when_asset_is_within_appetite(db, monkeypatch):
+    agent = make_agent()
+    db.add(agent)
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 700)
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.create_asset_risk_acceptance(
+            agent.id,
+            AssetRiskAcceptanceCreate(
+                reason="Aceite sem risco acima do limite",
+                expires_at=REFERENCE + timedelta(days=10),
+            ),
+            principal={"actor": "user:admin", "role": "admin"},
+            db=db,
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["message"] == "asset is not above its effective risk appetite"
+
+
+def test_acceptance_rejects_whitespace_reason_after_strip(db, monkeypatch):
+    agent = make_agent()
+    db.add(agent)
+    db.commit()
+    monkeypatch.setattr(main, "now", lambda: REFERENCE)
+    monkeypatch.setattr(main, "ASSET_RISK_APPETITE", 0)
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.create_asset_risk_acceptance(
+            agent.id,
+            AssetRiskAcceptanceCreate(
+                reason="     ",
+                expires_at=REFERENCE + timedelta(days=10),
+            ),
+            principal={"actor": "user:admin", "role": "admin"},
+            db=db,
+        )
+
+    assert exc.value.status_code == 400
