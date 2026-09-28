@@ -15,6 +15,10 @@
 - adicionado Patch Confidence baseado no histórico local de jobs `install_updates`;
 - Patch Confidence mostra success rate, amostra, falhas, stalled/blocked e classificação high/medium/low/insufficient_data;
 - Remediation Hub passa a exibir Patch Confidence quando existe histórico local da mesma patch reference;
+- adicionado Business Context report por owner, business service e environment, com risco médio/máximo, appetite e coverage de governança;
+- adicionado Remediation Performance report com MTTR, success rate, evidência verificada, patch duration e breaches abertos;
+- tendência de Asset Risk passa a carregar os dois snapshots mais recentes de toda a frota em uma única query com window function;
+- overview executivo passa a mostrar Threat Watch, Remediation Groups, Patch Confidence baixa e Owner Coverage;
 - documentação deixa explícito que Active Threat Watch não é classificação própria de threat research e que Patch Confidence não representa telemetria global de fabricante.
 
 ## 0.19.0
