@@ -4279,7 +4279,6 @@ def create_asset_risk_treatment(
         raise HTTPException(status_code=400, detail="risk treatment owner must contain at least 2 non-space characters")
     if len(action) < 5:
         raise HTTPException(status_code=400, detail="risk treatment action must contain at least 5 non-space characters")
-    require_asset_above_risk_appetite(db, agent)
 
     due_at = body.due_at
     if due_at.tzinfo is None:
@@ -4287,6 +4286,7 @@ def create_asset_risk_treatment(
     if due_at <= now():
         raise HTTPException(status_code=400, detail="risk treatment due date must be in the future")
 
+    require_asset_above_risk_appetite(db, agent)
     existing = active_asset_risk_treatment(agent)
     if existing:
         raise HTTPException(
@@ -4429,7 +4429,6 @@ def create_asset_risk_acceptance(
     reason = body.reason.strip()
     if len(reason) < 5:
         raise HTTPException(status_code=400, detail="risk acceptance reason must contain at least 5 non-space characters")
-    require_asset_above_risk_appetite(db, agent)
 
     expires_at = body.expires_at
     if expires_at.tzinfo is None:
@@ -4440,6 +4439,7 @@ def create_asset_risk_acceptance(
     if expires_at > current + timedelta(days=365):
         raise HTTPException(status_code=400, detail="risk acceptance cannot exceed 365 days")
 
+    require_asset_above_risk_appetite(db, agent, current)
     existing = active_asset_risk_acceptance(agent, current)
     if existing:
         raise HTTPException(
