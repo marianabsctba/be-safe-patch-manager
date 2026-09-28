@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.32.0
+
+- control plane e dashboard passam para versão 0.32.0; agente permanece em 0.16.0;
+- adicionado Patch Feed Orchestrator com providers persistentes, health, scheduling e sync manual;
+- adicionada migration 0024_patch_feed_providers;
+- provider curated passa a alimentar o Patch Metadata Enrichment Engine usando priority/TTL próprios;
+- circuit breaker abre após N falhas consecutivas e usa cooldown configurável; reset administrativo disponível;
+- worker em background sincroniza apenas providers enabled e due, compartilhando lock com sync manual;
+- console ganha painel de providers com status, record count, último sucesso, erro e ações de sync/reset;
+- adicionados testes de scheduling, sync, failure counter, circuit open e reset.
+
 ## 0.31.0
 
 - control plane e dashboard passam para versão 0.31.0; agente permanece em 0.16.0;

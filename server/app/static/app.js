@@ -16,6 +16,7 @@ const state = {
   activeThreatWatch: null,
   patchConfidence: null,
   patchCatalog: null,
+  patchFeeds: null,
   patchBlockRules: null,
   businessContext: null,
   remediationPerformance: null,
@@ -246,7 +247,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchCatalog, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchCatalog, patchFeeds, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -258,6 +259,7 @@ async function load() {
       api('/api/admin/reports/active-threat-watch'),
       api('/api/admin/reports/patch-confidence'),
       api('/api/admin/reports/patch-catalog'),
+      api('/api/admin/patch-feeds'),
       api('/api/admin/patch-block-rules'),
       api('/api/admin/reports/business-context'),
       api('/api/admin/reports/remediation-performance'),
@@ -283,6 +285,7 @@ async function load() {
     state.activeThreatWatch = activeThreatWatch;
     state.patchConfidence = patchConfidence;
     state.patchCatalog = patchCatalog;
+    state.patchFeeds = patchFeeds;
     state.patchBlockRules = patchBlockRules;
     state.businessContext = businessContext;
     state.remediationPerformance = remediationPerformance;
@@ -329,6 +332,7 @@ function renderAll() {
   renderActiveThreatWatch();
   renderPatchConfidence();
   renderPatchCatalog();
+  renderPatchFeeds();
   renderBusinessContext();
   renderRemediationPerformance();
   renderRiskGoals();
@@ -1885,6 +1889,79 @@ window.editPatchLifecycle = async (encodedPatchRef) => {
     await load();
   } catch (error) {
     toast('Patch lifecycle: ' + error.message, 'fail');
+  }
+};
+
+
+
+function renderPatchFeeds() {
+  const report = state.patchFeeds || {};
+  const summary = report.summary || {};
+  const providers = Array.isArray(report.providers) ? report.providers : [];
+  const stats = $('#patchFeedStats');
+  const table = $('#patchFeedTable');
+  if (!stats || !table) return;
+
+  stats.innerHTML = [
+    ['Providers', summary.providers || 0],
+    ['Enabled', summary.enabled || 0],
+    ['Healthy', summary.healthy || 0],
+    ['Degraded', summary.degraded || 0],
+    ['Circuit open', summary.circuit_open || 0],
+    ['Records', summary.records || 0],
+  ].map(([label, value]) =>
+    '<div><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>'
+  ).join('');
+
+  if (!providers.length) {
+    table.innerHTML = '<tr><td colspan="8"><div class="empty-state">Nenhum provider configurado. O core está pronto para curated/vendor adapters.</div></td></tr>';
+    return;
+  }
+
+  table.innerHTML = providers.map((item) => {
+    const status = item.circuit_open
+      ? badge('CIRCUIT OPEN', 'fail')
+      : item.last_error
+        ? badge('DEGRADED', 'warn')
+        : item.enabled
+          ? badge('HEALTHY', 'ok')
+          : badge('DISABLED', 'muted-badge');
+    const actions = roleAtLeast('operator')
+      ? '<button class="row-action" onclick="syncPatchFeed(\'' + esc(item.id) + '\')">Sync</button>' +
+        (item.circuit_open && roleAtLeast('admin') ? ' <button class="row-action" onclick="resetPatchFeedCircuit(\'' + esc(item.id) + '\')">Reset circuit</button>' : '')
+      : '';
+    return '<tr>' +
+      '<td><strong>' + esc(item.name) + '</strong><br><small class="muted">' + esc(item.provider_type) + '</small></td>' +
+      '<td>' + status + '</td>' +
+      '<td><strong>' + esc(item.priority) + '</strong><br><small class="muted">TTL ' + esc(item.ttl_hours) + 'h</small></td>' +
+      '<td><small>' + esc(item.interval_seconds) + 's<br>' + esc(item.failure_threshold) + ' falhas → ' + esc(item.cooldown_seconds) + 's cooldown</small></td>' +
+      '<td><strong>' + esc(item.record_count) + '</strong></td>' +
+      '<td><small>' + esc(item.last_success_at ? when(item.last_success_at) : 'nunca') + '</small></td>' +
+      '<td><small>' + esc(item.last_error || '-') + '</small></td>' +
+      '<td>' + actions + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+window.syncPatchFeed = async (id) => {
+  if (!requireRole('operator')) return;
+  try {
+    await api('/api/admin/patch-feeds/' + encodeURIComponent(id) + '/sync', { method: 'POST' });
+    toast('Feed sincronizado.');
+    await load();
+  } catch (error) {
+    toast('Feed sync: ' + error.message, 'fail');
+  }
+};
+
+window.resetPatchFeedCircuit = async (id) => {
+  if (!requireRole('admin')) return;
+  try {
+    await api('/api/admin/patch-feeds/' + encodeURIComponent(id) + '/circuit/reset', { method: 'POST' });
+    toast('Circuit breaker resetado.');
+    await load();
+  } catch (error) {
+    toast('Circuit reset: ' + error.message, 'fail');
   }
 };
 

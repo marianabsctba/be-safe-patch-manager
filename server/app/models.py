@@ -408,6 +408,31 @@ class PatchMetadataEvidence(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class PatchFeedProvider(Base):
+    __tablename__ = "patch_feed_providers"
+
+    id = Column(String(36), primary_key=True)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    provider_type = Column(String(64), nullable=False, default="curated", index=True)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    priority = Column(Integer, nullable=False, default=500)
+    ttl_hours = Column(Integer, nullable=False, default=168)
+    interval_seconds = Column(Integer, nullable=False, default=3600)
+    failure_threshold = Column(Integer, nullable=False, default=3)
+    cooldown_seconds = Column(Integer, nullable=False, default=1800)
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+    circuit_open_until = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    last_success_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=False, default="")
+    last_summary_json = Column(Text, nullable=False, default="{}")
+    records_json = Column(Text, nullable=False, default="[]")
+    created_by = Column(String(255), nullable=False)
+    updated_by = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class PatchBlockRule(Base):
     __tablename__ = "patch_block_rules"
 

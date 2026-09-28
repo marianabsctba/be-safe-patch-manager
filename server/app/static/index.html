@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.31</small>
+          <small>dashboard v0.32</small>
         </div>
       </div>
     </aside>
@@ -381,6 +381,36 @@
               </div>
             </div>
 
+
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">PATCH FEED ORCHESTRATOR</p>
+                  <h3>Providers, health e circuit breaker</h3>
+                </div>
+              </div>
+              <div id="patchFeedStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Providers independentes alimentam o enrichment engine com prioridade e TTL próprios. Falhas consecutivas abrem circuit breaker para evitar sync em loop contra uma fonte degradada.
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Provider</th>
+                      <th>Status</th>
+                      <th>Priority / TTL</th>
+                      <th>Schedule / Circuit</th>
+                      <th>Records</th>
+                      <th>Último sucesso</th>
+                      <th>Erro</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="patchFeedTable"></tbody>
+                </table>
+              </div>
+            </div>
             <div class="panel-subsection">
               <div class="panel-head">
                 <div>

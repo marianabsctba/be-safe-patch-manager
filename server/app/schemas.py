@@ -316,6 +316,28 @@ class PatchMetadataImportRequest(BaseModel):
     records: List[PatchMetadataRecord] = Field(min_length=1, max_length=5000)
 
 
+class PatchFeedProviderCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
+    provider_type: str = Field(default="curated", max_length=64)
+    enabled: bool = True
+    priority: int = Field(default=500, ge=1, le=1000)
+    ttl_hours: int = Field(default=168, ge=1, le=8760)
+    interval_seconds: int = Field(default=3600, ge=60, le=604800)
+    failure_threshold: int = Field(default=3, ge=1, le=20)
+    cooldown_seconds: int = Field(default=1800, ge=60, le=86400)
+    records: List[PatchMetadataRecord] = Field(default_factory=list, max_length=5000)
+
+
+class PatchFeedProviderUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    priority: Optional[int] = Field(default=None, ge=1, le=1000)
+    ttl_hours: Optional[int] = Field(default=None, ge=1, le=8760)
+    interval_seconds: Optional[int] = Field(default=None, ge=60, le=604800)
+    failure_threshold: Optional[int] = Field(default=None, ge=1, le=20)
+    cooldown_seconds: Optional[int] = Field(default=None, ge=60, le=86400)
+    records: Optional[List[PatchMetadataRecord]] = Field(default=None, max_length=5000)
+
+
 class PatchCatalogLifecycleUpdate(BaseModel):
     vendor: Optional[str] = Field(default=None, max_length=128)
     product: Optional[str] = Field(default=None, max_length=255)

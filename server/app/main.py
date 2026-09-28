@@ -21,8 +21,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -32,7 +32,7 @@ from .observability import metrics_response, prometheus_http_middleware, readine
 from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.31.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.32.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -1612,6 +1612,168 @@ def import_patch_metadata(
         "summary": stats,
         "results": results[:500],
     }
+
+
+
+PATCH_FEED_STOP = threading.Event()
+PATCH_FEED_WAKE = threading.Event()
+PATCH_FEED_SYNC_LOCK = threading.Lock()
+
+
+def serialize_patch_feed_provider(provider: PatchFeedProvider, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    circuit = provider.circuit_open_until
+    if circuit and circuit.tzinfo is None:
+        circuit = circuit.replace(tzinfo=timezone.utc)
+    circuit_open = bool(circuit and circuit > reference)
+    return {
+        "id": provider.id,
+        "name": provider.name,
+        "provider_type": provider.provider_type,
+        "enabled": provider.enabled,
+        "priority": provider.priority,
+        "ttl_hours": provider.ttl_hours,
+        "interval_seconds": provider.interval_seconds,
+        "failure_threshold": provider.failure_threshold,
+        "cooldown_seconds": provider.cooldown_seconds,
+        "consecutive_failures": provider.consecutive_failures,
+        "circuit_open": circuit_open,
+        "circuit_open_until": circuit.isoformat() if circuit else None,
+        "last_attempt_at": provider.last_attempt_at.isoformat() if provider.last_attempt_at else None,
+        "last_success_at": provider.last_success_at.isoformat() if provider.last_success_at else None,
+        "last_error": provider.last_error,
+        "last_summary": load(provider.last_summary_json, {}),
+        "record_count": len(load(provider.records_json, [])),
+        "created_by": provider.created_by,
+        "updated_by": provider.updated_by,
+        "created_at": provider.created_at.isoformat() if provider.created_at else None,
+        "updated_at": provider.updated_at.isoformat() if provider.updated_at else None,
+    }
+
+
+def patch_feed_due(provider: PatchFeedProvider, reference: datetime | None = None) -> bool:
+    reference = reference or now()
+    if not provider.enabled:
+        return False
+    if provider.circuit_open_until:
+        circuit = provider.circuit_open_until
+        if circuit.tzinfo is None:
+            circuit = circuit.replace(tzinfo=timezone.utc)
+        if circuit > reference:
+            return False
+    if not provider.last_attempt_at:
+        return True
+    attempted = provider.last_attempt_at
+    if attempted.tzinfo is None:
+        attempted = attempted.replace(tzinfo=timezone.utc)
+    return attempted + timedelta(seconds=provider.interval_seconds) <= reference
+
+
+def run_patch_feed_provider(db: Session, provider: PatchFeedProvider, actor: str = "system:patch-feed") -> dict:
+    reference = now()
+    if provider.circuit_open_until:
+        circuit = provider.circuit_open_until
+        if circuit.tzinfo is None:
+            circuit = circuit.replace(tzinfo=timezone.utc)
+        if circuit > reference:
+            return {
+                "provider": provider.name,
+                "status": "circuit_open",
+                "circuit_open_until": circuit.isoformat(),
+            }
+
+    provider.last_attempt_at = reference
+    provider.last_error = ""
+    db.commit()
+
+    try:
+        if provider.provider_type != "curated":
+            raise RuntimeError(f"provider type not implemented: {provider.provider_type}")
+
+        raw_records = load(provider.records_json, [])
+        body = PatchMetadataImportRequest(
+            source=f"feed:{provider.name}",
+            priority=provider.priority,
+            observed_at=reference,
+            ttl_hours=provider.ttl_hours,
+            dry_run=False,
+            records=raw_records,
+        )
+        result = import_patch_metadata(db, body, actor)
+        summary = result["summary"]
+        provider.last_success_at = reference
+        provider.last_error = ""
+        provider.consecutive_failures = 0
+        provider.circuit_open_until = None
+        provider.last_summary_json = dump(summary)
+        db.commit()
+        return {
+            "provider": provider.name,
+            "status": "ok",
+            "summary": summary,
+        }
+    except Exception as exc:
+        provider.consecutive_failures = int(provider.consecutive_failures or 0) + 1
+        provider.last_error = str(exc)[:2000]
+        if provider.consecutive_failures >= provider.failure_threshold:
+            provider.circuit_open_until = reference + timedelta(seconds=provider.cooldown_seconds)
+        provider.last_summary_json = dump({
+            "error": provider.last_error,
+            "consecutive_failures": provider.consecutive_failures,
+        })
+        db.commit()
+        raise
+
+
+def patch_feed_orchestrator_report(db: Session) -> dict:
+    reference = now()
+    providers = db.query(PatchFeedProvider).order_by(PatchFeedProvider.name.asc()).all()
+    items = [serialize_patch_feed_provider(item, reference) for item in providers]
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": {
+            "providers": len(items),
+            "enabled": sum(1 for x in items if x["enabled"]),
+            "healthy": sum(1 for x in items if x["enabled"] and not x["circuit_open"] and not x["last_error"]),
+            "degraded": sum(1 for x in items if x["enabled"] and bool(x["last_error"]) and not x["circuit_open"]),
+            "circuit_open": sum(1 for x in items if x["circuit_open"]),
+            "records": sum(int(x["record_count"] or 0) for x in items),
+        },
+        "providers": items,
+    }
+
+
+def patch_feed_worker():
+    while not PATCH_FEED_STOP.is_set():
+        db = SessionLocal()
+        try:
+            due = db.query(PatchFeedProvider).filter(PatchFeedProvider.enabled.is_(True)).all()
+            for provider in due:
+                if PATCH_FEED_STOP.is_set():
+                    break
+                if not patch_feed_due(provider):
+                    continue
+                try:
+                    with PATCH_FEED_SYNC_LOCK:
+                        run_patch_feed_provider(db, provider)
+                except Exception:
+                    pass
+        finally:
+            db.close()
+        PATCH_FEED_WAKE.wait(30)
+        PATCH_FEED_WAKE.clear()
+
+
+@app.on_event("startup")
+def start_patch_feed_worker():
+    thread = threading.Thread(target=patch_feed_worker, name="patch-feed-orchestrator", daemon=True)
+    thread.start()
+
+
+@app.on_event("shutdown")
+def stop_patch_feed_worker():
+    PATCH_FEED_STOP.set()
+    PATCH_FEED_WAKE.set()
 
 
 def patch_release_intelligence(entry: PatchCatalogEntry, reference: datetime | None = None) -> dict:
@@ -6554,6 +6716,119 @@ def active_threat_watch(
 
 
 
+
+
+
+@app.get("/api/admin/patch-feeds")
+def list_patch_feeds(
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return patch_feed_orchestrator_report(db)
+
+
+@app.post("/api/admin/patch-feeds")
+def create_patch_feed(
+    body: PatchFeedProviderCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    provider_type = body.provider_type.strip().lower()
+    if provider_type != "curated":
+        raise HTTPException(status_code=400, detail="only curated provider is available in this version")
+    if db.query(PatchFeedProvider).filter(func.lower(PatchFeedProvider.name) == body.name.strip().lower()).first():
+        raise HTTPException(status_code=409, detail="patch feed provider name already exists")
+    provider = PatchFeedProvider(
+        id=str(uuid.uuid4()),
+        name=body.name.strip(),
+        provider_type=provider_type,
+        enabled=body.enabled,
+        priority=body.priority,
+        ttl_hours=body.ttl_hours,
+        interval_seconds=body.interval_seconds,
+        failure_threshold=body.failure_threshold,
+        cooldown_seconds=body.cooldown_seconds,
+        records_json=dump([item.model_dump(mode="json", exclude_none=True) for item in body.records]),
+        created_by=principal["actor"],
+        updated_by=principal["actor"],
+    )
+    db.add(provider)
+    db.commit()
+    audit(db, principal["actor"], "patch_feed.created", "patch_feed", provider.id, {
+        "name": provider.name,
+        "provider_type": provider.provider_type,
+        "record_count": len(body.records),
+    })
+    PATCH_FEED_WAKE.set()
+    return serialize_patch_feed_provider(provider)
+
+
+@app.patch("/api/admin/patch-feeds/{provider_id}")
+def update_patch_feed(
+    provider_id: str,
+    body: PatchFeedProviderUpdate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    provider = db.get(PatchFeedProvider, provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="patch feed provider not found")
+    before = serialize_patch_feed_provider(provider)
+    for field in ("enabled", "priority", "ttl_hours", "interval_seconds", "failure_threshold", "cooldown_seconds"):
+        value = getattr(body, field)
+        if value is not None:
+            setattr(provider, field, value)
+    if body.records is not None:
+        provider.records_json = dump([item.model_dump(mode="json", exclude_none=True) for item in body.records])
+    provider.updated_by = principal["actor"]
+    db.commit()
+    after = serialize_patch_feed_provider(provider)
+    audit(db, principal["actor"], "patch_feed.updated", "patch_feed", provider.id, {
+        "before": before,
+        "after": after,
+    })
+    PATCH_FEED_WAKE.set()
+    return after
+
+
+@app.post("/api/admin/patch-feeds/{provider_id}/sync")
+def sync_patch_feed(
+    provider_id: str,
+    principal=Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    provider = db.get(PatchFeedProvider, provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="patch feed provider not found")
+    try:
+        with PATCH_FEED_SYNC_LOCK:
+            result = run_patch_feed_provider(db, provider, principal["actor"])
+        audit(db, principal["actor"], "patch_feed.sync", "patch_feed", provider.id, result)
+        return result
+    except RuntimeError as exc:
+        audit(db, principal["actor"], "patch_feed.sync.failed", "patch_feed", provider.id, {
+            "error": str(exc)[:500],
+        })
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/patch-feeds/{provider_id}/circuit/reset")
+def reset_patch_feed_circuit(
+    provider_id: str,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    provider = db.get(PatchFeedProvider, provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="patch feed provider not found")
+    provider.consecutive_failures = 0
+    provider.circuit_open_until = None
+    provider.last_error = ""
+    provider.updated_by = principal["actor"]
+    db.commit()
+    audit(db, principal["actor"], "patch_feed.circuit.reset", "patch_feed", provider.id, {})
+    PATCH_FEED_WAKE.set()
+    return serialize_patch_feed_provider(provider)
 
 
 @app.post("/api/admin/patch-catalog/metadata/import")
