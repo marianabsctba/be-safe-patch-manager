@@ -8,16 +8,16 @@
   .h1{font-size:42px;font-weight:800}.h2{font-size:26px;font-weight:700}.h3{font-size:20px;font-weight:700}
   .body{font-size:18px}.small{font-size:15px}.tiny{font-size:13px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 </style><rect class="bg" width="1600" height="900"/>
-<text x="64" y="80" class="txt h1">Risk-Based Vulnerability Management</text><text x="64" y="118" class="muted body">finding → contexto → governança → redução projetada</text>
+<text x="64" y="80" class="txt h1">Exposure & Remediation Management</text><text x="64" y="118" class="muted body">finding → threat context → accountability → remediation impact → evidence</text>
 <rect x="80" y="190" width="300" height="180" rx="22" class="panel"/><text x="104" y="232" class="pink h2">Finding Risk</text><text x="104" y="274" class="txt small">CVSS · EPSS · KEV</text><text x="104" y="306" class="muted small">ransomware · idade</text><text x="104" y="338" class="muted small">1–100</text><rect x="455" y="190" width="300" height="180" rx="22" class="panel"/><text x="479" y="232" class="pink h2">Asset Context</text><text x="479" y="274" class="txt small">criticidade 1–5</text><text x="479" y="306" class="muted small">exposição externa</text><text x="479" y="338" class="muted small">controles compensatórios</text><rect x="830" y="190" width="300" height="180" rx="22" class="panel"/><text x="854" y="232" class="pink h2">Asset Risk</text><text x="854" y="274" class="txt small">score 0–1000</text><text x="854" y="306" class="muted small">appetite por policy</text><text x="854" y="338" class="muted small">trend + history</text><rect x="1205" y="190" width="315" height="180" rx="22" class="panel"/><text x="1229" y="232" class="pink h2">Governança</text><text x="1229" y="274" class="txt small">within / above</text><text x="1229" y="306" class="muted small">in treatment / overdue</text><text x="1229" y="338" class="muted small">accepted</text>
 <path d="M380 280 H445 M755 280 H820 M1130 280 H1195" class="line"/>
 <rect x="160" y="500" width="380" height="210" rx="22" class="panel"/>
-<text x="188" y="544" class="txt h2">Risk Reduction Opportunities</text><text x="188" y="582" class="muted small">impacto individual de cada finding</text>
-<text x="188" y="626" class="pink h3">812 → 641 · -171 · 21,1%</text><text x="188" y="662" class="green small">cruza abaixo do appetite</text>
+<text x="188" y="544" class="txt h2">Remediation Hub</text><text x="188" y="582" class="muted small">patch groups · assets · CVEs · impact</text>
+<text x="188" y="626" class="pink h3">12 findings · 6 assets · -428 risk</text><text x="188" y="662" class="green small">Patch Confidence · owner coverage</text>
 <rect x="610" y="500" width="380" height="210" rx="22" class="panel"/>
-<text x="638" y="544" class="txt h2">Risk Reduction Plan</text><text x="638" y="582" class="muted small">ganho marginal recalculado por etapa</text>
-<text x="638" y="624" class="txt small">1. CVE-A 812 → 641</text><text x="638" y="654" class="txt small">2. CVE-B 641 → 548</text>
+<text x="638" y="544" class="txt h2">Active Threat Watch</text><text x="638" y="582" class="muted small">CISA KEV · EPSS · ransomware</text>
+<text x="638" y="624" class="txt small">CVE-2026-X · KEV · EPSS 94%</text><text x="638" y="654" class="txt small">4 assets · 2 external · patch known</text>
 <rect x="1060" y="500" width="380" height="210" rx="22" class="panel"/>
-<text x="1088" y="544" class="txt h2">Campaign Candidate</text><text x="1088" y="582" class="muted small">pré-preenche draft elegível</text>
-<text x="1088" y="624" class="txt small">finding · ativo · patch refs</text><text x="1088" y="654" class="yellow small">deploy continua explícito</text>
+<text x="1088" y="544" class="txt h2">Asset Accountability</text><text x="1088" y="582" class="muted small">owner · business service · environment</text>
+<text x="1088" y="624" class="txt small">contexto sem alterar score</text><text x="1088" y="654" class="yellow small">governança continua explícita</text>
 </svg>
