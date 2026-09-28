@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.35</small>
+          <small>dashboard v0.36</small>
         </div>
       </div>
     </aside>
@@ -445,6 +445,15 @@
                 <table>
                   <thead><tr><th>Policy</th><th>Patch</th><th>Decisão</th><th>Ativos</th><th>Sinais</th><th>Controles</th><th>Motivos</th></tr></thead>
                   <tbody id="autoPatchDecisionTable"></tbody>
+                </table>
+              </div>
+              <div class="vuln-note">
+                Decision Ledger registra cada avaliação explícita como snapshot imutável, com ator, resumo e decisões daquele momento.
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Quando</th><th>Ator</th><th>Modo</th><th>Decisões</th><th>Resultado</th><th>Drafts</th><th></th></tr></thead>
+                  <tbody id="autoPatchHistoryTable"></tbody>
                 </table>
               </div>
             </div>

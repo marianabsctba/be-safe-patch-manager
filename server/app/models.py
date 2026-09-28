@@ -461,6 +461,23 @@ class AutoPatchPolicy(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class AutoPatchEvaluation(Base):
+    __tablename__ = "auto_patch_evaluations"
+
+    id = Column(String(36), primary_key=True)
+    actor = Column(String(255), nullable=False, index=True)
+    create_drafts = Column(Boolean, nullable=False, default=False, index=True)
+    policies = Column(Integer, nullable=False, default=0)
+    decisions = Column(Integer, nullable=False, default=0)
+    drafts_created = Column(Integer, nullable=False, default=0)
+    blocked = Column(Integer, nullable=False, default=0)
+    holds = Column(Integer, nullable=False, default=0)
+    ready = Column(Integer, nullable=False, default=0)
+    summary_json = Column(Text, nullable=False, default="{}")
+    result_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+
 class PatchFreezeWindow(Base):
     __tablename__ = "patch_freeze_windows"
 

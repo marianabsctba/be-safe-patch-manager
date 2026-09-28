@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.36.0
+
+- control plane e dashboard passam para versão 0.36.0; agente permanece em 0.16.0;
+- adicionada migration 0028_auto_patch_evaluations e Decision Ledger imutável para avaliações explícitas;
+- Auto Patch Simulation passa a mostrar funil de escopo: missing total, excluídos por OS, tag e external, selecionados e amostra de ativos;
+- decisões elegíveis expõem blast radius do ring inicial em percentual e quantidade de endpoints;
+- cada POST de evaluate persiste ator, modo, summary e snapshot completo das decisões; consultas de histórico não reexecutam policies;
+- console ganha tabela de histórico, detalhe do ledger e ação Simular por policy/patch;
+- adicionados testes de scope funnel, persistência do ledger, simulation e blast radius.
+
 ## 0.35.0
 
 - control plane e dashboard passam para versão 0.35.0; agente permanece em 0.16.0;

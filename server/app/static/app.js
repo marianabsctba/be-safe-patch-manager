@@ -19,6 +19,7 @@ const state = {
   patchFeeds: null,
   freezeWindows: null,
   autoPatch: null,
+  autoPatchHistory: [],
   patchBlockRules: null,
   businessContext: null,
   remediationPerformance: null,
@@ -249,7 +250,7 @@ async function load() {
   $('#refresh').classList.add('spin');
 
   try {
-    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchCatalog, patchFeeds, freezeWindows, autoPatch, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
+    const [summary, agents, vulnerabilities, greenbone, threatIntel, remediationQueue, remediationHub, remediationProjects, activeThreatWatch, patchConfidence, patchCatalog, patchFeeds, freezeWindows, autoPatch, autoPatchHistory, patchBlockRules, businessContext, remediationPerformance, riskGoals, riskReduction, assetRisk, riskPolicies, agentRelease, campaigns, jobs, audit, users] = await Promise.all([
       api('/api/admin/summary'),
       api('/api/admin/agents'),
       api('/api/admin/vulnerabilities'),
@@ -264,6 +265,7 @@ async function load() {
       api('/api/admin/patch-feeds'),
       api('/api/admin/freeze-windows'),
       api('/api/admin/reports/auto-patch-decisions'),
+      api('/api/admin/auto-patch/history?limit=20'),
       api('/api/admin/patch-block-rules'),
       api('/api/admin/reports/business-context'),
       api('/api/admin/reports/remediation-performance'),
@@ -292,6 +294,7 @@ async function load() {
     state.patchFeeds = patchFeeds;
     state.freezeWindows = freezeWindows;
     state.autoPatch = autoPatch;
+    state.autoPatchHistory = autoPatchHistory;
     state.patchBlockRules = patchBlockRules;
     state.businessContext = businessContext;
     state.remediationPerformance = remediationPerformance;
@@ -1958,7 +1961,8 @@ function renderAutoPatch() {
   const stats = $('#autoPatchStats');
   const policyTable = $('#autoPatchPolicyTable');
   const decisionTable = $('#autoPatchDecisionTable');
-  if (!stats || !policyTable || !decisionTable) return;
+  const historyTable = $('#autoPatchHistoryTable');
+  if (!stats || !policyTable || !decisionTable || !historyTable) return;
 
   stats.innerHTML = [
     ['Policies', summary.policies || 0],
@@ -2010,10 +2014,77 @@ function renderAutoPatch() {
         (item.health_gate_required ? 'health · ' : '') +
         (item.rollback_required ? 'rollback' : '') +
       '</small></td>' +
-      '<td><small>' + esc((item.reasons || []).join(' · ')) + '</small></td>' +
+      '<td><small>' + esc((item.reasons || []).join(' · ')) + '</small>' +
+        (item.policy_id && item.patch_ref ? '<br><button class="row-action" onclick="simulateAutoPatch(\'' + esc(item.policy_id) + '\',\'' + esc(item.patch_ref) + '\')">Simular</button>' : '') +
+      '</td>' +
     '</tr>';
   }).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhuma decisão gerada pelas policies atuais.</div></td></tr>';
+
+  const history = Array.isArray(state.autoPatchHistory) ? state.autoPatchHistory : [];
+  historyTable.innerHTML = history.length ? history.map((item) => {
+    return '<tr>' +
+      '<td><small>' + esc(when(item.created_at)) + '</small></td>' +
+      '<td><strong>' + esc(item.actor || '-') + '</strong></td>' +
+      '<td>' + badge(item.create_drafts ? 'DRAFT RUN' : 'SIMULATION', item.create_drafts ? 'warn' : 'info') + '</td>' +
+      '<td><strong>' + esc(item.decisions || 0) + '</strong></td>' +
+      '<td><small>' + esc(item.ready || 0) + ' ready · ' + esc(item.blocked || 0) + ' blocked · ' + esc(item.holds || 0) + ' holds</small></td>' +
+      '<td><strong>' + esc(item.drafts_created || 0) + '</strong></td>' +
+      '<td><button class="row-action" onclick="showAutoPatchHistory(\'' + esc(item.id) + '\')">Detalhes</button></td>' +
+    '</tr>';
+  }).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhuma avaliação registrada.</div></td></tr>';
 }
+
+window.showAutoPatchHistory = async (id) => {
+  try {
+    const item = await api('/api/admin/auto-patch/history/' + encodeURIComponent(id));
+    const result = item.result || {};
+    const summary = result.summary || {};
+    const decisions = Array.isArray(result.decisions) ? result.decisions : [];
+    const lines = decisions.slice(0, 30).map((x) =>
+      (x.policy_name || '-') + ' · ' + (x.patch_ref || '-') + ' · ' + (x.status || '-') +
+      ' · ' + ((x.reasons || []).join(' / ') || '-')
+    );
+    alert(
+      'Auto Patch Evaluation\n\n' +
+      'Ator: ' + (item.actor || '-') + '\n' +
+      'Data: ' + (item.created_at ? when(item.created_at) : '-') + '\n' +
+      'Policies: ' + (summary.policies || 0) + '\n' +
+      'Decisions: ' + (summary.decisions || 0) + '\n' +
+      'Drafts: ' + (summary.drafts_created || 0) + '\n\n' +
+      lines.join('\n')
+    );
+  } catch (error) {
+    toast('Decision ledger: ' + error.message, 'fail');
+  }
+};
+
+window.simulateAutoPatch = async (policyId, patchRef) => {
+  try {
+    const result = await api('/api/admin/auto-patch/simulate', {
+      method: 'POST',
+      body: JSON.stringify({ policy_id: policyId, patch_ref: patchRef }),
+    });
+    const scope = result.scope || {};
+    const p = result.preconditions || {};
+    const d = result.decision || {};
+    alert(
+      'Auto Patch Simulation\n\n' +
+      'Policy: ' + ((result.policy || {}).name || '-') + '\n' +
+      'Patch: ' + ((result.patch || {}).patch_ref || '-') + '\n\n' +
+      'Missing total: ' + (scope.missing_total || 0) + '\n' +
+      'Excluded OS: ' + (scope.excluded_os || 0) + '\n' +
+      'Excluded tag: ' + (scope.excluded_tag || 0) + '\n' +
+      'Excluded external: ' + (scope.excluded_external || 0) + '\n' +
+      'Selected: ' + (scope.selected || 0) + '\n\n' +
+      'Confidence: ' + (((p.confidence || {}).actual) || '-') + '\n' +
+      'EOL: ' + (((p.eol || {}).state) || '-') + '\n' +
+      'Decision: ' + (d.status || 'not matched') + '\n' +
+      'Reasons: ' + ((d.reasons || []).join(' · ') || '-')
+    );
+  } catch (error) {
+    toast('Auto Patch Simulation: ' + error.message, 'fail');
+  }
+};
 
 window.runAutoPatch = async (createDrafts) => {
   if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;

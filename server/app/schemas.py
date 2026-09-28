@@ -389,6 +389,12 @@ class AutoPatchPolicyUpdate(BaseModel):
 
 
 
+class AutoPatchSimulationRequest(BaseModel):
+    policy_id: str = Field(min_length=1, max_length=36)
+    patch_ref: str = Field(min_length=1, max_length=255)
+
+
+
 class PatchFreezeWindowCreate(BaseModel):
     name: str = Field(min_length=3, max_length=128)
     target_os: str = Field(default="all", max_length=32)

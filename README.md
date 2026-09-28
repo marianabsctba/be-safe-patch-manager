@@ -2,7 +2,7 @@
 
 Patch management **agent-based** para Windows e Linux, com inventário, campanhas, rollout progressivo, health gates, janelas de manutenção, evidências de execução e proteção de rollback.
 
-> **Status:** MVP / laboratório. Control plane v0.35; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
+> **Status:** MVP / laboratório. Control plane v0.36; agente v0.16. A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
 
@@ -952,3 +952,8 @@ Apache License 2.0. Veja [LICENSE](LICENSE).
 - confidence abaixo do floor segura a automação; EOL é bloqueado por padrão; superseded pode virar leaf observada, skip ou allow.
 - Patch Guard e Change Freeze bloqueiam a decisão antes de draft; Approval Gate, health gate e rollback são herdados pela campanha.
 - targeting usa `patch_applicability` persistente, não a amostra visual do catálogo; drafts são deduplicados por policy + effective patch.
+
+- Auto Patch Simulation expõe o funil de escopo por policy/patch: missing total, excluídos por OS/tag/exposição e selecionados.
+- decisões elegíveis incluem blast radius explícito (ativos selecionados, percentual e quantidade do ring inicial) e amostra dos endpoints.
+- Decision Ledger persiste cada avaliação explícita com ator, modo, resumo e snapshot completo das decisões; GET de histórico não reexecuta policies.
+- o ledger permite comparar por que uma patch estava ready/blocked/hold em momentos diferentes sem depender do estado atual do catálogo.
