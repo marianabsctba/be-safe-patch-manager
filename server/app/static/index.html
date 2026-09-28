@@ -219,6 +219,42 @@
                 <div class="empty-state">Clique em “Timeline” em um ativo.</div>
               </div>
             </div>
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">BUSINESS CONTEXT</p>
+                  <h3>Risco por owner, serviço e ambiente</h3>
+                </div>
+              </div>
+              <div id="businessContextStats" class="integration-details"></div>
+              <div class="vuln-note">
+                Usa o Asset Risk existente. Owner, business service e environment ajudam a segmentar responsabilidade e impacto, mas não adicionam multiplicador oculto ao score.
+              </div>
+
+              <p class="section-kicker">POR OWNER</p>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Owner</th><th>Ativos</th><th>Risco</th><th>Acima</th><th>Sem ação</th><th>Gov. coverage</th><th>Owner coverage</th><th>Findings</th></tr></thead>
+                  <tbody id="businessContextOwner"></tbody>
+                </table>
+              </div>
+
+              <p class="section-kicker">POR BUSINESS SERVICE</p>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Serviço</th><th>Ativos</th><th>Risco</th><th>Acima</th><th>Sem ação</th><th>Gov. coverage</th><th>Owner coverage</th><th>Findings</th></tr></thead>
+                  <tbody id="businessContextService"></tbody>
+                </table>
+              </div>
+
+              <p class="section-kicker">POR ENVIRONMENT</p>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Ambiente</th><th>Ativos</th><th>Risco</th><th>Acima</th><th>Sem ação</th><th>Gov. coverage</th><th>Owner coverage</th><th>Findings</th></tr></thead>
+                  <tbody id="businessContextEnvironment"></tbody>
+                </table>
+              </div>
+            </div>
             <div class="vuln-note">
               Score agregado por ativo usando risco dos findings, criticidade 1–5, exposição externa e controles compensatórios. Treatment Plan e Risk Acceptance governam a resposta ao risco sem alterar o score nem a evidência do scanner.
             </div>
@@ -252,6 +288,24 @@
               </div>
             </div>
             <div id="remediationQueueStats" class="integration-details"></div>
+            <div class="panel-subsection">
+              <div class="panel-head">
+                <div>
+                  <p class="section-kicker">REMEDIATION PERFORMANCE</p>
+                  <h3>MTTR, evidência e sucesso operacional</h3>
+                </div>
+              </div>
+              <div id="remediationPerformanceStats" class="integration-details"></div>
+              <div class="vuln-note">
+                MTTR usa first_seen → resolved_at. O SLA target bruto não reconstrói pausas históricas de exceção e fica identificado separadamente.
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Severidade</th><th>Remediados</th><th>MTTR mediano</th><th>MTTR médio</th></tr></thead>
+                  <tbody id="remediationPerformanceBySeverity"></tbody>
+                </table>
+              </div>
+            </div>
             <div class="panel-subsection">
               <div class="panel-head">
                 <div>
