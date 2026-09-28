@@ -1395,6 +1395,21 @@ def serialize_remediation_project(
         if str(value)
     }
 
+    baseline_rows = (
+        db.query(VulnerabilityFinding).options(
+            selectinload(VulnerabilityFinding.agent),
+        ).filter(
+            VulnerabilityFinding.id.in_(baseline_ids)
+        ).all()
+        if baseline_ids
+        else []
+    )
+    baseline_open_ids = {
+        finding.id
+        for finding in baseline_rows
+        if finding.status == "open"
+    }
+
     if project.scope_mode == "dynamic":
         open_findings = _remediation_project_open_findings(
             db,
@@ -1408,18 +1423,10 @@ def serialize_remediation_project(
             if finding.agent_id
         }
         new_findings = current_open_ids - baseline_ids
+        scope_departures = baseline_open_ids - current_open_ids
     else:
-        rows = (
-            db.query(VulnerabilityFinding).options(
-                selectinload(VulnerabilityFinding.agent),
-            ).filter(
-                VulnerabilityFinding.id.in_(baseline_ids)
-            ).all()
-            if baseline_ids
-            else []
-        )
         open_findings = [
-            finding for finding in rows
+            finding for finding in baseline_rows
             if finding.status == "open"
         ]
         current_open_ids = {finding.id for finding in open_findings}
@@ -1429,10 +1436,11 @@ def serialize_remediation_project(
             if finding.agent_id
         }
         new_findings = set()
+        scope_departures = set()
 
     baseline_count = int(project.baseline_findings or 0)
     current_count = len(current_open_ids)
-    closed_from_baseline = len(baseline_ids - current_open_ids)
+    closed_from_baseline = max(0, baseline_count - len(baseline_open_ids))
     progress = (
         max(0.0, min(100.0, ((baseline_count - current_count) / baseline_count) * 100.0))
         if baseline_count > 0
@@ -1473,6 +1481,8 @@ def serialize_remediation_project(
         "current_open_findings": current_count,
         "current_assets": len(current_agent_ids),
         "closed_from_baseline": closed_from_baseline,
+        "baseline_open_findings": len(baseline_open_ids),
+        "scope_departures": len(scope_departures),
         "new_findings_since_baseline": len(new_findings),
         "progress_percent": round(progress, 1),
         "campaign_ready": 0 < len(current_agent_ids) <= 500,
