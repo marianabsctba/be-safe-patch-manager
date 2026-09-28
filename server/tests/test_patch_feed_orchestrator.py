@@ -55,7 +55,8 @@ def test_due_respects_interval_and_circuit():
     assert main.patch_feed_due(p,ref+timedelta(seconds=100)) is False
     assert main.patch_feed_due(p,ref+timedelta(seconds=3601)) is True
     p.circuit_open_until=ref+timedelta(hours=1)
-    assert main.patch_feed_due(p,ref+timedelta(seconds=3601)) is False
+    assert main.patch_feed_due(p,ref+timedelta(seconds=1800)) is False
+    assert main.patch_feed_due(p,ref+timedelta(seconds=3601)) is True
 
 
 def test_curated_provider_sync_enriches_catalog(db):
