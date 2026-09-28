@@ -1130,56 +1130,185 @@ window.editAssetRiskTreatment = async (agentId, treatmentId) => {
 };
 
 
+let governanceModalSubmitHandler = null;
+
+function closeGovernanceModal() {
+  const modal = $('#governanceModal');
+  if (!modal) return;
+  modal.hidden = true;
+  modal.setAttribute('aria-hidden', 'true');
+  $('#governanceFields').innerHTML = '';
+  $('#governanceError').hidden = true;
+  $('#governanceError').textContent = '';
+  governanceModalSubmitHandler = null;
+}
+
+function openGovernanceModal({
+  kicker = 'GOVERNANÇA',
+  title,
+  context = '',
+  submitLabel = 'Salvar',
+  fields = [],
+  onSubmit,
+}) {
+  $('#governanceKicker').textContent = kicker;
+  $('#governanceTitle').textContent = title;
+  $('#governanceContext').textContent = context;
+  $('#governanceSubmit').textContent = submitLabel;
+  $('#governanceError').hidden = true;
+  $('#governanceError').textContent = '';
+
+  $('#governanceFields').innerHTML = fields.map((field) => {
+    const required = field.required ? ' required' : '';
+    const minLength = field.minLength == null ? '' : ' minlength="' + esc(field.minLength) + '"';
+    const min = field.min == null ? '' : ' min="' + esc(field.min) + '"';
+    const max = field.max == null ? '' : ' max="' + esc(field.max) + '"';
+    const step = field.step == null ? '' : ' step="' + esc(field.step) + '"';
+    const wide = field.wide ? ' wide' : '';
+    const hint = field.hint ? '<small class="governance-field-hint">' + esc(field.hint) + '</small>' : '';
+    let control = '';
+
+    if (field.type === 'select') {
+      control = '<select name="' + esc(field.name) + '"' + required + '>' +
+        (field.options || []).map((option) =>
+          '<option value="' + esc(option.value) + '"' +
+          (String(option.value) === String(field.value ?? '') ? ' selected' : '') +
+          '>' + esc(option.label) + '</option>'
+        ).join('') +
+        '</select>';
+    } else if (field.type === 'textarea') {
+      control = '<textarea name="' + esc(field.name) + '"' + required + minLength + '>' +
+        esc(field.value || '') + '</textarea>';
+    } else {
+      control = '<input name="' + esc(field.name) + '" type="' + esc(field.type || 'text') + '"' +
+        ' value="' + esc(field.value ?? '') + '"' + required + minLength + min + max + step + ' />';
+    }
+
+    return '<label class="' + wide.trim() + '"><span>' + esc(field.label) + '</span>' + control + hint + '</label>';
+  }).join('');
+
+  governanceModalSubmitHandler = onSubmit;
+  const modal = $('#governanceModal');
+  modal.hidden = false;
+  modal.setAttribute('aria-hidden', 'false');
+  const first = $('#governanceFields input, #governanceFields select, #governanceFields textarea');
+  if (first) first.focus();
+}
+
+$('#governanceModalClose').addEventListener('click', closeGovernanceModal);
+$('#governanceModalBackdrop').addEventListener('click', closeGovernanceModal);
+$('#governanceCancel').addEventListener('click', closeGovernanceModal);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !$('#governanceModal').hidden) closeGovernanceModal();
+});
+
+$('#governanceForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!governanceModalSubmitHandler) return;
+
+  const submit = $('#governanceSubmit');
+  const error = $('#governanceError');
+  submit.disabled = true;
+  error.hidden = true;
+  error.textContent = '';
+  try {
+    const values = Object.fromEntries(new FormData(event.target).entries());
+    await governanceModalSubmitHandler(values);
+    closeGovernanceModal();
+  } catch (err) {
+    error.textContent = err.message || String(err);
+    error.hidden = false;
+  } finally {
+    submit.disabled = false;
+  }
+});
+
 window.createAssetRiskAcceptance = async (agentId) => {
   if (!requireRole('admin', 'Somente admin pode aceitar risco.')) return;
+  const item = state.assetRisk && Array.isArray(state.assetRisk.assets)
+    ? state.assetRisk.assets.find((asset) => asset.agent_id === agentId)
+    : null;
+  const hostname = item ? item.hostname : agentId;
+  const score = item && item.risk ? item.risk.score : '-';
+  const appetite = item && item.risk ? item.risk.risk_appetite : '-';
 
-  const reason = prompt('Motivo da aceitação de risco:');
-  if (!reason || reason.trim().length < 5) {
-    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
-    return;
-  }
-  const daysRaw = prompt('Validade da aceitação em dias (1–365):', '30');
-  const days = Number(daysRaw);
-  if (!Number.isInteger(days) || days < 1 || days > 365) {
-    toast('Validade deve ficar entre 1 e 365 dias.', 'fail');
-    return;
-  }
-
-  const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
-  try {
-    await api('/api/admin/agents/' + agentId + '/risk-acceptances', {
-      method: 'POST',
-      body: JSON.stringify({
-        reason: reason.trim(),
-        expires_at: expiresAt,
-      }),
-    });
-    toast('Risco aceito temporariamente. O score não foi alterado.');
-    await load();
-  } catch (error) {
-    toast('Aceitação de risco: ' + error.message, 'fail');
-  }
+  openGovernanceModal({
+    kicker: 'RISK ACCEPTANCE',
+    title: 'Aceitar risco temporariamente',
+    context: hostname + ' · Asset Risk ' + score + ' · appetite ' + appetite + ' · o score não será reduzido',
+    submitLabel: 'Aceitar risco',
+    fields: [
+      {
+        name: 'reason',
+        label: 'Motivo / decisão',
+        type: 'textarea',
+        required: true,
+        minLength: 5,
+        wide: true,
+        hint: 'Registre a justificativa de negócio ou técnica. A decisão ficará auditada.',
+      },
+      {
+        name: 'days',
+        label: 'Validade (dias)',
+        type: 'number',
+        value: 30,
+        min: 1,
+        max: 365,
+        step: 1,
+        required: true,
+        hint: 'Máximo de 365 dias. A expiração é automática.',
+      },
+    ],
+    onSubmit: async (values) => {
+      const days = Number(values.days);
+      if (!Number.isInteger(days) || days < 1 || days > 365) {
+        throw new Error('Validade deve ficar entre 1 e 365 dias.');
+      }
+      const reason = String(values.reason || '').trim();
+      if (reason.length < 5) throw new Error('Informe um motivo com pelo menos 5 caracteres.');
+      const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+      await api('/api/admin/agents/' + agentId + '/risk-acceptances', {
+        method: 'POST',
+        body: JSON.stringify({ reason, expires_at: expiresAt }),
+      });
+      toast('Risco aceito temporariamente. O score não foi alterado.');
+      await load();
+    },
+  });
 };
 
 window.revokeAssetRiskAcceptance = async (agentId, acceptanceId) => {
   if (!requireRole('admin', 'Somente admin pode revogar aceitação de risco.')) return;
+  const item = state.assetRisk && Array.isArray(state.assetRisk.assets)
+    ? state.assetRisk.assets.find((asset) => asset.agent_id === agentId)
+    : null;
 
-  const reason = prompt('Motivo da revogação da aceitação:');
-  if (!reason || reason.trim().length < 5) {
-    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
-    return;
-  }
-
-  try {
-    await api('/api/admin/agents/' + agentId + '/risk-acceptances/' + acceptanceId + '/revoke', {
-      method: 'POST',
-      body: JSON.stringify({ reason: reason.trim() }),
-    });
-    toast('Aceitação de risco revogada.');
-    await load();
-  } catch (error) {
-    toast('Revogação de risco: ' + error.message, 'fail');
-  }
+  openGovernanceModal({
+    kicker: 'RISK ACCEPTANCE',
+    title: 'Revogar aceitação',
+    context: (item ? item.hostname : agentId) + ' · a revogação volta a expor o estado de governança calculado',
+    submitLabel: 'Revogar aceite',
+    fields: [
+      {
+        name: 'reason',
+        label: 'Motivo da revogação',
+        type: 'textarea',
+        required: true,
+        minLength: 5,
+        wide: true,
+      },
+    ],
+    onSubmit: async (values) => {
+      const reason = String(values.reason || '').trim();
+      if (reason.length < 5) throw new Error('Informe um motivo com pelo menos 5 caracteres.');
+      await api('/api/admin/agents/' + agentId + '/risk-acceptances/' + acceptanceId + '/revoke', {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
+      toast('Aceitação de risco revogada.');
+      await load();
+    },
+  });
 };
 
 
@@ -1204,82 +1333,121 @@ window.editAssetRiskProfile = async (agentId) => {
 
   const profile = current.profile || {};
   const effective = current.effective || {};
-  const currentCriticality = profile.criticality == null
-    ? ''
-    : String(profile.criticality);
-  const criticalityRaw = prompt(
-    'Criticidade 1–5. Deixe vazio para automático por tags.\nAtual efetiva: ' +
-    String((effective.criticality || {}).score || '-'),
-    currentCriticality
-  );
-  if (criticalityRaw === null) return;
-  let criticality = null;
-  if (criticalityRaw.trim() !== '') {
-    criticality = Number(criticalityRaw);
-    if (!Number.isInteger(criticality) || criticality < 1 || criticality > 5) {
-      toast('Criticidade precisa ser um inteiro entre 1 e 5.', 'fail');
-      return;
-    }
-  }
-
   const exposureDefault = profile.external === true ? 'externo' : profile.external === false ? 'interno' : 'auto';
-  const exposureRaw = prompt('Exposição: auto, interno ou externo.', exposureDefault);
-  if (exposureRaw === null) return;
-  const exposureValue = exposureRaw.trim().toLowerCase();
-  if (!['auto', 'interno', 'externo'].includes(exposureValue)) {
-    toast('Use auto, interno ou externo.', 'fail');
-    return;
-  }
-  const external = exposureValue === 'auto' ? null : exposureValue === 'externo';
-
   const controlsDefault = Array.isArray(profile.compensating_controls)
     ? profile.compensating_controls.join(', ')
     : 'auto';
-  const controlsRaw = prompt(
-    'Controles: auto ou lista separada por vírgula.\nPermitidos: segmented, edr-protected, restricted-egress',
-    controlsDefault
-  );
-  if (controlsRaw === null) return;
 
-  let compensatingControls = null;
-  if (controlsRaw.trim().toLowerCase() !== 'auto') {
-    compensatingControls = controlsRaw
-      .split(',')
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean);
-  }
+  openGovernanceModal({
+    kicker: 'ASSET CONTEXT',
+    title: 'Perfil de risco · ' + item.hostname,
+    context:
+      'Criticidade efetiva ' + String((effective.criticality || {}).score || '-') + '/5' +
+      ' · exposição ' + ((effective.exposure || {}).external ? 'externa' : 'interna') +
+      ' · contexto explícito tem precedência sobre tags',
+    submitLabel: 'Salvar perfil',
+    fields: [
+      {
+        name: 'criticality',
+        label: 'Criticidade',
+        type: 'select',
+        value: profile.criticality == null ? '' : String(profile.criticality),
+        options: [
+          { value: '', label: 'Automática por tags' },
+          { value: '1', label: '1 · baixa' },
+          { value: '2', label: '2' },
+          { value: '3', label: '3' },
+          { value: '4', label: '4' },
+          { value: '5', label: '5 · crítica / Tier 0' },
+        ],
+      },
+      {
+        name: 'exposure',
+        label: 'Exposição',
+        type: 'select',
+        value: exposureDefault,
+        options: [
+          { value: 'auto', label: 'Automática por tags' },
+          { value: 'interno', label: 'Interno' },
+          { value: 'externo', label: 'Externo' },
+        ],
+      },
+      {
+        name: 'controls',
+        label: 'Controles compensatórios',
+        type: 'text',
+        value: controlsDefault,
+        wide: true,
+        hint: 'Use auto ou: segmented, edr-protected, restricted-egress',
+      },
+      {
+        name: 'owner',
+        label: 'Owner',
+        type: 'text',
+        value: profile.owner || '',
+        hint: 'Equipe ou responsável operacional.',
+      },
+      {
+        name: 'business_service',
+        label: 'Business service / aplicação',
+        type: 'text',
+        value: profile.business_service || '',
+      },
+      {
+        name: 'environment',
+        label: 'Environment',
+        type: 'text',
+        value: profile.environment || '',
+        hint: 'Ex.: prod, staging, dev, lab.',
+      },
+      {
+        name: 'reason',
+        label: 'Motivo da alteração',
+        type: 'textarea',
+        required: true,
+        minLength: 5,
+        wide: true,
+        hint: 'A alteração gera audit event e snapshot de Asset Risk.',
+      },
+    ],
+    onSubmit: async (values) => {
+      const criticalityRaw = String(values.criticality || '').trim();
+      const criticality = criticalityRaw === '' ? null : Number(criticalityRaw);
+      if (criticality !== null && (!Number.isInteger(criticality) || criticality < 1 || criticality > 5)) {
+        throw new Error('Criticidade precisa ficar entre 1 e 5.');
+      }
 
-  const ownerRaw = prompt('Owner responsável pelo ativo (opcional):', profile.owner || '');
-  if (ownerRaw === null) return;
-  const businessServiceRaw = prompt('Business service / aplicação (opcional):', profile.business_service || '');
-  if (businessServiceRaw === null) return;
-  const environmentRaw = prompt('Environment (ex.: prod, staging, dev, lab) (opcional):', profile.environment || '');
-  if (environmentRaw === null) return;
+      const exposureValue = String(values.exposure || 'auto').trim().toLowerCase();
+      const external = exposureValue === 'auto' ? null : exposureValue === 'externo';
 
-  const reason = prompt('Motivo da alteração do perfil de risco:');
-  if (!reason || reason.trim().length < 5) {
-    toast('Informe um motivo com pelo menos 5 caracteres.', 'fail');
-    return;
-  }
+      const controlsRaw = String(values.controls || '').trim();
+      let compensatingControls = null;
+      if (controlsRaw.toLowerCase() !== 'auto' && controlsRaw !== '') {
+        compensatingControls = controlsRaw
+          .split(',')
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean);
+      }
 
-  try {
-    await api('/api/admin/agents/' + agentId + '/risk-profile', {
-      method: 'PUT',
-      body: JSON.stringify({
-        criticality,
-        external,
-        compensating_controls: compensatingControls,
-        owner: ownerRaw.trim(),
-        business_service: businessServiceRaw.trim(),
-        environment: environmentRaw.trim().toLowerCase(),
-        reason: reason.trim(),
-      }),
-    });
-    toast('Perfil de risco atualizado e snapshot registrado.');
-    await load();
-  } catch (error) {
-    toast('Perfil de risco: ' + error.message, 'fail');
-  }
+      const reason = String(values.reason || '').trim();
+      if (reason.length < 5) throw new Error('Informe um motivo com pelo menos 5 caracteres.');
+
+      await api('/api/admin/agents/' + agentId + '/risk-profile', {
+        method: 'PUT',
+        body: JSON.stringify({
+          criticality,
+          external,
+          compensating_controls: compensatingControls,
+          owner: String(values.owner || '').trim(),
+          business_service: String(values.business_service || '').trim(),
+          environment: String(values.environment || '').trim().toLowerCase(),
+          reason,
+        }),
+      });
+      toast('Perfil de risco atualizado e snapshot registrado.');
+      await load();
+    },
+  });
 };
 
 
