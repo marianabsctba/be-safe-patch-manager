@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.40.0  
+> **Control plane:** v0.41.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -216,6 +216,34 @@ Patch Guard       PASSED  -> BLOCKED
 ```
 
 Toda tentativa de deploy também registra automaticamente um snapshot de preflight, preservando a evidência da condição operacional observada naquele momento.
+
+## Campaign Evidence Pack
+
+Cada campanha pode ser exportada como um pacote único de evidências em JSON.
+
+O pack inclui:
+
+- estado e configuração da campanha;
+- Approval Gate;
+- todos os snapshots de Preflight;
+- decisões de rings;
+- jobs e resultados;
+- Health Gate e validação pós-patch;
+- rollback state;
+- remediation evidence vinculada ao job;
+- emergency freeze override, quando houver;
+- eventos de auditoria da campanha e dos jobs.
+
+A exportação possui um manifest verificável com:
+
+- `schema`;
+- SHA-256 do pacote;
+- SHA-256 individual de cada seção;
+- algoritmo e instrução de verificação.
+
+Os hashes usam JSON UTF-8 canonicalizado com chaves ordenadas e separadores compactos.
+
+Isso permite detectar alteração em qualquer parte da evidência exportada sem depender de um score ou interpretação proprietária.
 
 ## Progressive Rollout Governance
 
@@ -702,7 +730,7 @@ O pipeline valida:
 - JavaScript;
 - pre-publish security check.
 
-A v0.38 passou o pipeline completo.
+A v0.41 passa pelo pipeline completo antes de ser considerada pronta.
 
 ## Estrutura
 
@@ -753,7 +781,7 @@ Próximas evoluções naturais:
 - patching de aplicações de terceiros;
 - ingestão adicional de CVEs;
 - integração ITSM/SOAR;
-- relatórios exportáveis;
+- relatórios executivos e compliance exportáveis;
 - testes de integração reais em endpoints Windows/Linux;
 - ativação segura equivalente do agente no Windows;
 - HA e recuperação completa periódica.
