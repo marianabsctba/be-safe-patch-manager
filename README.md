@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.55.0  
+> **Control plane:** v0.56.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -176,6 +176,23 @@ Assim o histórico consegue responder:
 > por que esta patch estava READY ontem?
 
 sem recalcular a resposta com os dados de hoje.
+
+## Policy Exceptions / Waivers
+
+A v0.56 adiciona exceções temporárias sem apagar a evidência da violação.
+
+Um waiver:
+
+- é vinculado à campanha e à **versão exata da policy por SHA-256**;
+- exige aprovação de admin e motivo mínimo;
+- possui expiração obrigatória, limitada a 30 dias;
+- não remove a violação do relatório: ela permanece marcada como `waived`;
+- deixa de valer automaticamente ao expirar;
+- pode ser revogado antes do prazo, com motivo e auditoria;
+- não sobrevive silenciosamente a uma nova versão da policy, porque o digest muda;
+- entra no Evidence Pack com criação, expiração e eventual revogação.
+
+O Preflight só deixa de bloquear quando todas as violações restantes estão cobertas por waivers ativos e vinculados à policy exata.
 
 ## Policy Bundles / GitOps
 
