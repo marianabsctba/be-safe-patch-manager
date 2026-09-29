@@ -557,6 +557,17 @@ class PatchBlockRule(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class TenantSettings(Base):
+    __tablename__ = "tenant_settings"
+
+    id = Column(String(36), primary_key=True)
+    name = Column(String(128), nullable=False, default="Be Safe")
+    locale = Column(String(16), nullable=False, default="pt-BR", index=True)
+    updated_by = Column(String(255), nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class IntegrationState(Base):
     __tablename__ = "integration_states"
 
