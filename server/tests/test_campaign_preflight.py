@@ -17,7 +17,7 @@ os.environ["THREAT_INTEL_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine
 from app import main
-from app.models import Agent, Campaign, CampaignApproval, CampaignPreflightSnapshot, PatchBlockRule
+from app.models import Agent, Campaign, CampaignApproval, CampaignPreflightSnapshot, PatchBlockRule, PatchJob
 
 
 @pytest.fixture(autouse=True)
@@ -313,3 +313,88 @@ def test_campaign_evidence_pack_preserves_job_health_and_rollback_evidence(db):
     assert "validation" in exported
     assert "rollback" in exported
     assert exported["campaign_id"] == result["campaign"]["id"]
+
+
+
+def seed_failed_patch_history(db, agent, *, failures=3, patch_ref="KB5072198", error="installer failed with exit code 1603"):
+    historical = Campaign(
+        id="history-campaign",
+        name="Historical failed rollout",
+        target_os="windows",
+        target_tag="tier0",
+        ring_percent=100,
+        action="install_updates",
+        payload_json=main.dump({"packages": [patch_ref]}),
+        status="deployed",
+    )
+    db.add(historical)
+    db.flush()
+    stamp = datetime.now(timezone.utc) - timedelta(days=1)
+    for index in range(failures):
+        db.add(PatchJob(
+            id=f"failed-{index}",
+            campaign_id=historical.id,
+            agent_id=agent.id,
+            action="install_updates",
+            payload_json=main.dump({"packages": [patch_ref]}),
+            status="failed",
+            error=error,
+            started_at=stamp,
+            finished_at=stamp + timedelta(minutes=2),
+            created_at=stamp,
+        ))
+    db.commit()
+    return historical
+
+
+def test_failure_intelligence_confirms_local_regression(db):
+    agent = make_agent(db)
+    seed_failed_patch_history(db, agent)
+
+    report = main.patch_failure_intelligence_report(db, lookback_days=30)
+
+    assert report["summary"]["confirmed_local_regressions"] == 1
+    item = report["patches"][0]
+    assert item["patch_ref"] == "KB5072198"
+    assert item["regression_state"] == "confirmed_local_regression"
+    assert item["effective_failure_rate"] == 100.0
+    assert item["failed"] == 3
+    assert report["clusters"][0]["category"] == "install_failure"
+    assert report["clusters"][0]["count"] == 3
+
+
+def test_failure_signature_normalizes_volatile_values():
+    a = main.normalize_failure_signature("Download timeout https://repo.local/a 0x80070005 code 123456")
+    b = main.normalize_failure_signature("Download timeout https://repo.local/b 0x80072efe code 987654")
+
+    assert a == b
+    assert "<url>" in a
+    assert "<hex>" in a
+    assert "<n>" in a
+
+
+def test_preflight_blocks_confirmed_matching_local_regression(db):
+    agent = make_agent(db)
+    seed_failed_patch_history(db, agent)
+    campaign = make_campaign(db)
+
+    report = main.campaign_preflight(db, campaign)
+    regression = check(report, "local_regression")
+
+    assert regression["status"] == "blocked"
+    assert regression["blocking"] is True
+    assert regression["details"]["state"] == "confirmed_local_regression"
+    assert report["readiness"] == "BLOCKED"
+    assert report["deploy_allowed"] is False
+
+
+def test_preflight_does_not_apply_regression_from_other_patch(db):
+    agent = make_agent(db)
+    seed_failed_patch_history(db, agent, patch_ref="KB0000001")
+    campaign = make_campaign(db)
+
+    report = main.campaign_preflight(db, campaign)
+    regression = check(report, "local_regression")
+
+    assert regression["status"] == "passed"
+    assert regression["blocking"] is False
