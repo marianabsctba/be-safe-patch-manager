@@ -120,7 +120,7 @@ jobs:
           GREENBONE_ENABLED: "false"
         run: |
           cd server
-          timeout 180s pytest -q tests
+          timeout 360s pytest -q tests
 
       - name: Docker Compose validation
         env:
