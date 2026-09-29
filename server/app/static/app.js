@@ -3506,6 +3506,7 @@ function campaignCard(campaign, compact = false) {
         <button class="secondary" onclick="showScopeDrift('${campaign.id}')">Scope Drift</button>
         <button class="secondary" onclick="showCampaignBlastRadius('${campaign.id}')">Impact Preview</button>
         <button class="secondary" onclick="showCampaignChangeRisk('${campaign.id}')">Change Risk</button>
+        <button class="secondary" onclick="showCampaignPolicyAsCode('${campaign.id}')">Policy Eval</button>
         <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
         <button class="secondary" onclick="verifyCampaignEvidencePackFile('${campaign.id}')">Verify Pack</button>
         <button class="secondary" onclick="showCampaignFailureIntel('${campaign.id}')">Failure Intel</button>
@@ -3995,6 +3996,34 @@ window.verifyCampaignEvidencePackFile = async (campaignId) => {
   };
   input.click();
 };
+
+window.showCampaignPolicyAsCode = async (campaignId) => {
+  try {
+    const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/policy-as-code');
+    const box = document.getElementById('preflight-' + campaignId);
+    if (!box) return;
+    const rows = (report.evaluations || []).map((item) => {
+      const state = !item.matched ? badge('N/A', 'muted-badge') : item.compliant ? badge('COMPLIANT', 'ok') : badge('VIOLATION', 'fail');
+      const violations = (item.violations || []).map((v) => v.key + ': ' + String(v.actual) + ' -> ' + String(v.expected)).join(' · ');
+      return '<tr><td><strong>' + esc(item.name) + '</strong><br><small>v' + esc(item.version) + '</small></td>' +
+        '<td>' + state + '</td><td><small>' + esc(violations || 'sem violações') + '</small></td>' +
+        '<td><code>' + esc((item.policy_sha256 || '').slice(0, 12)) + '…</code></td></tr>';
+    }).join('');
+    box.hidden = false;
+    box.innerHTML =
+      '<div class="preflight-header"><div><strong>Patch Policy-as-Code</strong><br><small class="muted">políticas versionadas e determinísticas</small></div>' +
+      badge(report.blocking ? 'BLOCKED' : 'COMPLIANT', report.blocking ? 'fail' : 'ok') + '</div>' +
+      '<div class="campaign-stats"><span>Avaliadas <strong>' + esc(report.evaluated_policies || 0) + '</strong></span>' +
+      '<span>Aplicáveis <strong>' + esc(report.matched_policies || 0) + '</strong></span>' +
+      '<span>Violações <strong>' + esc((report.violations || []).length) + '</strong></span></div>' +
+      '<div class="table-wrap"><table><thead><tr><th>Policy</th><th>Status</th><th>Resultado</th><th>SHA</th></tr></thead><tbody>' +
+      rows + '</tbody></table></div>' +
+      '<p><small class="muted">' + esc(report.note || '') + '</small></p>';
+  } catch (error) {
+    toast('Policy-as-Code: ' + error.message, 'fail');
+  }
+};
+
 
 window.showCampaignChangeRisk = async (campaignId) => {
   try {
