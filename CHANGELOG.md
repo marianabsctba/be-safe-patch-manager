@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.58.0
+
+- control plane passa para versão 0.58.0; agente permanece em 0.16.0;
+- adicionado Exception Budget / Risk Budget por owner ou business_service;
+- budget controla quantidade mensal e horas mensais de waiver;
+- relatório classifica utilização como healthy, warning ou exhausted;
+- criação de waiver calcula consumo projetado antes da aprovação;
+- estouro de budget escalona automaticamente o waiver para dual approval;
+- endpoints de criação, atualização, listagem e relatório de budgets;
+- auditoria registra criação e atualização de budgets.
+
+
 ## 0.57.0
 
 - control plane e dashboard passam para versão 0.57.0; agente permanece em 0.16.0;
