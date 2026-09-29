@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.45.0  
+> **Control plane:** v0.46.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -216,6 +216,56 @@ Patch Guard       PASSED  -> BLOCKED
 ```
 
 Toda tentativa de deploy também registra automaticamente um snapshot de preflight, preservando a evidência da condição operacional observada naquele momento.
+
+## Patch Applicability & Supersedence Guard
+
+Antes do deploy, a campanha cruza os pacotes com o Patch Catalog e a applicability observada nos endpoints reais do ring.
+
+O guard usa apenas evidência local explícita:
+
+- catálogo da patch;
+- lifecycle/EOL;
+- grafo de supersedence;
+- replacement leaf conhecido;
+- status de applicability por agente;
+- metadata/enrichment freshness.
+
+Regras principais:
+
+```text
+superseded + replacement leaf conhecido
+=> BLOCKED
+
+todos os endpoints do ring observados
+e nenhum reporta status missing
+=> BLOCKED
+
+EOL
+=> WARNING
+
+metadata stale
+=> WARNING
+
+applicability parcial ou ausente
+=> WARNING
+```
+
+A plataforma não infere compatibilidade quando não existe evidência.
+
+Para cada patch, o relatório mostra:
+
+- endpoints selecionados;
+- endpoints observados;
+- quantos reportam `missing`;
+- quantos estão `installed_inferred`;
+- quantos estão `no_longer_reported`;
+- quantos não possuem observação;
+- superseded_by;
+- preferred replacement;
+- lifecycle;
+- motivos exatos da decisão.
+
+O Preflight inclui o check `Patch Applicability & Supersedence`, o console possui uma ação `Applicability`, e o Evidence Pack inclui a seção `patch_applicability` com SHA-256 próprio.
 
 ## Change Collision Guard
 
@@ -900,7 +950,7 @@ O pipeline valida:
 - JavaScript;
 - pre-publish security check.
 
-A v0.45 passa pelo pipeline completo antes de ser considerada pronta.
+A v0.46 passa pelo pipeline completo antes de ser considerada pronta.
 
 ## Estrutura
 
