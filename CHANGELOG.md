@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.55.0
+
+- control plane e dashboard passam para versão 0.55.0; agente permanece em 0.16.0;
+- adicionado bundle be-safe-patch-policy-bundle/v1 para fluxo GitOps;
+- export inclui última versão de cada policy, SHA-256 por policy e manifest SHA-256 do bundle;
+- validação de import rejeita schema inválido, policy duplicada, digest divergente, contagem divergente e bundle tampered;
+- dry-run compara bundle proposto com campanhas existentes sem modificar estado;
+- impacto classifica campanhas como newly_blocked, resolved, still_blocked ou still_compliant;
+- dry-run detecta também mudanças de matching das policies;
+- import validado cria nova versão local e preserva supersedes_id; policies idênticas ficam unchanged;
+- auditoria do import registra digest do bundle, quantidade criada/inalterada e resumo de impacto;
+- documentação GitOps adicionada ao README.
+
+
 ## 0.54.0
 
 - control plane e dashboard passam para versão 0.54.0; agente permanece em 0.16.0;
