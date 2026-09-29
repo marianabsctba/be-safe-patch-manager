@@ -101,8 +101,28 @@ class CampaignApproval(Base):
     decided_by = Column(String(255), nullable=False, default="")
     decision_reason = Column(Text, nullable=False, default="")
     decided_at = Column(DateTime(timezone=True), nullable=True)
+    required_approvals = Column(Integer, nullable=False, default=1)
+    policy_json = Column(Text, nullable=False, default="{}")
 
     campaign = relationship("Campaign", back_populates="approval")
+    votes = relationship("CampaignApprovalVote", back_populates="approval", cascade="all, delete-orphan")
+
+
+class CampaignApprovalVote(Base):
+    __tablename__ = "campaign_approval_votes"
+    __table_args__ = (
+        UniqueConstraint("approval_id", "actor", name="uq_campaign_approval_vote_actor"),
+    )
+
+    id = Column(String(36), primary_key=True)
+    approval_id = Column(String(36), ForeignKey("campaign_approvals.id", ondelete="CASCADE"), nullable=False, index=True)
+    campaign_id = Column(String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    actor = Column(String(255), nullable=False, index=True)
+    decision = Column(String(32), nullable=False, index=True)
+    reason = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+    approval = relationship("CampaignApproval", back_populates="votes")
 
 
 class PatchJob(Base):
