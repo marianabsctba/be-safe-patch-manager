@@ -78,8 +78,26 @@ def main():
     if attestation.get("valid") is False:
         issues.extend(attestation.get("issues") or [])
 
+    integrity_valid = not issues
+    trust_established = bool(
+        (args.expected_sha256 and computed_pack == args.expected_sha256.strip().lower())
+        or attestation.get("valid") is True
+    )
     result = {
-        "valid": not issues,
+        "valid": integrity_valid,
+        "integrity_valid": integrity_valid,
+        "trust_established": trust_established,
+        "trust_status": (
+            "invalid"
+            if not integrity_valid
+            else "signed_verified"
+            if attestation.get("valid") is True
+            else "external_anchor_verified"
+            if args.expected_sha256 and computed_pack == args.expected_sha256.strip().lower()
+            else "signed_unverified"
+            if attestation.get("present")
+            else "integrity_only"
+        ),
         "pack_sha256": computed_pack,
         "manifest_pack_sha256": manifest_pack or None,
         "sections": section_results,
