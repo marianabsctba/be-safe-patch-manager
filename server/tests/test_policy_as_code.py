@@ -149,3 +149,105 @@ def test_policy_nonmatching_scope_does_not_block(db):
     result = main.evaluate_patch_policy_document(item, doc)
     assert result["matched"] is False
     assert result["compliant"] is True
+
+
+def test_policy_bundle_round_trip_and_integrity(db):
+    item = campaign(db, ring=10)
+    normalized = main.validate_patch_policy_document(document(max_ring=10))
+    db.add(PatchPolicyDefinition(
+        id="bundle-p1", name="Tier0 Bundle", version=1, enabled=True, priority=200,
+        policy_json=main.dump(normalized), policy_sha256=main._evidence_sha256(normalized),
+        created_by="admin",
+    ))
+    db.commit()
+
+    bundle = main.build_patch_policy_bundle(db)
+    validated = main.validate_patch_policy_bundle(bundle)
+
+    assert validated["valid"] is True
+    assert validated["policy_count"] == 1
+    assert len(validated["bundle_sha256"]) == 64
+
+
+def test_policy_bundle_detects_tampering(db):
+    normalized = main.validate_patch_policy_document(document(max_ring=10))
+    db.add(PatchPolicyDefinition(
+        id="bundle-p1", name="Tier0 Bundle", version=1, enabled=True, priority=200,
+        policy_json=main.dump(normalized), policy_sha256=main._evidence_sha256(normalized),
+        created_by="admin",
+    ))
+    db.commit()
+
+    bundle = main.build_patch_policy_bundle(db)
+    bundle["policies"][0]["policy"]["requirements"]["max_initial_ring_percent"] = 100
+
+    with pytest.raises(Exception):
+        main.validate_patch_policy_bundle(bundle)
+
+
+def test_policy_bundle_dry_run_finds_newly_blocked_campaign(db):
+    item = campaign(db, ring=10)
+    proposed = main.validate_patch_policy_document(document(max_ring=5))
+    content = {
+        "schema": "be-safe-patch-policy-bundle/v1",
+        "generated_at": "2026-09-29T00:00:00+00:00",
+        "policies": [{
+            "name": "Tier0 Proposed",
+            "version": 1,
+            "priority": 100,
+            "enabled": True,
+            "policy": proposed,
+            "policy_sha256": main._evidence_sha256(proposed),
+        }],
+    }
+    bundle = {
+        **content,
+        "manifest": {
+            "hash_algorithm": "SHA-256",
+            "bundle_sha256": main._evidence_sha256(content),
+            "policy_count": 1,
+        },
+    }
+
+    impact = main.patch_policy_bundle_impact(db, bundle)
+
+    assert impact["summary"]["newly_blocked"] == 1
+    assert impact["campaigns"][0]["campaign_id"] == item.id
+
+
+def test_policy_bundle_import_versions_changed_policy(db):
+    campaign(db, ring=10)
+    old = main.validate_patch_policy_document(document(max_ring=10))
+    db.add(PatchPolicyDefinition(
+        id="import-p1", name="Tier0 Import", version=1, enabled=True, priority=100,
+        policy_json=main.dump(old), policy_sha256=main._evidence_sha256(old), created_by="admin",
+    ))
+    db.commit()
+
+    new = main.validate_patch_policy_document(document(max_ring=5))
+    content = {
+        "schema": "be-safe-patch-policy-bundle/v1",
+        "generated_at": "2026-09-29T00:00:00+00:00",
+        "policies": [{
+            "name": "Tier0 Import",
+            "version": 9,
+            "priority": 100,
+            "enabled": True,
+            "policy": new,
+            "policy_sha256": main._evidence_sha256(new),
+        }],
+    }
+    bundle = {
+        **content,
+        "manifest": {
+            "hash_algorithm": "SHA-256",
+            "bundle_sha256": main._evidence_sha256(content),
+            "policy_count": 1,
+        },
+    }
+
+    result = main.import_patch_policy_bundle(db, bundle, "user:admin")
+
+    assert len(result["created"]) == 1
+    assert result["created"][0]["version"] == 2
+    assert result["created"][0]["supersedes_id"] == "import-p1"
