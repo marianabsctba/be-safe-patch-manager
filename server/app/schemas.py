@@ -414,6 +414,14 @@ class PatchPolicySimulationRequest(BaseModel):
     policy: Dict[str, Any]
 
 
+class PatchPolicyBundleRequest(BaseModel):
+    bundle: Dict[str, Any]
+
+
+class PatchPolicyBundleImportRequest(BaseModel):
+    bundle: Dict[str, Any]
+
+
 class AutoPatchSimulationRequest(BaseModel):
     policy_id: str = Field(min_length=1, max_length=36)
     patch_ref: str = Field(min_length=1, max_length=255)
