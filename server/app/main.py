@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.43.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.44.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -9823,12 +9823,16 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
         "source_cve": target_finding.cve if target_finding else "",
         "approval_required": body.approval_required,
         "approval_reason": approval_reason if body.approval_required else "",
+        "ring_strategy": body.ring_strategy,
+        "canary_max_critical_percent": int(body.canary_max_critical_percent),
         "rollout_governance": {
             "plan": rollout_plan,
             "soak_minutes": int(body.soak_minutes),
             "promotion_min_success_rate": float(body.promotion_min_success_rate),
             "promotion_max_success_drop": float(body.promotion_max_success_drop),
             "pause_on_failure": bool(body.pause_on_failure),
+            "ring_strategy": body.ring_strategy,
+            "canary_max_critical_percent": int(body.canary_max_critical_percent),
         },
     }
 
@@ -10705,6 +10709,7 @@ def campaign_preflight(
             "details": details or {},
         })
 
+    ring_plan = campaign_ring_plan(db, campaign, campaign.ring_percent)
     blast_radius = campaign_blast_radius(db, campaign, reference)
 
     if not candidates:
@@ -10748,6 +10753,23 @@ def campaign_preflight(
             "passed",
             "ring sem concentração operacional relevante pelas regras atuais",
             details=blast_radius,
+        )
+
+    if ring_plan["strategy"] == "balanced":
+        add_check(
+            "smart_canary",
+            "Smart Canary",
+            "passed",
+            f"ring coverage-first: {ring_plan['selected_count']} endpoint(s), {ring_plan['coverage'].get('business_services', 0)} service(s), {ring_plan['coverage'].get('os_segments', 0)} segmento(s) de SO",
+            details=ring_plan,
+        )
+    else:
+        add_check(
+            "smart_canary",
+            "Smart Canary",
+            "warning",
+            "campanha usa seleção legacy por hash; diversidade de contexto não é otimizada",
+            details=ring_plan,
         )
 
     approval = serialize_campaign_approval(campaign)
@@ -11034,7 +11056,209 @@ def campaign_candidates(db: Session, campaign: Campaign):
     return sorted(candidates, key=lambda agent: ring_bucket(agent.id))
 
 
+def campaign_ring_strategy(campaign: Campaign) -> dict:
+    payload = load(campaign.payload_json, {})
+    strategy = str(payload.get("ring_strategy") or "hash").strip().lower()
+    if strategy not in {"balanced", "hash"}:
+        strategy = "hash"
+    try:
+        max_critical_percent = int(payload.get("canary_max_critical_percent", 25))
+    except (TypeError, ValueError):
+        max_critical_percent = 25
+    return {
+        "strategy": strategy,
+        "canary_max_critical_percent": max(0, min(max_critical_percent, 100)),
+    }
+
+
+def _agent_canary_context(agent: Agent) -> dict:
+    profile = serialize_asset_risk_profile(agent.risk_profile) or {}
+    service = str(profile.get("business_service") or "unassigned").strip().lower() or "unassigned"
+    environment = str(profile.get("environment") or "unassigned").strip().lower() or "unassigned"
+    owner = str(profile.get("owner") or "unassigned").strip().lower() or "unassigned"
+    os_segment = (
+        str(agent.os_family or "unknown").strip().lower() or "unknown",
+        str(agent.os_version or "unknown").strip().lower() or "unknown",
+    )
+    criticality = int(asset_criticality(agent).get("score") or 0)
+    return {
+        "service": service,
+        "environment": environment,
+        "owner": owner,
+        "os_segment": os_segment,
+        "criticality": criticality,
+        "critical": criticality >= 4,
+        "external": bool(asset_exposure(agent).get("external")),
+    }
+
+
+def balanced_ring_selection(
+    db: Session,
+    campaign: Campaign,
+    percent: int,
+) -> tuple[list[Agent], dict]:
+    candidates = campaign_candidates(db, campaign)
+    if not candidates:
+        return [], {
+            "strategy": "balanced",
+            "target_count": 0,
+            "selected_count": 0,
+            "critical_cap_percent": 0,
+            "critical_cap_count": 0,
+            "critical_selected": 0,
+            "coverage": {},
+            "selection": [],
+        }
+
+    target_count = max(1, math.ceil(len(candidates) * percent / 100))
+    target_count = min(len(candidates), target_count)
+    policy = campaign_ring_strategy(campaign)
+    critical_cap_percent = int(policy["canary_max_critical_percent"])
+    critical_cap_count = math.floor(target_count * critical_cap_percent / 100.0)
+
+    # Load relationships required by context helpers once.
+    candidate_ids = [agent.id for agent in candidates]
+    enriched = db.query(Agent).options(
+        selectinload(Agent.risk_profile),
+    ).filter(Agent.id.in_(candidate_ids)).all()
+    by_id = {agent.id: agent for agent in enriched}
+    ordered = [by_id.get(agent.id, agent) for agent in candidates]
+    contexts = {agent.id: _agent_canary_context(agent) for agent in ordered}
+
+    selected: list[Agent] = []
+    selected_ids: set[str] = set()
+    service_counts: dict[str, int] = {}
+    environment_counts: dict[str, int] = {}
+    os_counts: dict[tuple[str, str], int] = {}
+    owner_counts: dict[str, int] = {}
+    critical_selected = 0
+    selection_trace = []
+
+    while len(selected) < target_count:
+        remaining = [agent for agent in ordered if agent.id not in selected_ids]
+        if not remaining:
+            break
+
+        noncritical_available = any(not contexts[agent.id]["critical"] for agent in remaining)
+        ranked = []
+        for agent in remaining:
+            ctx = contexts[agent.id]
+            would_exceed_critical_cap = (
+                ctx["critical"]
+                and critical_selected >= critical_cap_count
+                and noncritical_available
+            )
+            key = (
+                1 if would_exceed_critical_cap else 0,
+                service_counts.get(ctx["service"], 0),
+                environment_counts.get(ctx["environment"], 0),
+                os_counts.get(ctx["os_segment"], 0),
+                owner_counts.get(ctx["owner"], 0),
+                1 if ctx["critical"] else 0,
+                ring_bucket(agent.id),
+                agent.id,
+            )
+            ranked.append((key, agent, ctx))
+
+        ranked.sort(key=lambda item: item[0])
+        _, chosen, ctx = ranked[0]
+        selected.append(chosen)
+        selected_ids.add(chosen.id)
+        service_counts[ctx["service"]] = service_counts.get(ctx["service"], 0) + 1
+        environment_counts[ctx["environment"]] = environment_counts.get(ctx["environment"], 0) + 1
+        os_counts[ctx["os_segment"]] = os_counts.get(ctx["os_segment"], 0) + 1
+        owner_counts[ctx["owner"]] = owner_counts.get(ctx["owner"], 0) + 1
+        if ctx["critical"]:
+            critical_selected += 1
+        selection_trace.append({
+            "agent_id": chosen.id,
+            "hostname": chosen.hostname,
+            "business_service": ctx["service"],
+            "environment": ctx["environment"],
+            "owner": ctx["owner"],
+            "os_family": ctx["os_segment"][0],
+            "os_version": ctx["os_segment"][1],
+            "criticality": ctx["criticality"],
+            "critical": ctx["critical"],
+            "external": ctx["external"],
+            "tie_break_bucket": ring_bucket(chosen.id),
+        })
+
+    return selected, {
+        "strategy": "balanced",
+        "target_count": target_count,
+        "selected_count": len(selected),
+        "candidate_count": len(candidates),
+        "critical_cap_percent": critical_cap_percent,
+        "critical_cap_count": critical_cap_count,
+        "critical_selected": critical_selected,
+        "coverage": {
+            "business_services": len(service_counts),
+            "environments": len(environment_counts),
+            "os_segments": len(os_counts),
+            "owners": len(owner_counts),
+        },
+        "selection": selection_trace,
+        "rules": [
+            "prefer candidates that keep critical assets within the configured canary cap when alternatives exist",
+            "then prefer the least represented business service",
+            "then the least represented environment",
+            "then the least represented OS family/version",
+            "then the least represented owner",
+            "use deterministic agent hash only as the final tie-breaker",
+        ],
+        "note": "Balanced selection is deterministic and lexicographic; it does not use a hidden composite score.",
+    }
+
+
+def campaign_ring_plan(
+    db: Session,
+    campaign: Campaign,
+    percent: int | None = None,
+) -> dict:
+    percent = int(percent or campaign.ring_percent)
+    policy = campaign_ring_strategy(campaign)
+    candidates = campaign_candidates(db, campaign)
+    target_count = max(1, math.ceil(len(candidates) * percent / 100)) if candidates else 0
+
+    if policy["strategy"] == "balanced":
+        selected, plan = balanced_ring_selection(db, campaign, percent)
+    else:
+        selected = candidates[:min(len(candidates), target_count)]
+        plan = {
+            "strategy": "hash",
+            "target_count": target_count,
+            "selected_count": len(selected),
+            "candidate_count": len(candidates),
+            "critical_cap_percent": policy["canary_max_critical_percent"],
+            "critical_cap_count": None,
+            "critical_selected": sum(1 for agent in selected if asset_criticality(agent).get("score", 0) >= 4),
+            "coverage": {},
+            "selection": [
+                {
+                    "agent_id": agent.id,
+                    "hostname": agent.hostname,
+                    "tie_break_bucket": ring_bucket(agent.id),
+                }
+                for agent in selected
+            ],
+            "rules": ["legacy deterministic ordering by agent hash bucket"],
+            "note": "Hash strategy preserves the legacy deterministic ring behavior.",
+        }
+
+    return {
+        "campaign_id": campaign.id,
+        "campaign_name": campaign.name,
+        "percent": percent,
+        **plan,
+    }
+
+
 def agents_for_ring(db: Session, campaign: Campaign, percent: int):
+    policy = campaign_ring_strategy(campaign)
+    if policy["strategy"] == "balanced":
+        selected, _ = balanced_ring_selection(db, campaign, percent)
+        return selected
     candidates = campaign_candidates(db, campaign)
     if not candidates:
         return []
@@ -11066,6 +11290,21 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
         created.append(job)
     return created
 
+
+
+@app.get("/api/admin/campaigns/{campaign_id}/ring-plan")
+def get_campaign_ring_plan(
+    campaign_id: str,
+    percent: int | None = None,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    if percent is not None and (percent < 1 or percent > 100):
+        raise HTTPException(status_code=400, detail="percent must be between 1 and 100")
+    return campaign_ring_plan(db, campaign, percent)
 
 
 @app.get("/api/admin/campaigns/{campaign_id}/blast-radius")
@@ -11315,6 +11554,7 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
         "campaign": serialize_campaign(campaign),
         "approval": serialize_campaign_approval(campaign),
         "blast_radius": campaign_blast_radius(db, campaign, reference),
+        "ring_plan": campaign_ring_plan(db, campaign, campaign.ring_percent),
         "preflight_snapshots": [
             serialize_campaign_preflight_snapshot(item, include_result=True)
             for item in preflight_items
