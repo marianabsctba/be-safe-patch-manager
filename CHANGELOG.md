@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.56.0
+
+- control plane e dashboard passam para versão 0.56.0; agente permanece em 0.16.0;
+- adicionado Patch Policy Waiver com vínculo campaign + policy version + SHA-256;
+- waiver exige admin, motivo e expiração futura, limitada a 30 dias;
+- violações continuam visíveis como waived em vez de serem removidas do relatório;
+- somente waiver ativo e com digest idêntico à versão atual suprime enforcement;
+- nova versão de policy invalida naturalmente waiver antigo por mudança de digest;
+- endpoint de listagem, criação e revogação de waivers;
+- auditoria registra criação e revogação com policy, versão, motivo e violações cobertas;
+- Evidence Pack ganha seção policy_waivers;
+- console Policy Eval permite criar waiver direto na violação.
+
+
 ## 0.55.0
 
 - control plane e dashboard passam para versão 0.55.0; agente permanece em 0.16.0;
