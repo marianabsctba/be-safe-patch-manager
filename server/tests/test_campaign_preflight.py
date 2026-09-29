@@ -14,7 +14,6 @@ os.environ["ENROLLMENT_TOKEN"] = "P" * 48
 os.environ["BREAK_GLASS_ADMIN_TOKEN"] = ""
 os.environ["GREENBONE_ENABLED"] = "false"
 os.environ["THREAT_INTEL_ENABLED"] = "false"
-os.environ["AGENT_ENFORCE_COMPATIBILITY"] = "true"
 
 from app.database import Base, SessionLocal, engine
 from app import main
@@ -22,9 +21,10 @@ from app.models import Agent, Campaign, CampaignApproval, PatchBlockRule
 
 
 @pytest.fixture(autouse=True)
-def clean_database():
+def clean_database(monkeypatch):
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    monkeypatch.setattr(main, "AGENT_ENFORCE_COMPATIBILITY", True)
     yield
     Base.metadata.drop_all(bind=engine)
 
