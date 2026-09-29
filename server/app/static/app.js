@@ -3960,12 +3960,20 @@ window.verifyCampaignEvidencePackFile = async (campaignId) => {
         box.innerHTML =
           '<div class="preflight-header"><div><strong>Evidence Pack Integrity Verifier</strong><br>' +
           '<small class="muted">' + esc(file.name) + '</small></div>' +
-          badge(result.valid ? 'VÁLIDO' : 'INVÁLIDO', result.valid ? 'ok' : 'fail') + '</div>' +
+          badge(
+            !result.valid
+              ? 'INVÁLIDO'
+              : result.trust_established
+                ? 'VERIFICADO'
+                : 'ÍNTEGRO',
+            !result.valid ? 'fail' : result.trust_established ? 'ok' : 'warn'
+          ) + '</div>' +
           '<div class="campaign-stats">' +
           '<span>Integridade <strong>' + esc(result.integrity_valid ? 'OK' : 'FALHOU') + '</strong></span>' +
           '<span>Âncora externa <strong>' + esc(result.anchored ? (result.anchor_valid ? 'OK' : 'FALHOU') : 'não informada') + '</strong></span>' +
           '<span>Campanha <strong>' + esc(result.campaign_match === false ? 'DIVERGENTE' : 'OK') + '</strong></span>' +
           '<span>Assinatura <strong>' + esc(signatureLabel) + '</strong></span>' +
+          '<span>Confiança <strong>' + esc(result.trust_established ? 'ESTABELECIDA' : 'somente integridade') + '</strong></span>' +
           '</div>' +
           (attestation.present
             ? '<p><small class="muted">Issuer: ' + esc(attestation.issuer || '-') +
