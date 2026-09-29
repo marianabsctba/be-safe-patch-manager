@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.44.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.45.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -10688,6 +10688,173 @@ def campaign_blast_radius(
     }
 
 
+def campaign_change_collisions(
+    db: Session,
+    campaign: Campaign,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    selected = agents_for_ring(db, campaign, campaign.ring_percent)
+    selected_ids = {agent.id for agent in selected}
+
+    selected_context = {}
+    for agent in selected:
+        ctx = _agent_canary_context(agent)
+        selected_context[agent.id] = {
+            "agent_id": agent.id,
+            "hostname": agent.hostname,
+            **ctx,
+        }
+
+    active_jobs = db.query(PatchJob).options(
+        selectinload(PatchJob.campaign),
+        selectinload(PatchJob.agent).selectinload(Agent.risk_profile),
+    ).filter(
+        PatchJob.campaign_id != campaign.id,
+        PatchJob.status.in_(["pending", "claimed", "running", "stalled", "blocked"]),
+    ).all()
+
+    direct = []
+    service_environment = {}
+    owner_overlap = {}
+    campaigns = {}
+
+    selected_pairs = {
+        (ctx["service"], ctx["environment"])
+        for ctx in selected_context.values()
+        if ctx["service"] != "unassigned" or ctx["environment"] != "unassigned"
+    }
+    selected_owners = {
+        ctx["owner"]
+        for ctx in selected_context.values()
+        if ctx["owner"] != "unassigned"
+    }
+
+    for job in active_jobs:
+        other = job.campaign
+        if not other:
+            continue
+        campaign_info = campaigns.setdefault(other.id, {
+            "campaign_id": other.id,
+            "campaign_name": other.name,
+            "status": other.status,
+            "active_jobs": 0,
+            "direct_assets": 0,
+            "shared_service_environment": set(),
+            "shared_owners": set(),
+        })
+        campaign_info["active_jobs"] += 1
+
+        if job.agent_id in selected_ids:
+            own = selected_context[job.agent_id]
+            direct.append({
+                "agent_id": job.agent_id,
+                "hostname": own["hostname"],
+                "job_id": job.id,
+                "job_status": job.status,
+                "other_campaign_id": other.id,
+                "other_campaign_name": other.name,
+            })
+            campaign_info["direct_assets"] += 1
+
+        agent = job.agent
+        if not agent:
+            continue
+        ctx = _agent_canary_context(agent)
+        pair = (ctx["service"], ctx["environment"])
+        if pair in selected_pairs:
+            key = f"{pair[0]}|{pair[1]}"
+            bucket = service_environment.setdefault(key, {
+                "business_service": pair[0],
+                "environment": pair[1],
+                "active_jobs": 0,
+                "campaign_ids": set(),
+                "asset_ids": set(),
+            })
+            bucket["active_jobs"] += 1
+            bucket["campaign_ids"].add(other.id)
+            bucket["asset_ids"].add(agent.id)
+            campaign_info["shared_service_environment"].add(key)
+
+        if ctx["owner"] in selected_owners:
+            owner = ctx["owner"]
+            bucket = owner_overlap.setdefault(owner, {
+                "owner": owner,
+                "active_jobs": 0,
+                "campaign_ids": set(),
+                "asset_ids": set(),
+            })
+            bucket["active_jobs"] += 1
+            bucket["campaign_ids"].add(other.id)
+            bucket["asset_ids"].add(agent.id)
+            campaign_info["shared_owners"].add(owner)
+
+    shared_pairs = [
+        {
+            **item,
+            "campaign_count": len(item["campaign_ids"]),
+            "asset_count": len(item["asset_ids"]),
+            "campaign_ids": sorted(item["campaign_ids"]),
+        }
+        for item in service_environment.values()
+    ]
+    shared_pairs.sort(key=lambda item: (-item["active_jobs"], item["business_service"], item["environment"]))
+
+    shared_owners = [
+        {
+            **item,
+            "campaign_count": len(item["campaign_ids"]),
+            "asset_count": len(item["asset_ids"]),
+            "campaign_ids": sorted(item["campaign_ids"]),
+        }
+        for item in owner_overlap.values()
+    ]
+    shared_owners.sort(key=lambda item: (-item["active_jobs"], item["owner"]))
+
+    campaign_rows = []
+    for item in campaigns.values():
+        item = dict(item)
+        item["shared_service_environment"] = sorted(item["shared_service_environment"])
+        item["shared_owners"] = sorted(item["shared_owners"])
+        if item["direct_assets"] or item["shared_service_environment"] or item["shared_owners"]:
+            campaign_rows.append(item)
+    campaign_rows.sort(key=lambda item: (-item["direct_assets"], -item["active_jobs"], item["campaign_name"].lower()))
+
+    if direct:
+        state = "direct_collision"
+    elif shared_pairs:
+        state = "context_collision"
+    elif shared_owners:
+        state = "owner_collision"
+    else:
+        state = "clear"
+
+    return {
+        "generated_at": reference.isoformat(),
+        "campaign_id": campaign.id,
+        "state": state,
+        "blocking": bool(direct),
+        "summary": {
+            "selected_assets": len(selected),
+            "direct_asset_collisions": len(direct),
+            "shared_service_environment_segments": len(shared_pairs),
+            "shared_owners": len(shared_owners),
+            "other_campaigns": len(campaign_rows),
+            "other_active_jobs": sum(item["active_jobs"] for item in campaign_rows),
+        },
+        "direct_asset_collisions": direct[:100],
+        "shared_service_environment": shared_pairs[:100],
+        "shared_owners": shared_owners[:100],
+        "campaigns": campaign_rows[:100],
+        "rules": {
+            "direct_asset_collision": "same endpoint has a non-terminal job in another campaign",
+            "context_collision": "selected ring shares business service + environment with active jobs from another campaign",
+            "owner_collision": "selected ring shares owner with active jobs from another campaign",
+        },
+        "note": "Direct endpoint collision blocks deployment. Context and owner collisions are advisory warnings and do not invent CAB policy.",
+    }
+
+
 def campaign_preflight(
     db: Session,
     campaign: Campaign,
@@ -10711,6 +10878,7 @@ def campaign_preflight(
 
     ring_plan = campaign_ring_plan(db, campaign, campaign.ring_percent)
     blast_radius = campaign_blast_radius(db, campaign, reference)
+    change_collisions = campaign_change_collisions(db, campaign, reference)
 
     if not candidates:
         add_check(
@@ -10770,6 +10938,32 @@ def campaign_preflight(
             "warning",
             "campanha usa seleção legacy por hash; diversidade de contexto não é otimizada",
             details=ring_plan,
+        )
+
+    if change_collisions["state"] == "direct_collision":
+        add_check(
+            "change_collision",
+            "Change Collision Guard",
+            "blocked",
+            f"{change_collisions['summary']['direct_asset_collisions']} endpoint(s) já possuem job ativo em outra campanha",
+            blocking=True,
+            details=change_collisions,
+        )
+    elif change_collisions["state"] in {"context_collision", "owner_collision"}:
+        add_check(
+            "change_collision",
+            "Change Collision Guard",
+            "warning",
+            f"{change_collisions['summary']['other_campaigns']} outra(s) campanha(s) ativa(s) compartilham contexto operacional com este ring",
+            details=change_collisions,
+        )
+    else:
+        add_check(
+            "change_collision",
+            "Change Collision Guard",
+            "passed",
+            "nenhuma colisão ativa encontrada para endpoints ou contexto do ring",
+            details=change_collisions,
         )
 
     approval = serialize_campaign_approval(campaign)
@@ -11292,6 +11486,18 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
 
 
 
+@app.get("/api/admin/campaigns/{campaign_id}/change-collisions")
+def get_campaign_change_collisions(
+    campaign_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return campaign_change_collisions(db, campaign)
+
+
 @app.get("/api/admin/campaigns/{campaign_id}/ring-plan")
 def get_campaign_ring_plan(
     campaign_id: str,
@@ -11454,7 +11660,7 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
 
     additional_blockers = [
         item for item in preflight["checks"]
-        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls"}
+        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision"}
     ]
     if additional_blockers:
         raise HTTPException(
@@ -11555,6 +11761,7 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
         "approval": serialize_campaign_approval(campaign),
         "blast_radius": campaign_blast_radius(db, campaign, reference),
         "ring_plan": campaign_ring_plan(db, campaign, campaign.ring_percent),
+        "change_collisions": campaign_change_collisions(db, campaign, reference),
         "preflight_snapshots": [
             serialize_campaign_preflight_snapshot(item, include_result=True)
             for item in preflight_items
