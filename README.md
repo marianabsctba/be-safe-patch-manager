@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.53.0  
+> **Control plane:** v0.54.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -176,6 +176,44 @@ Assim o histórico consegue responder:
 > por que esta patch estava READY ontem?
 
 sem recalcular a resposta com os dados de hoje.
+
+## Patch Policy-as-Code
+
+A v0.54 adiciona políticas de execução versionadas no schema `be-safe-patch-policy/v1`.
+
+Cada policy possui versão imutável, SHA-256, prioridade, autor e cadeia `supersedes_id`. Uma nova versão desativa a anterior, preservando histórico e auditabilidade.
+
+O documento separa:
+
+- `match`: action, SO, tags, ambientes e criticidade mínima;
+- `requirements`: ring inicial máximo, health gate, rollback, janela e quorum mínimo de aprovação.
+
+O Preflight avalia apenas a versão habilitada mais recente de cada policy. Violações bloqueiam deploy e entram no Evidence Pack.
+
+Também há simulação sem persistência via `POST /api/admin/patch-policies/simulate`, permitindo testar uma regra contra uma campanha antes de publicá-la.
+
+Exemplo:
+
+```json
+{
+  "schema": "be-safe-patch-policy/v1",
+  "description": "Tier 0 production",
+  "match": {
+    "actions": ["install_updates"],
+    "target_os": ["windows"],
+    "tags_any": ["tier0"],
+    "environments": ["production"],
+    "min_criticality": 4
+  },
+  "requirements": {
+    "max_initial_ring_percent": 5,
+    "require_health_gate": true,
+    "require_rollback": true,
+    "require_maintenance_window": true,
+    "min_approvals": 2
+  }
+}
+```
 
 ## Explainable Change Risk Engine
 
