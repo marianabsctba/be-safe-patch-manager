@@ -12660,10 +12660,26 @@ def verify_campaign_evidence_pack(
         and (campaign_match is not False)
         and (attestation.get("valid") is not False)
     )
+    trust_established = bool(
+        anchor_valid is True
+        or attestation.get("valid") is True
+    )
+    if not valid:
+        trust_status = "invalid"
+    elif attestation.get("valid") is True:
+        trust_status = "signed_verified"
+    elif anchor_valid is True:
+        trust_status = "external_anchor_verified"
+    elif attestation.get("present"):
+        trust_status = "signed_unverified"
+    else:
+        trust_status = "integrity_only"
 
     return {
         "valid": valid,
         "integrity_valid": integrity_valid,
+        "trust_established": trust_established,
+        "trust_status": trust_status,
         "anchored": anchored,
         "anchor_valid": anchor_valid,
         "anchor_format_valid": anchor_format_valid,
