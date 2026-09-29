@@ -275,6 +275,7 @@ def test_campaign_evidence_pack_hashes_sections_and_pack(db):
         "blast_radius",
         "ring_plan",
         "change_collisions",
+        "change_risk",
         "patch_applicability",
         "maintenance_risk",
         "scope_drift",
