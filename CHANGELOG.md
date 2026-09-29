@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.47.0
+
+- control plane e dashboard passam para versão 0.47.0; agente permanece em 0.16.0;
+- adicionado Tenant Settings persistente;
+- locales suportados: pt-BR, en e es;
+- pt-BR permanece como idioma padrão;
+- GET /api/tenant disponibiliza configuração pública de locale antes do login;
+- PUT /api/admin/tenant permite ao admin alterar o idioma padrão do tenant com auditoria;
+- console ganha seletor PT-BR / EN / ES no topo;
+- usuários não-admin podem trocar o idioma apenas localmente sem alterar o tenant;
+- adicionado runtime i18n com fallback em PT-BR;
+- datas e horários passam a respeitar o locale ativo;
+- adicionada migration 0031_tenant_locale;
+- adicionados testes de persistência e auditoria da configuração do tenant.
+
+
 ## 0.46.0
 
 - control plane e dashboard passam para versão 0.46.0; agente permanece em 0.16.0;
