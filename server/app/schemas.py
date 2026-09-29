@@ -424,11 +424,16 @@ class PatchPolicyBundleImportRequest(BaseModel):
 
 class PatchPolicyWaiverCreate(BaseModel):
     policy_id: str = Field(min_length=1, max_length=36)
+    owner: str = Field(min_length=2, max_length=255)
     reason: str = Field(min_length=10, max_length=2000)
     expires_at: datetime
 
 
 class PatchPolicyWaiverRevoke(BaseModel):
+    reason: str = Field(min_length=5, max_length=1000)
+
+
+class PatchPolicyWaiverApprove(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
 
 
