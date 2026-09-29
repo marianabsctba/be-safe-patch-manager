@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.48.0
+
+- control plane e dashboard passam para versão 0.48.0; agente permanece em 0.16.0;
+- adicionado Maintenance Risk & Reboot Orchestration;
+- campanhas cruzam reboot pendente, Patch Catalog, applicability por endpoint, criticidade, serviços críticos, reboot policy e janela;
+- reboot requerido por patch com policy `never` passa a bloquear o deploy antes da criação dos jobs;
+- ativos críticos com reboot provável ou pendente geram warning explicável;
+- janela de manutenção é comparada com mediana e p95 de duração observada quando existem pelo menos 3 jobs comparáveis;
+- metadata de reboot desconhecida permanece explícita, sem inferência;
+- console ganha ação Reboot Plan;
+- Preflight ganha check Maintenance & Reboot Readiness;
+- Evidence Pack passa a incluir maintenance_risk com SHA-256 próprio;
+- adicionados testes de conflito de reboot, ativo crítico, capacidade da janela e integridade do Evidence Pack.
+
+
 ## 0.47.0
 
 - control plane e dashboard passam para versão 0.47.0; agente permanece em 0.16.0;
