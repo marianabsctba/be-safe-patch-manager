@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.45.0
+
+- control plane e dashboard passam para versão 0.45.0; agente permanece em 0.16.0;
+- adicionado Change Collision Guard entre campanhas;
+- colisão direta identifica o mesmo endpoint com job não terminal em outra campanha e bloqueia o deploy;
+- colisões de business service + environment e owner geram warning explicável, sem impor política de CAB;
+- relatório mostra campanhas concorrentes, jobs ativos, endpoints, services, environments e owners envolvidos;
+- Preflight ganha check Change Collision Guard;
+- console ganha ação Collision Guard por campanha;
+- Evidence Pack passa a incluir change_collisions com SHA-256 próprio;
+- jobs terminais não são considerados colisão ativa;
+- adicionados testes de colisão direta, colisão contextual, jobs terminais e integridade do Evidence Pack.
+
+
 ## 0.44.0
 
 - control plane e dashboard passam para versão 0.44.0; agente permanece em 0.16.0;
