@@ -437,6 +437,22 @@ class PatchPolicyWaiverApprove(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
 
 
+
+class ExceptionBudgetCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
+    scope_type: str = Field(pattern=r"^(owner|business_service)$")
+    scope_value: str = Field(min_length=1, max_length=255)
+    max_waivers_month: int = Field(default=5, ge=1, le=1000)
+    max_hours_month: int = Field(default=72, ge=1, le=8760)
+    enabled: bool = True
+
+
+class ExceptionBudgetUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    max_waivers_month: Optional[int] = Field(default=None, ge=1, le=1000)
+    max_hours_month: Optional[int] = Field(default=None, ge=1, le=8760)
+
+
 class AutoPatchSimulationRequest(BaseModel):
     policy_id: str = Field(min_length=1, max_length=36)
     patch_ref: str = Field(min_length=1, max_length=255)
