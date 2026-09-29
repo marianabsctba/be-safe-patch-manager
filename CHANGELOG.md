@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.51.0
+
+- control plane e dashboard passam para versão 0.51.0; agente permanece em 0.16.0;
+- adicionado Signed Evidence Attestation com Ed25519 para Campaign Evidence Packs;
+- assinatura vincula produto, issuer, campaign_id, digest SHA-256, generated_at e signing_key_id;
+- chave de attestation é independente da chave de assinatura de releases do agente;
+- quando signing está habilitado, exportação falha fechada se a chave privada estiver ausente ou inválida;
+- verificador do console passa a validar a assinatura com chave pública confiável e exibir issuer/key id;
+- adicionado verificador offline scripts/verify-evidence-pack.py para auditoria independente do servidor;
+- adicionado utilitário de geração e identificação de chave scripts/evidence-attestation-key.py;
+- Docker Compose ganha mount dedicado /evidence-trust e configuração explícita por ambiente;
+- exportação e verificação registram status da assinatura no audit trail;
+- adicionados testes de assinatura válida, digest adulterado, assinatura adulterada e modo desabilitado.
+
+
 ## 0.50.0
 
 - control plane e dashboard passam para versão 0.50.0; agente permanece em 0.16.0;
