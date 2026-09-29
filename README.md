@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.50.0  
+> **Control plane:** v0.51.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -587,6 +587,43 @@ A console também valida Evidence Packs já exportados. O fluxo recalcula:
 Opcionalmente, o operador informa um **SHA-256 confiável registrado fora do próprio arquivo**. Essa âncora externa é importante porque hashes internos comprovam autoconsistência, mas não impedem que alguém altere o JSON e recalcule todos os hashes. Com uma cópia confiável do digest original, a plataforma detecta também esse cenário.
 
 Cada validação feita pela API é registrada no audit trail com resultado, digest calculado e divergências encontradas.
+
+
+### Signed Evidence Attestation
+
+Opcionalmente, cada Evidence Pack pode receber uma **attestation Ed25519** no momento da exportação.
+
+A assinatura vincula:
+
+- produto;
+- issuer;
+- `campaign_id`;
+- SHA-256 exato do Evidence Pack;
+- timestamp de geração;
+- `signing_key_id` derivado da chave pública confiável.
+
+A chave de attestation é **separada** da chave usada para assinar releases do agente.
+
+Quando `EVIDENCE_ATTESTATION_ENABLED=true`, a exportação opera em modo fail-closed: se a chave privada configurada estiver ausente ou inválida, o servidor recusa gerar um Evidence Pack aparentemente íntegro porém sem a assinatura esperada.
+
+O console verifica a assinatura quando possui a chave pública confiável. Para auditoria independente, o repositório também inclui:
+
+```bash
+python scripts/verify-evidence-pack.py evidence-pack.json \
+  --public-key evidence-attestation-public.pem \
+  --expected-sha256 <digest-confiavel> \
+  --campaign-id <campaign-id>
+```
+
+Assim, um auditor pode validar hashes, vínculo da campanha e assinatura Ed25519 **sem depender do servidor que produziu a evidência**.
+
+Para gerar um par dedicado:
+
+```bash
+python scripts/evidence-attestation-key.py generate-key \
+  --private-key deploy/evidence-trust/evidence-attestation-private.pem \
+  --public-key deploy/evidence-trust/evidence-attestation-public.pem
+```
 
 ## Progressive Rollout Governance
 
