@@ -3401,7 +3401,7 @@ function campaignCard(campaign, compact = false) {
   if (canControlCampaign && campaign.status === 'draft') {
     if (approval.required && approval.status !== 'approved') {
       if (roleAtLeast('admin') && approval.status === 'pending') {
-        action = '<button onclick="decideCampaignApproval(\'' + campaign.id + '\',\'approve\')">Aprovar</button>' +
+        action = '<button onclick="decideCampaignApproval(\'' + campaign.id + '\',\'approve\')">Aprovar (' + esc(approval.approved_count || 0) + '/' + esc(approval.required_approvals || 1) + ')</button>' +
           ' <button class="secondary" onclick="decideCampaignApproval(\'' + campaign.id + '\',\'reject\')">Rejeitar</button>';
       } else {
         action = '<button disabled>Aprovação ' + esc(approval.status || 'pendente') + '</button>';
@@ -3436,7 +3436,7 @@ function campaignCard(campaign, compact = false) {
           ${payload.target_agent_hostname ? badge('endpoint: ' + payload.target_agent_hostname, 'info') : ''}
           ${payload.source_cve ? badge(payload.source_cve, 'warn') : ''}
           ${isAgentRollout ? badge('AGENT v' + (payload.expected_version || '?'), 'info') : ''}
-          ${approval.required ? badge('APPROVAL ' + String(approval.status || 'pending').toUpperCase(), approval.status === 'approved' ? 'ok' : approval.status === 'rejected' ? 'fail' : 'warn') : ''}
+          ${approval.required ? badge('CAB ' + String(approval.status || 'pending').toUpperCase() + ' ' + String(approval.approved_count || 0) + '/' + String(approval.required_approvals || 1), approval.status === 'approved' ? 'ok' : approval.status === 'rejected' ? 'fail' : 'warn') : ''}
           <span>Ring atual <strong>${esc(campaign.ring_percent)}%</strong></span>
           <span>${esc(actionLabel(campaign.action))}</span>
           ${campaign.not_before ? `<span>Após ${esc(shortWhen(campaign.not_before))}</span>` : ''}
@@ -3748,7 +3748,7 @@ window.decideCampaignApproval = async (campaignId, decision) => {
       method: 'POST',
       body: JSON.stringify({ reason: reason.trim() }),
     });
-    toast(decision === 'approve' ? 'Campanha aprovada.' : 'Campanha rejeitada.');
+    toast(decision === 'approve' ? 'Voto de aprovação registrado.' : 'Campanha rejeitada.');
     await load();
   } catch (error) {
     toast('Approval gate: ' + error.message, 'fail');
