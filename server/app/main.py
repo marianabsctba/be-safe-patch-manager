@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.40.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.41.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -10721,6 +10721,147 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
     }
 
 
+
+
+
+def _evidence_sha256(value: Any) -> str:
+    return hashlib.sha256(dump(value).encode("utf-8")).hexdigest()
+
+
+def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+
+    preflight_items = db.query(CampaignPreflightSnapshot).filter(
+        CampaignPreflightSnapshot.campaign_id == campaign.id
+    ).order_by(CampaignPreflightSnapshot.created_at.asc()).all()
+    ring_items = db.query(CampaignRingDecision).filter(
+        CampaignRingDecision.campaign_id == campaign.id
+    ).order_by(CampaignRingDecision.created_at.asc()).all()
+
+    jobs = db.query(PatchJob).filter(
+        PatchJob.campaign_id == campaign.id
+    ).order_by(PatchJob.created_at.asc(), PatchJob.id.asc()).all()
+    job_ids = [job.id for job in jobs]
+
+    audit_query = db.query(AuditEvent).filter(
+        (
+            (AuditEvent.object_type == "campaign")
+            & (AuditEvent.object_id == campaign.id)
+        )
+        | (
+            (AuditEvent.object_type == "job")
+            & (AuditEvent.object_id.in_(job_ids if job_ids else ["__none__"]))
+        )
+    )
+    audit_items = audit_query.order_by(AuditEvent.created_at.asc(), AuditEvent.id.asc()).all()
+
+    freeze_override = db.query(CampaignFreezeOverride).filter(
+        CampaignFreezeOverride.campaign_id == campaign.id
+    ).first()
+
+    sections = {
+        "campaign": serialize_campaign(campaign),
+        "approval": serialize_campaign_approval(campaign),
+        "preflight_snapshots": [
+            serialize_campaign_preflight_snapshot(item, include_result=True)
+            for item in preflight_items
+        ],
+        "ring_decisions": [
+            serialize_campaign_ring_decision(item)
+            for item in ring_items
+        ],
+        "jobs": [
+            serialize_job(job)
+            for job in jobs
+        ],
+        "freeze_override": (
+            {
+                "id": freeze_override.id,
+                "reason": freeze_override.reason,
+                "approved_by": freeze_override.approved_by,
+                "approved_at": freeze_override.approved_at.isoformat() if freeze_override.approved_at else None,
+                "revoked_by": freeze_override.revoked_by,
+                "revoked_at": freeze_override.revoked_at.isoformat() if freeze_override.revoked_at else None,
+                "revoke_reason": freeze_override.revoke_reason,
+            }
+            if freeze_override else None
+        ),
+        "audit_events": [
+            {
+                "id": item.id,
+                "actor": item.actor,
+                "event_type": item.event_type,
+                "object_type": item.object_type,
+                "object_id": item.object_id,
+                "details": load(item.details_json, {}),
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+            }
+            for item in audit_items
+        ],
+    }
+
+    section_hashes = {
+        key: _evidence_sha256(value)
+        for key, value in sections.items()
+    }
+    summary = {
+        "preflight_snapshots": len(preflight_items),
+        "ring_decisions": len(ring_items),
+        "jobs": len(jobs),
+        "job_statuses": {
+            status: sum(1 for job in jobs if job.status == status)
+            for status in sorted({job.status for job in jobs})
+        },
+        "audit_events": len(audit_items),
+        "freeze_override_present": freeze_override is not None,
+        "approval_status": serialize_campaign_approval(campaign).get("status"),
+        "current_ring_percent": campaign.ring_percent,
+        "campaign_status": campaign.status,
+    }
+
+    content = {
+        "schema": "be-safe-campaign-evidence-pack/v1",
+        "generated_at": reference.isoformat(),
+        "campaign_id": campaign.id,
+        "summary": summary,
+        "section_hashes": section_hashes,
+        "sections": sections,
+    }
+    pack_sha256 = _evidence_sha256(content)
+
+    return {
+        **content,
+        "manifest": {
+            "hash_algorithm": "SHA-256",
+            "pack_sha256": pack_sha256,
+            "section_hashes": section_hashes,
+            "verification": "Recompute SHA-256 over canonical compact JSON of the pack without the manifest field.",
+        },
+    }
+
+
+@app.get("/api/admin/campaigns/{campaign_id}/evidence-pack")
+def get_campaign_evidence_pack(
+    campaign_id: str,
+    principal=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    pack = campaign_evidence_pack(db, campaign)
+    audit(
+        db,
+        principal["actor"],
+        "campaign.evidence_pack.exported",
+        "campaign",
+        campaign.id,
+        {
+            "pack_sha256": pack["manifest"]["pack_sha256"],
+            "summary": pack["summary"],
+        },
+    )
+    return pack
 
 
 @app.get("/api/admin/campaigns/{campaign_id}/promotion-analysis")
