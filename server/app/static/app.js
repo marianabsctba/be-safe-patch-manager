@@ -3506,6 +3506,7 @@ function campaignCard(campaign, compact = false) {
         <button class="secondary" onclick="showScopeDrift('${campaign.id}')">Scope Drift</button>
         <button class="secondary" onclick="showCampaignBlastRadius('${campaign.id}')">Impact Preview</button>
         <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
+        <button class="secondary" onclick="verifyCampaignEvidencePackFile('${campaign.id}')">Verify Pack</button>
         <button class="secondary" onclick="showCampaignFailureIntel('${campaign.id}')">Failure Intel</button>
         <button class="secondary" onclick="showPromotionAnalysis('${campaign.id}')">Safe Promotion</button>
         <button class="secondary" onclick="showRingHistory('${campaign.id}')">Histórico de rings</button>
@@ -3918,6 +3919,61 @@ window.downloadCampaignEvidencePack = async (campaignId) => {
     toast('Evidence Pack: ' + error.message, 'fail');
   }
 };
+window.verifyCampaignEvidencePackFile = async (campaignId) => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      const pack = JSON.parse(await file.text());
+      const expectedHash = (prompt(
+        'SHA-256 confiável registrado fora do arquivo (opcional, recomendado para auditoria):',
+        ''
+      ) || '').trim();
+      const result = await api('/api/admin/evidence-pack/verify', {
+        method: 'POST',
+        body: JSON.stringify({
+          pack,
+          expected_pack_sha256: expectedHash,
+          expected_campaign_id: campaignId,
+        }),
+      });
+
+      const box = document.getElementById('preflight-' + campaignId);
+      if (box) {
+        const sectionRows = Object.entries(result.sections || {}).map(([name, item]) =>
+          '<tr><td><strong>' + esc(name) + '</strong></td><td>' +
+          badge(item.matches ? 'ÍNTEGRA' : 'DIVERGENTE', item.matches ? 'ok' : 'fail') +
+          '</td><td><code>' + esc((item.computed_sha256 || '').slice(0, 16)) + '…</code></td></tr>'
+        ).join('');
+        box.hidden = false;
+        box.innerHTML =
+          '<div class="preflight-header"><div><strong>Evidence Pack Integrity Verifier</strong><br>' +
+          '<small class="muted">' + esc(file.name) + '</small></div>' +
+          badge(result.valid ? 'VÁLIDO' : 'INVÁLIDO', result.valid ? 'ok' : 'fail') + '</div>' +
+          '<div class="campaign-stats">' +
+          '<span>Integridade <strong>' + esc(result.integrity_valid ? 'OK' : 'FALHOU') + '</strong></span>' +
+          '<span>Âncora externa <strong>' + esc(result.anchored ? (result.anchor_valid ? 'OK' : 'FALHOU') : 'não informada') + '</strong></span>' +
+          '<span>Campanha <strong>' + esc(result.campaign_match === false ? 'DIVERGENTE' : 'OK') + '</strong></span>' +
+          '</div>' +
+          '<p><small class="muted">SHA-256 calculado: <code>' + esc(result.pack_sha256.computed || '-') + '</code></small></p>' +
+          ((result.issues || []).length
+            ? '<div class="callout danger"><strong>Problemas encontrados</strong><br>' + esc(result.issues.join(' · ')) + '</div>'
+            : '<div class="callout success"><strong>Pacote consistente.</strong> Nenhuma divergência foi encontrada.</div>') +
+          '<div class="table-wrap"><table><thead><tr><th>Seção</th><th>Estado</th><th>SHA-256 calculado</th></tr></thead><tbody>' +
+          sectionRows + '</tbody></table></div>' +
+          '<p><small class="muted">' + esc(result.note || '') + '</small></p>';
+      }
+      toast(result.valid ? 'Evidence Pack validado.' : 'Evidence Pack com divergências.', result.valid ? 'ok' : 'fail');
+    } catch (error) {
+      toast('Falha ao validar Evidence Pack: ' + (error.message || error), 'fail');
+    }
+  };
+  input.click();
+};
+
 window.showScopeDrift = async (campaignId) => {
   try {
     const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/scope-drift');
