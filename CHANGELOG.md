@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.44.0
+
+- control plane e dashboard passam para versão 0.44.0; agente permanece em 0.16.0;
+- adicionado Smart Canary / Adaptive Ring Planner;
+- campanhas novas usam estratégia balanced coverage-first por padrão; campanhas legadas sem configuração continuam no modo hash;
+- seleção balanceada prioriza menor representação de business service, environment, segmento de SO/versão e owner;
+- teto preferencial de ativos críticos no canário é configurável por campanha;
+- hash estável do agent é usado somente como desempate final no modo balanced;
+- seleção é determinística e explicável, sem score composto oculto;
+- console ganha ação Smart Canary e controles de estratégia/teto crítico no formulário de campanha;
+- Preflight ganha check Smart Canary;
+- Evidence Pack passa a incluir ring_plan com SHA-256 próprio;
+- adicionados testes de determinismo, diversidade, critical cap, fallback e integridade no Evidence Pack.
+
+
 ## 0.43.0
 
 - control plane e dashboard passam para versão 0.43.0; agente permanece em 0.16.0;
