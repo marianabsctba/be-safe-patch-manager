@@ -13,6 +13,8 @@
 - Docker Compose ganha mount dedicado /evidence-trust e configuração explícita por ambiente;
 - exportação e verificação registram status da assinatura no audit trail;
 - adicionados testes de assinatura válida, digest adulterado, assinatura adulterada e modo desabilitado.
+- CI passa a executar um drill completo de geração de chave, assinatura e verificação offline;
+- UX diferencia pacote íntegro de confiança efetivamente estabelecida por assinatura/âncora externa.
 
 
 ## 0.50.0
