@@ -438,5 +438,10 @@ class PatchBlockRuleUpdate(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
 
 
+class TenantSettingsUpdate(BaseModel):
+    locale: str = Field(pattern=r"^(pt-BR|en|es)$")
+    name: Optional[str] = Field(default=None, min_length=2, max_length=128)
+
+
 class TagUpdate(BaseModel):
     tags: List[str]
