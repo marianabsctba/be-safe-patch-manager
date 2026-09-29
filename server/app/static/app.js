@@ -3495,6 +3495,7 @@ function campaignCard(campaign, compact = false) {
       <div class="campaign-actions">
         ${action || ''}
         <button class="secondary" onclick="showCampaignPreflight('${campaign.id}')">Preflight</button>
+        <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
         <button class="secondary" onclick="showPromotionAnalysis('${campaign.id}')">Safe Promotion</button>
         <button class="secondary" onclick="showRingHistory('${campaign.id}')">Histórico de rings</button>
       </div>
@@ -3874,6 +3875,39 @@ window.showPreflightHistory = async (campaignId) => {
     toast('Histórico de preflight: ' + error.message, 'fail');
   }
 };
+
+window.downloadCampaignEvidencePack = async (campaignId) => {
+  try {
+    const pack = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/evidence-pack');
+    const campaign = pack.sections && pack.sections.campaign ? pack.sections.campaign : {};
+    const safeName = String(campaign.name || campaignId)
+      .normalize('NFKD')
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || campaignId;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const blob = new Blob([JSON.stringify(pack, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'be-safe-evidence-' + safeName + '-' + stamp + '.json';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+
+    const summary = pack.summary || {};
+    const manifest = pack.manifest || {};
+    toast(
+      'Evidence Pack: ' + esc(summary.jobs || 0) + ' job(s), ' +
+      esc(summary.preflight_snapshots || 0) + ' preflight(s) · SHA ' +
+      String(manifest.pack_sha256 || '').slice(0, 12)
+    );
+  } catch (error) {
+    toast('Evidence Pack: ' + error.message, 'fail');
+  }
+};
+
 
 window.showPromotionAnalysis = async (campaignId) => {
   try {
