@@ -3505,6 +3505,7 @@ function campaignCard(campaign, compact = false) {
         <button class="secondary" onclick="showMaintenanceRisk('${campaign.id}')">Reboot Plan</button>
         <button class="secondary" onclick="showScopeDrift('${campaign.id}')">Scope Drift</button>
         <button class="secondary" onclick="showCampaignBlastRadius('${campaign.id}')">Impact Preview</button>
+        <button class="secondary" onclick="showCampaignChangeRisk('${campaign.id}')">Change Risk</button>
         <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
         <button class="secondary" onclick="verifyCampaignEvidencePackFile('${campaign.id}')">Verify Pack</button>
         <button class="secondary" onclick="showCampaignFailureIntel('${campaign.id}')">Failure Intel</button>
@@ -3994,6 +3995,46 @@ window.verifyCampaignEvidencePackFile = async (campaignId) => {
   };
   input.click();
 };
+
+window.showCampaignChangeRisk = async (campaignId) => {
+  try {
+    const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/change-risk');
+    const box = document.getElementById('preflight-' + campaignId);
+    if (!box) return;
+    const factors = (report.factors || []).map((item) =>
+      '<tr><td><strong>' + esc(item.key) + '</strong></td><td>+' + esc(item.points) +
+      '</td><td>' + esc(item.message) + '</td><td><small>' + esc(item.source) + '</small></td></tr>'
+    ).join('');
+    const urgency = report.urgency_context || {};
+    box.hidden = false;
+    box.innerHTML =
+      '<div class="preflight-header"><div><strong>Change Risk Engine</strong><br>' +
+      '<small class="muted">be_safe_change_risk_v1 · determinístico e explicável</small></div>' +
+      badge(String(report.level || 'low').toUpperCase() + ' ' + String(report.score || 0) + '/100',
+        report.level === 'critical' ? 'fail' : report.level === 'high' ? 'warn' : report.level === 'moderate' ? 'info' : 'ok') +
+      '</div>' +
+      '<div class="campaign-stats">' +
+      '<span>Controles exigidos <strong>' + esc((report.required_controls || []).length) + '</strong></span>' +
+      '<span>Ausentes <strong>' + esc((report.missing_controls || []).length) + '</strong></span>' +
+      '<span>Bloqueia <strong>' + esc(report.blocking ? 'SIM' : 'não') + '</strong></span>' +
+      '</div>' +
+      ((report.missing_controls || []).length
+        ? '<div class="callout danger"><strong>Controles ausentes:</strong> ' + esc(report.missing_controls.join(' · ')) + '</div>'
+        : '<div class="callout success"><strong>Controles requeridos atendidos.</strong></div>') +
+      '<div class="campaign-stats">' +
+      '<span>KEV <strong>' + esc(urgency.kev || 0) + '</strong></span>' +
+      '<span>Ransomware <strong>' + esc(urgency.ransomware || 0) + '</strong></span>' +
+      '<span>EPSS ≥50% <strong>' + esc(urgency.high_epss || 0) + '</strong></span>' +
+      '</div>' +
+      (factors
+        ? '<div class="table-wrap"><table><thead><tr><th>Fator</th><th>Pontos</th><th>Evidência</th><th>Fonte</th></tr></thead><tbody>' + factors + '</tbody></table></div>'
+        : '<div class="empty-state">Nenhum fator de risco operacional relevante.</div>') +
+      '<p><small class="muted">' + esc(report.note || '') + '</small></p>';
+  } catch (error) {
+    toast('Change Risk: ' + error.message, 'fail');
+  }
+};
+
 
 window.showScopeDrift = async (campaignId) => {
   try {
