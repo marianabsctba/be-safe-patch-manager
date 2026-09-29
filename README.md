@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.39.0  
+> **Control plane:** v0.40.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -184,6 +184,38 @@ O resultado é:
 - `BLOCKED`: existe pelo menos um gate impeditivo.
 
 Não existe score oculto de readiness. Cada decisão traz o controle, o estado e a razão concreta.
+
+## Preflight Evidence + Drift Detection
+
+O Preflight pode ser registrado como evidência imutável antes de uma mudança.
+
+Cada snapshot persiste:
+
+- readiness;
+- deploy allowed/blocked;
+- resumo dos checks;
+- resultado completo;
+- ator;
+- origem;
+- timestamp;
+- SHA-256 do conteúdo.
+
+A console compara o estado atual com o último snapshot e mostra drift explícito:
+
+- `NO_BASELINE`;
+- `UNCHANGED`;
+- `IMPROVED`;
+- `CHANGED`;
+- `DEGRADED`.
+
+O diff identifica exatamente quais controles mudaram, por exemplo:
+
+```text
+Agent freshness   PASSED  -> WARNING
+Patch Guard       PASSED  -> BLOCKED
+```
+
+Toda tentativa de deploy também registra automaticamente um snapshot de preflight, preservando a evidência da condição operacional observada naquele momento.
 
 ## Progressive Rollout Governance
 
