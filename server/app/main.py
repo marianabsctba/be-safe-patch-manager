@@ -9831,8 +9831,6 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             "promotion_min_success_rate": float(body.promotion_min_success_rate),
             "promotion_max_success_drop": float(body.promotion_max_success_drop),
             "pause_on_failure": bool(body.pause_on_failure),
-            "ring_strategy": body.ring_strategy,
-            "canary_max_critical_percent": int(body.canary_max_critical_percent),
         },
     }
 
@@ -9888,6 +9886,8 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             "promotion_min_success_rate": float(body.promotion_min_success_rate),
             "promotion_max_success_drop": float(body.promotion_max_success_drop),
             "pause_on_failure": bool(body.pause_on_failure),
+            "ring_strategy": body.ring_strategy,
+            "canary_max_critical_percent": int(body.canary_max_critical_percent),
         },
     )
     return serialize_campaign(campaign)
