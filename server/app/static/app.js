@@ -1,5 +1,7 @@
 const $ = (s) => document.querySelector(s);
-const $$ = (s) => [...document.querySelectorAll(s)];
+const $ = (s) => [...document.querySelectorAll(s)];
+const tr = (value) => window.BSI18N ? window.BSI18N.t(value) : String(value ?? '');
+const uiLocale = () => window.BSI18N ? window.BSI18N.browserLocale() : 'pt-BR';
 
 const state = {
   sessionToken: '',
@@ -35,6 +37,7 @@ const state = {
   view: 'overview',
   selectedAgentId: null,
   drawerTab: 'summary',
+  tenant: null,
 };
 
 const titles = {
@@ -105,7 +108,7 @@ function badge(text, cls = '') {
 function when(value) {
   if (!value) return '-';
   try {
-    return new Date(value).toLocaleString('pt-BR');
+    return new Date(value).toLocaleString(uiLocale());
   } catch {
     return value;
   }
@@ -114,7 +117,7 @@ function when(value) {
 function shortWhen(value) {
   if (!value) return '-';
   try {
-    return new Date(value).toLocaleString('pt-BR', {
+    return new Date(value).toLocaleString(uiLocale(), {
       day: '2-digit',
       month: '2-digit',
       hour: '2-digit',
@@ -140,11 +143,11 @@ function jobClass(status) {
 }
 
 function actionLabel(action) {
-  if (action === 'install_updates') return 'Instalar updates';
-  if (action === 'rollback_checkpoint') return 'Rollback aprovado';
-  if (action === 'activate_agent_update') return 'Ativar update do agente';
-  if (action === 'clear_agent_update_quarantine') return 'Liberar quarentena do agente';
-  return 'Scan de updates';
+  if (action === 'install_updates') return tr('Instalar updates');
+  if (action === 'rollback_checkpoint') return tr('Rollback aprovado');
+  if (action === 'activate_agent_update') return tr('Ativar update do agente');
+  if (action === 'clear_agent_update_quarantine') return tr('Liberar quarentena do agente');
+  return tr('Scan de updates');
 }
 
 function statusLabel(status) {
@@ -160,12 +163,12 @@ function statusLabel(status) {
     failed: 'Falha',
     skipped: 'Ignorada',
   };
-  return labels[status] || status;
+  return tr(labels[status] || status);
 }
 
 function scalar(value) {
   if (value === null || value === undefined || value === '') return '-';
-  if (typeof value === 'boolean') return value ? 'sim' : 'não';
+  if (typeof value === 'boolean') return value ? tr('sim') : tr('não');
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
@@ -173,8 +176,8 @@ function scalar(value) {
 function endpointRisk(agent) {
   const critical = Number(agent.critical_updates || 0);
   const pending = Number(agent.pending_updates || 0);
-  if (critical > 0) return { label: 'Crítico', cls: 'fail' };
-  if (pending > 0 || agent.reboot_required) return { label: 'Atenção', cls: 'warn' };
+  if (critical > 0) return { label: tr('Crítico'), cls: 'fail' };
+  if (pending > 0 || agent.reboot_required) return { label: tr('Atenção'), cls: 'warn' };
   return { label: 'Compliant', cls: 'ok' };
 }
 
@@ -241,7 +244,7 @@ function setView(view) {
     panel.classList.toggle('active', panel.dataset.viewPanel === view);
   });
 
-  $('#pageTitle').textContent = titles[view] || 'Patch Manager';
+  $('#pageTitle').textContent = tr(titles[view] || 'Patch Manager');
 }
 
 async function load() {
@@ -311,11 +314,11 @@ async function load() {
     renderAll();
     applyPermissions();
 
-    $('#lastUpdate').textContent = `Atualizado ${new Date().toLocaleTimeString('pt-BR', {
+    $('#lastUpdate').textContent = tr('Atualizado') + ' ' + new Date().toLocaleTimeString(uiLocale(), {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
-    })}`;
+    });
   } catch (error) {
     if (error.status === 401) {
       showLogin('Sua sessão expirou ou não é mais válida.');
@@ -359,6 +362,7 @@ function renderAll() {
   renderAudit();
   renderUsers();
   if (state.selectedAgentId) renderAgentDrawer();
+  if (window.BSI18N) window.BSI18N.apply(document.body);
 }
 
 function renderSummary(summary) {
@@ -4305,7 +4309,7 @@ $('#loginForm').addEventListener('submit', async (event) => {
     $('#loginError').textContent = error.status === 401 ? 'Usuário ou senha inválidos.' : error.message;
   } finally {
     button.disabled = false;
-    button.textContent = 'Entrar';
+    button.textContent = tr('Entrar');
   }
 });
 
@@ -4334,6 +4338,38 @@ $('#changePassword').addEventListener('click', async () => {
   } catch (error) {
     toast('Senha: ' + error.message, 'fail');
   }
+});
+
+const tenantLocale = $('#tenantLocale');
+if (tenantLocale) tenantLocale.addEventListener('change', async (event) => {
+  const locale = String(event.target.value || 'pt-BR');
+  if (window.BSI18N) window.BSI18N.setLocale(locale);
+  setView(state.view);
+  renderAll();
+  if (!state.sessionToken || !roleAtLeast('admin')) {
+    toast(locale === 'pt-BR' ? 'Idioma local alterado.' : locale === 'en' ? 'Local language changed.' : 'Idioma local cambiado.');
+    return;
+  }
+  try {
+    state.tenant = await api('/api/admin/tenant', {
+      method: 'PUT',
+      body: JSON.stringify({ locale }),
+    });
+    toast(locale === 'pt-BR' ? 'Idioma padrão do tenant atualizado.' : locale === 'en' ? 'Tenant default language updated.' : 'Idioma predeterminado del tenant actualizado.');
+  } catch (error) {
+    toast('Tenant locale: ' + error.message, 'fail');
+  }
+});
+
+window.addEventListener('be-safe-locale-ready', (event) => {
+  state.tenant = event.detail ? event.detail.tenant : null;
+  setView(state.view);
+  if (window.BSI18N) window.BSI18N.apply(document.body);
+});
+
+window.addEventListener('be-safe-locale-changed', () => {
+  setView(state.view);
+  if (window.BSI18N) window.BSI18N.apply(document.body);
 });
 
 $('#refresh').addEventListener('click', load);
