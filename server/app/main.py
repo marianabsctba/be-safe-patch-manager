@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.45.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.46.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -10855,6 +10855,171 @@ def campaign_change_collisions(
     }
 
 
+def campaign_patch_applicability_guard(
+    db: Session,
+    campaign: Campaign,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    if campaign.action != "install_updates":
+        return {
+            "state": "not_applicable",
+            "blocking": False,
+            "patches": [],
+            "summary": {"packages": 0, "blocked": 0, "warnings": 0, "ready": 0},
+            "note": "Applicability Guard applies only to install campaigns.",
+        }
+
+    payload = load(campaign.payload_json, {})
+    packages = sorted({
+        str(value).strip()
+        for value in payload.get("packages", [])
+        if str(value).strip()
+    })
+    selected = agents_for_ring(db, campaign, campaign.ring_percent)
+    selected_ids = {agent.id for agent in selected}
+    if not packages:
+        return {
+            "state": "no_packages",
+            "blocking": False,
+            "patches": [],
+            "summary": {"packages": 0, "blocked": 0, "warnings": 1, "ready": 0},
+            "note": "Install campaign has no explicit package references.",
+        }
+
+    catalog_entries = db.query(PatchCatalogEntry).options(
+        selectinload(PatchCatalogEntry.observations),
+    ).all()
+    by_key = {entry.patch_key: entry for entry in catalog_entries}
+    graph = patch_supersedence_graph(catalog_entries)
+
+    rows = []
+    blocked = 0
+    warnings = 0
+    ready = 0
+
+    for package in packages:
+        key = patch_ref_key(package)
+        entry = by_key.get(key)
+        if not entry:
+            rows.append({
+                "patch_ref": package,
+                "patch_key": key,
+                "state": "catalog_unknown",
+                "blocking": False,
+                "reasons": ["patch não encontrada no catálogo local"],
+                "selected_assets": len(selected_ids),
+                "observed_assets": 0,
+                "missing_assets": 0,
+                "unknown_assets": len(selected_ids),
+                "preferred_replacement": None,
+                "lifecycle": {},
+            })
+            warnings += 1
+            continue
+
+        lifecycle = patch_release_intelligence(entry, reference)
+        graph_item = graph.get(entry.patch_key, {})
+        replacement = choose_preferred_replacement(entry, graph_item, by_key)
+
+        relevant = [
+            obs for obs in (entry.observations or [])
+            if obs.agent_id in selected_ids
+        ]
+        by_agent = {obs.agent_id: obs for obs in relevant}
+        missing_assets = sum(1 for obs in relevant if obs.status == "missing")
+        installed_assets = sum(1 for obs in relevant if obs.status == "installed_inferred")
+        no_longer_assets = sum(1 for obs in relevant if obs.status == "no_longer_reported")
+        observed_assets = len(by_agent)
+        unknown_assets = max(0, len(selected_ids) - observed_assets)
+
+        reasons = []
+        state = "ready"
+        is_blocking = False
+
+        if graph_item.get("obsolete") and replacement:
+            state = "superseded"
+            is_blocking = True
+            reasons.append(f"superseded por {replacement.patch_ref}; replacement leaf conhecido")
+        elif selected_ids and observed_assets == len(selected_ids) and missing_assets == 0:
+            state = "not_applicable"
+            is_blocking = True
+            reasons.append("nenhum endpoint do ring reporta a patch como missing")
+        else:
+            if lifecycle.get("eol_state") == "eol":
+                state = "review"
+                reasons.append("patch/produto marcada como EOL")
+            enrichment = patch_enrichment_state(entry, reference)
+            if enrichment.get("stale"):
+                state = "review"
+                reasons.append("metadata de lifecycle/enrichment está stale")
+            if unknown_assets:
+                state = "review"
+                reasons.append(f"{unknown_assets} endpoint(s) do ring sem observação de applicability")
+            if missing_assets:
+                reasons.append(f"{missing_assets} endpoint(s) reportam a patch como missing")
+            elif not relevant:
+                state = "review"
+                reasons.append("sem observações de applicability para este ring")
+
+        if is_blocking:
+            blocked += 1
+        elif state == "ready":
+            ready += 1
+        else:
+            warnings += 1
+
+        rows.append({
+            "patch_ref": entry.patch_ref or package,
+            "patch_key": entry.patch_key,
+            "state": state,
+            "blocking": is_blocking,
+            "reasons": reasons,
+            "selected_assets": len(selected_ids),
+            "observed_assets": observed_assets,
+            "missing_assets": missing_assets,
+            "installed_inferred": installed_assets,
+            "no_longer_reported": no_longer_assets,
+            "unknown_assets": unknown_assets,
+            "preferred_replacement": replacement.patch_ref if replacement else None,
+            "superseded_by": [
+                by_key[k].patch_ref if k in by_key else k
+                for k in graph_item.get("superseded_by_keys", [])
+            ],
+            "lifecycle": lifecycle,
+        })
+
+    if blocked:
+        state = "blocked"
+    elif warnings:
+        state = "review"
+    else:
+        state = "ready"
+
+    return {
+        "generated_at": reference.isoformat(),
+        "campaign_id": campaign.id,
+        "state": state,
+        "blocking": bool(blocked),
+        "patches": rows,
+        "summary": {
+            "packages": len(rows),
+            "blocked": blocked,
+            "warnings": warnings,
+            "ready": ready,
+            "selected_assets": len(selected_ids),
+        },
+        "rules": {
+            "superseded": "block when catalog proves the patch is obsolete and a leaf replacement is known",
+            "not_applicable": "block when every selected endpoint has applicability evidence and none reports the patch as missing",
+            "eol": "warning",
+            "stale_metadata": "warning",
+            "partial_or_missing_applicability": "warning",
+        },
+        "note": "Applicability Guard uses only local catalog and endpoint applicability evidence; it does not infer vendor compatibility when evidence is absent.",
+    }
+
+
 def campaign_preflight(
     db: Session,
     campaign: Campaign,
@@ -10879,6 +11044,7 @@ def campaign_preflight(
     ring_plan = campaign_ring_plan(db, campaign, campaign.ring_percent)
     blast_radius = campaign_blast_radius(db, campaign, reference)
     change_collisions = campaign_change_collisions(db, campaign, reference)
+    applicability_guard = campaign_patch_applicability_guard(db, campaign, reference)
 
     if not candidates:
         add_check(
@@ -10964,6 +11130,41 @@ def campaign_preflight(
             "passed",
             "nenhuma colisão ativa encontrada para endpoints ou contexto do ring",
             details=change_collisions,
+        )
+
+    if applicability_guard["state"] == "blocked":
+        blocked_rows = applicability_guard["summary"]["blocked"]
+        add_check(
+            "patch_applicability",
+            "Patch Applicability & Supersedence",
+            "blocked",
+            f"{blocked_rows} patch(es) bloqueada(s) por supersedence ou ausência comprovada de applicability no ring",
+            blocking=True,
+            details=applicability_guard,
+        )
+    elif applicability_guard["state"] in {"review", "no_packages"}:
+        add_check(
+            "patch_applicability",
+            "Patch Applicability & Supersedence",
+            "warning",
+            f"{applicability_guard['summary']['warnings']} patch(es) exigem revisão de lifecycle/applicability",
+            details=applicability_guard,
+        )
+    elif applicability_guard["state"] == "not_applicable":
+        add_check(
+            "patch_applicability",
+            "Patch Applicability & Supersedence",
+            "passed",
+            "check não aplicável a esta ação",
+            details=applicability_guard,
+        )
+    else:
+        add_check(
+            "patch_applicability",
+            "Patch Applicability & Supersedence",
+            "passed",
+            "patches possuem applicability local suficiente para o ring e não estão superseded",
+            details=applicability_guard,
         )
 
     approval = serialize_campaign_approval(campaign)
@@ -11486,6 +11687,18 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
 
 
 
+@app.get("/api/admin/campaigns/{campaign_id}/patch-applicability")
+def get_campaign_patch_applicability(
+    campaign_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return campaign_patch_applicability_guard(db, campaign)
+
+
 @app.get("/api/admin/campaigns/{campaign_id}/change-collisions")
 def get_campaign_change_collisions(
     campaign_id: str,
@@ -11660,7 +11873,7 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
 
     additional_blockers = [
         item for item in preflight["checks"]
-        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision"}
+        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision", "patch_applicability"}
     ]
     if additional_blockers:
         raise HTTPException(
@@ -11762,6 +11975,7 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
         "blast_radius": campaign_blast_radius(db, campaign, reference),
         "ring_plan": campaign_ring_plan(db, campaign, campaign.ring_percent),
         "change_collisions": campaign_change_collisions(db, campaign, reference),
+        "patch_applicability": campaign_patch_applicability_guard(db, campaign, reference),
         "preflight_snapshots": [
             serialize_campaign_preflight_snapshot(item, include_result=True)
             for item in preflight_items
