@@ -37,7 +37,7 @@ jobs:
 
       - name: Commit refreshed screenshots
         run: |
-          if git diff --quiet -- docs/screenshots; then
+          if [ -z "$(git status --porcelain -- docs/screenshots)" ]; then
             echo "Screenshots already current."
             exit 0
           fi
