@@ -4095,12 +4095,29 @@ window.createPolicyWaiver = async (campaignId, policyId) => {
   try {
     await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/policy-waivers', {
       method: 'POST',
-      body: JSON.stringify({ policy_id: policyId, reason, expires_at: expiresAt }),
+      body: JSON.stringify({ policy_id: policyId, owner: (prompt('Owner da exceção:', 'security') || '').trim(), reason, expires_at: expiresAt }),
     });
     toast('Waiver aprovado e auditado.');
     await showCampaignPolicyAsCode(campaignId);
   } catch (error) {
     toast('Policy waiver: ' + error.message, 'fail');
+  }
+};
+
+
+window.approvePolicyWaiver = async (waiverId, campaignId) => {
+  if (!requireRole('admin', 'Somente admin pode aprovar waiver.')) return;
+  const reason = prompt('Justificativa da segunda aprovação:');
+  if (!reason) return;
+  try {
+    await api('/api/admin/policy-waivers/' + encodeURIComponent(waiverId) + '/approve', {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+    toast('Segunda aprovação registrada.');
+    await showCampaignPolicyAsCode(campaignId);
+  } catch (error) {
+    toast('Policy waiver approval: ' + error.message, 'fail');
   }
 };
 
@@ -4116,7 +4133,12 @@ window.showCampaignPolicyAsCode = async (campaignId) => {
       const waiver = item.waiver;
       const waiveAction = (!item.compliant && !waiver && roleAtLeast('admin'))
         ? '<br><button class="row-action" onclick="createPolicyWaiver(\'' + esc(campaignId) + '\',\'' + esc(item.policy_id) + '\')">Criar waiver</button>'
-        : waiver ? '<br><small class="muted">waiver até ' + esc(when(waiver.expires_at)) + '</small>' : '';
+        : waiver
+          ? '<br><small class="muted">waiver ' + esc(waiver.status) + ' · owner ' + esc(waiver.owner || '-') + ' · até ' + esc(when(waiver.expires_at)) + '</small>' +
+            (waiver.status === 'pending' && roleAtLeast('admin')
+              ? '<br><button class="row-action" onclick="approvePolicyWaiver(\'' + esc(waiver.id) + '\',\'' + esc(campaignId) + '\')">2ª aprovação</button>'
+              : '')
+          : '';
       return '<tr><td><strong>' + esc(item.name) + '</strong><br><small>v' + esc(item.version) + '</small></td>' +
         '<td>' + state + '</td><td><small>' + esc(violations || 'sem violações') + '</small>' + waiveAction + '</td>' +
         '<td><code>' + esc((item.policy_sha256 || '').slice(0, 12)) + '…</code></td></tr>';
