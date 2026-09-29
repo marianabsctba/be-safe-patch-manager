@@ -3496,6 +3496,7 @@ function campaignCard(campaign, compact = false) {
         ${action || ''}
         <button class="secondary" onclick="showCampaignPreflight('${campaign.id}')">Preflight</button>
         <button class="secondary" onclick="showCampaignRingPlan('${campaign.id}')">Smart Canary</button>
+        <button class="secondary" onclick="showCampaignCollisions('${campaign.id}')">Collision Guard</button>
         <button class="secondary" onclick="showCampaignBlastRadius('${campaign.id}')">Impact Preview</button>
         <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
         <button class="secondary" onclick="showCampaignFailureIntel('${campaign.id}')">Failure Intel</button>
@@ -3910,6 +3911,55 @@ window.downloadCampaignEvidencePack = async (campaignId) => {
     toast('Evidence Pack: ' + error.message, 'fail');
   }
 };
+window.showCampaignCollisions = async (campaignId) => {
+  try {
+    const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/change-collisions');
+    const s = report.summary || {};
+    const lines = [
+      'Change Collision Guard',
+      '',
+      'Estado: ' + String(report.state || '-').toUpperCase(),
+      'Bloqueia deploy: ' + (report.blocking ? 'SIM' : 'não'),
+      'Assets do ring: ' + String(s.selected_assets || 0),
+      'Colisão direta de endpoint: ' + String(s.direct_asset_collisions || 0),
+      'Service+environment compartilhados: ' + String(s.shared_service_environment_segments || 0),
+      'Owners compartilhados: ' + String(s.shared_owners || 0),
+      'Outras campanhas: ' + String(s.other_campaigns || 0),
+      'Jobs ativos envolvidos: ' + String(s.other_active_jobs || 0),
+    ];
+
+    if ((report.direct_asset_collisions || []).length) {
+      lines.push('', 'Colisões diretas:');
+      report.direct_asset_collisions.slice(0, 12).forEach((item) => lines.push(
+        String(item.hostname || item.agent_id || '-') +
+        ' · ' + String(item.other_campaign_name || '-') +
+        ' · job ' + String(item.job_status || '-')
+      ));
+    }
+
+    if ((report.shared_service_environment || []).length) {
+      lines.push('', 'Contexto compartilhado:');
+      report.shared_service_environment.slice(0, 12).forEach((item) => lines.push(
+        String(item.business_service || '-') + ' / ' + String(item.environment || '-') +
+        ' · ' + String(item.active_jobs || 0) + ' job(s) ativo(s)'
+      ));
+    }
+
+    if ((report.shared_owners || []).length) {
+      lines.push('', 'Owners compartilhados:');
+      report.shared_owners.slice(0, 10).forEach((item) => lines.push(
+        String(item.owner || '-') + ' · ' + String(item.active_jobs || 0) + ' job(s)'
+      ));
+    }
+
+    lines.push('', String(report.note || ''));
+    alert(lines.join('\n'));
+  } catch (error) {
+    toast('Collision Guard: ' + error.message, 'fail');
+  }
+};
+
+
 window.showCampaignRingPlan = async (campaignId) => {
   try {
     const plan = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/ring-plan');
