@@ -21,8 +21,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignApprovalVote, CampaignPreflightSnapshot, CampaignRingDecision, IntegrationState, TenantSettings, PatchJob, PatchBlockRule, PatchPolicyDefinition, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, PatchPolicyCreate, PatchPolicyVersionCreate, PatchPolicySimulationRequest, PatchPolicyBundleRequest, PatchPolicyBundleImportRequest, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, TenantSettingsUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignApprovalVote, CampaignPreflightSnapshot, CampaignRingDecision, IntegrationState, TenantSettings, PatchJob, PatchBlockRule, PatchPolicyDefinition, PatchPolicyWaiver, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, PatchPolicyCreate, PatchPolicyVersionCreate, PatchPolicySimulationRequest, PatchPolicyBundleRequest, PatchPolicyBundleImportRequest, PatchPolicyWaiverCreate, PatchPolicyWaiverRevoke, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, TenantSettingsUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -34,7 +34,7 @@ from .evidence_attestation import EvidenceAttestationError, build_evidence_attes
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.55.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.56.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -7839,6 +7839,101 @@ def auto_patch_simulation(db: Session, policy: AutoPatchPolicy, patch_ref: str) 
     }
 
 
+@app.get("/api/admin/campaigns/{campaign_id}/policy-waivers")
+def list_campaign_policy_waivers(campaign_id: str, _=Depends(require_viewer), db: Session = Depends(get_db)):
+    if not db.get(Campaign, campaign_id):
+        raise HTTPException(status_code=404, detail="campaign not found")
+    items = db.query(PatchPolicyWaiver).filter(
+        PatchPolicyWaiver.campaign_id == campaign_id
+    ).order_by(PatchPolicyWaiver.created_at.desc()).all()
+    return [serialize_patch_policy_waiver(item) for item in items]
+
+
+@app.post("/api/admin/campaigns/{campaign_id}/policy-waivers")
+def create_campaign_policy_waiver(
+    campaign_id: str,
+    body: PatchPolicyWaiverCreate,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    policy = db.get(PatchPolicyDefinition, body.policy_id)
+    if not policy or not policy.enabled:
+        raise HTTPException(status_code=404, detail="active policy version not found")
+
+    latest = db.query(PatchPolicyDefinition).filter(
+        PatchPolicyDefinition.name == policy.name,
+        PatchPolicyDefinition.enabled.is_(True),
+    ).order_by(PatchPolicyDefinition.version.desc()).first()
+    if not latest or latest.id != policy.id:
+        raise HTTPException(status_code=409, detail="waiver must target the latest enabled policy version")
+
+    evaluation = evaluate_patch_policy_document(campaign, load(policy.policy_json, {}))
+    if not evaluation["matched"] or not evaluation["violations"]:
+        raise HTTPException(status_code=409, detail="campaign has no active violation for this policy")
+
+    expires_at = body.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    reference = now()
+    if expires_at <= reference:
+        raise HTTPException(status_code=400, detail="waiver expiration must be in the future")
+    if expires_at > reference + timedelta(days=30):
+        raise HTTPException(status_code=400, detail="waiver expiration cannot exceed 30 days")
+
+    existing = db.query(PatchPolicyWaiver).filter(
+        PatchPolicyWaiver.campaign_id == campaign_id,
+        PatchPolicyWaiver.policy_id == policy.id,
+        PatchPolicyWaiver.revoked_at.is_(None),
+        PatchPolicyWaiver.expires_at > reference,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="active waiver already exists for this policy and campaign")
+
+    waiver = PatchPolicyWaiver(
+        id=str(uuid.uuid4()),
+        campaign_id=campaign.id,
+        policy_id=policy.id,
+        policy_sha256=policy.policy_sha256,
+        reason=body.reason.strip(),
+        approved_by=principal["actor"],
+        expires_at=expires_at,
+    )
+    db.add(waiver)
+    db.commit()
+    audit(db, principal["actor"], "patch_policy.waiver.created", "campaign", campaign.id, {
+        "waiver": serialize_patch_policy_waiver(waiver),
+        "policy_name": policy.name,
+        "policy_version": policy.version,
+        "violations": evaluation["violations"],
+    })
+    return serialize_patch_policy_waiver(waiver)
+
+
+@app.post("/api/admin/policy-waivers/{waiver_id}/revoke")
+def revoke_policy_waiver(
+    waiver_id: str,
+    body: PatchPolicyWaiverRevoke,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    waiver = db.get(PatchPolicyWaiver, waiver_id)
+    if not waiver:
+        raise HTTPException(status_code=404, detail="waiver not found")
+    if waiver.revoked_at:
+        raise HTTPException(status_code=409, detail="waiver already revoked")
+    waiver.revoked_at = now()
+    waiver.revoked_by = principal["actor"]
+    waiver.revoke_reason = body.reason.strip()
+    db.commit()
+    audit(db, principal["actor"], "patch_policy.waiver.revoked", "campaign", waiver.campaign_id, {
+        "waiver": serialize_patch_policy_waiver(waiver),
+    })
+    return serialize_patch_policy_waiver(waiver)
+
+
 @app.get("/api/admin/patch-policies/bundle/export")
 def export_patch_policy_bundle(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return build_patch_policy_bundle(db)
@@ -12060,6 +12155,37 @@ def evaluate_patch_policy_document(campaign: Campaign, document: dict) -> dict:
     }
 
 
+def serialize_patch_policy_waiver(item: PatchPolicyWaiver, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    expires_at = item.expires_at if item.expires_at.tzinfo else item.expires_at.replace(tzinfo=timezone.utc)
+    active = item.revoked_at is None and expires_at > reference
+    return {
+        "id": item.id,
+        "campaign_id": item.campaign_id,
+        "policy_id": item.policy_id,
+        "policy_sha256": item.policy_sha256,
+        "reason": item.reason,
+        "approved_by": item.approved_by,
+        "expires_at": item.expires_at.isoformat() if item.expires_at else None,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "revoked_at": item.revoked_at.isoformat() if item.revoked_at else None,
+        "revoked_by": item.revoked_by,
+        "revoke_reason": item.revoke_reason,
+        "active": active,
+        "expired": item.revoked_at is None and expires_at <= reference,
+    }
+
+
+def active_policy_waivers_for_campaign(db: Session, campaign_id: str, reference: datetime | None = None) -> dict[str, PatchPolicyWaiver]:
+    reference = reference or now()
+    items = db.query(PatchPolicyWaiver).filter(
+        PatchPolicyWaiver.campaign_id == campaign_id,
+        PatchPolicyWaiver.revoked_at.is_(None),
+        PatchPolicyWaiver.expires_at > reference,
+    ).all()
+    return {item.policy_id: item for item in items}
+
+
 def campaign_policy_as_code_report(db: Session, campaign: Campaign) -> dict:
     policies = db.query(PatchPolicyDefinition).filter(
         PatchPolicyDefinition.enabled.is_(True)
@@ -12069,29 +12195,56 @@ def campaign_policy_as_code_report(db: Session, campaign: Campaign) -> dict:
     for item in policies:
         latest_by_name.setdefault(item.name, item)
 
+    waivers = active_policy_waivers_for_campaign(db, campaign.id)
     evaluations = []
+    blocking_violations = []
+    waived_violations = []
+
     for item in latest_by_name.values():
         result = evaluate_patch_policy_document(campaign, load(item.policy_json, {}))
+        waiver = waivers.get(item.id)
+        waiver_valid = bool(waiver and waiver.policy_sha256 == item.policy_sha256)
+        enriched_violations = []
+        for violation in result["violations"]:
+            enriched = {
+                "policy": item.name,
+                "policy_id": item.id,
+                "policy_version": item.version,
+                "policy_sha256": item.policy_sha256,
+                **violation,
+                "waived": waiver_valid,
+                "waiver_id": waiver.id if waiver_valid else None,
+            }
+            enriched_violations.append(enriched)
+            if waiver_valid:
+                waived_violations.append(enriched)
+            else:
+                blocking_violations.append(enriched)
+
         evaluations.append({
             "policy_id": item.id,
             "name": item.name,
             "version": item.version,
             "priority": item.priority,
             "policy_sha256": item.policy_sha256,
+            "waiver": serialize_patch_policy_waiver(waiver) if waiver else None,
             **result,
+            "violations": enriched_violations,
+            "effective_compliant": bool(not result["matched"] or not [v for v in enriched_violations if not v["waived"]]),
         })
 
     matched = [item for item in evaluations if item["matched"]]
-    violations = [v for item in matched for v in item["violations"]]
     return {
         "campaign_id": campaign.id,
         "matched_policies": len(matched),
         "evaluated_policies": len(evaluations),
-        "compliant": not violations,
-        "blocking": bool(violations),
-        "violations": violations,
+        "compliant": not blocking_violations,
+        "blocking": bool(blocking_violations),
+        "violations": blocking_violations,
+        "waived_violations": waived_violations,
+        "active_waivers": [serialize_patch_policy_waiver(item) for item in waivers.values()],
         "evaluations": evaluations,
-        "note": "Policy-as-Code enforcement is deterministic. Only the latest enabled version per policy name is evaluated.",
+        "note": "Policy violations remain visible when waived. Only active waivers bound to the exact policy version digest suppress enforcement.",
     }
 
 
@@ -13629,6 +13782,12 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
         "maintenance_risk": campaign_maintenance_risk(db, campaign, reference),
         "change_risk": campaign_change_risk(db, campaign, reference),
         "policy_as_code": campaign_policy_as_code_report(db, campaign),
+        "policy_waivers": [
+            serialize_patch_policy_waiver(item, reference)
+            for item in db.query(PatchPolicyWaiver).filter(
+                PatchPolicyWaiver.campaign_id == campaign.id
+            ).order_by(PatchPolicyWaiver.created_at.asc()).all()
+        ],
         "scope_drift": campaign_scope_drift(db, campaign, reference),
         "preflight_snapshots": [
             serialize_campaign_preflight_snapshot(item, include_result=True)
