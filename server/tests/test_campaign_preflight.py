@@ -277,6 +277,7 @@ def test_campaign_evidence_pack_hashes_sections_and_pack(db):
         "change_collisions",
         "patch_applicability",
         "maintenance_risk",
+        "scope_drift",
         "preflight_snapshots",
         "ring_decisions",
         "jobs",
@@ -948,4 +949,107 @@ def test_evidence_pack_includes_maintenance_risk_hash(db):
     assert "maintenance_risk" in pack["sections"]
     assert pack["manifest"]["section_hashes"]["maintenance_risk"] == main._evidence_sha256(
         pack["sections"]["maintenance_risk"]
+    )
+
+
+
+def test_scope_drift_blocks_new_endpoint_entering_dynamic_scope(db):
+    a1 = make_agent(db, "scope-a1")
+    baseline = main.build_scope_baseline([a1])
+    campaign = make_campaign(db, payload_extra={"scope_baseline": baseline})
+
+    a2 = make_agent(db, "scope-a2")
+    report = main.campaign_scope_drift(db, campaign)
+
+    assert report["state"] == "membership_drift"
+    assert report["blocking"] is True
+    assert report["summary"]["added"] == 1
+    assert report["added"][0]["agent_id"] == a2.id
+
+    preflight = main.campaign_preflight(db, campaign)
+    drift = check(preflight, "scope_drift")
+    assert drift["status"] == "blocked"
+    assert drift["blocking"] is True
+
+
+def test_scope_drift_blocks_endpoint_leaving_dynamic_scope(db):
+    a1 = make_agent(db, "scope-remove")
+    baseline = main.build_scope_baseline([a1])
+    campaign = make_campaign(db, payload_extra={"scope_baseline": baseline})
+
+    a1.tags = '["other"]'
+    db.commit()
+
+    report = main.campaign_scope_drift(db, campaign)
+
+    assert report["state"] == "membership_drift"
+    assert report["summary"]["removed"] == 1
+    assert report["removed"][0]["agent_id"] == a1.id
+
+
+def test_scope_drift_warns_on_business_context_change_without_membership_change(db):
+    agent = make_agent(db, "scope-context")
+    profile = AssetRiskProfile(
+        agent_id=agent.id,
+        criticality_override=2,
+        external_override=False,
+        owner="owner-a",
+        business_service="identity",
+        environment="prod",
+        updated_by="user:admin",
+    )
+    db.add(profile)
+    db.commit()
+    db.refresh(agent)
+
+    baseline = main.build_scope_baseline([agent])
+    campaign = make_campaign(db, payload_extra={"scope_baseline": baseline})
+
+    profile.business_service = "payments"
+    profile.criticality_override = 5
+    db.commit()
+
+    report = main.campaign_scope_drift(db, campaign)
+
+    assert report["state"] == "context_drift"
+    assert report["blocking"] is False
+    assert report["summary"]["context_changed"] == 1
+    changes = report["context_changed"][0]["changes"]
+    assert "business_service" in changes
+    assert "criticality" in changes
+
+    preflight = main.campaign_preflight(db, campaign)
+    drift = check(preflight, "scope_drift")
+    assert drift["status"] == "warning"
+    assert drift["blocking"] is False
+
+
+def test_scope_drift_is_stable_for_unchanged_baseline(db):
+    agent = make_agent(db, "scope-stable")
+    baseline = main.build_scope_baseline([agent])
+    campaign = make_campaign(db, payload_extra={"scope_baseline": baseline})
+
+    report = main.campaign_scope_drift(db, campaign)
+
+    assert report["state"] == "stable"
+    assert report["blocking"] is False
+    assert report["summary"] == {
+        "baseline_assets": 1,
+        "current_assets": 1,
+        "added": 0,
+        "removed": 0,
+        "context_changed": 0,
+    }
+
+
+def test_evidence_pack_includes_scope_drift_hash(db):
+    agent = make_agent(db, "scope-evidence")
+    baseline = main.build_scope_baseline([agent])
+    campaign = make_campaign(db, payload_extra={"scope_baseline": baseline})
+
+    pack = main.campaign_evidence_pack(db, campaign)
+
+    assert "scope_drift" in pack["sections"]
+    assert pack["manifest"]["section_hashes"]["scope_drift"] == main._evidence_sha256(
+        pack["sections"]["scope_drift"]
     )
