@@ -9780,7 +9780,6 @@ def update_patch_block_rule(
     return {"ok": True, "rule": after}
 
 
-@app.post("/api/admin/campaigns")
 def _scope_snapshot_context(agent: Agent) -> dict:
     ctx = _agent_canary_context(agent)
     return {
@@ -9844,6 +9843,7 @@ def default_rollout_plan(ring_percent: int) -> list[int]:
     return sorted(set(plan))
 
 
+@app.post("/api/admin/campaigns")
 def create_campaign(body: CampaignCreate, principal=Depends(require_operator), db: Session = Depends(get_db)):
     if body.action not in {"scan_updates", "install_updates"}:
         raise HTTPException(status_code=400, detail="unsupported action")
