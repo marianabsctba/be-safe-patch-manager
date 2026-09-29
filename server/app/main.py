@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.49.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.50.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -12550,6 +12550,135 @@ def _evidence_sha256(value: Any) -> str:
     return hashlib.sha256(_evidence_canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def verify_campaign_evidence_pack(
+    pack: dict,
+    expected_pack_sha256: str = "",
+    expected_campaign_id: str = "",
+) -> dict:
+    issues: list[str] = []
+    expected_schema = "be-safe-campaign-evidence-pack/v1"
+
+    if not isinstance(pack, dict):
+        return {
+            "valid": False,
+            "integrity_valid": False,
+            "anchored": bool(expected_pack_sha256),
+            "anchor_valid": False if expected_pack_sha256 else None,
+            "schema_valid": False,
+            "campaign_match": False if expected_campaign_id else None,
+            "issues": ["pack must be a JSON object"],
+        }
+
+    manifest = pack.get("manifest") if isinstance(pack.get("manifest"), dict) else {}
+    sections = pack.get("sections") if isinstance(pack.get("sections"), dict) else {}
+    declared_section_hashes = pack.get("section_hashes") if isinstance(pack.get("section_hashes"), dict) else {}
+    manifest_section_hashes = manifest.get("section_hashes") if isinstance(manifest.get("section_hashes"), dict) else {}
+
+    schema_valid = pack.get("schema") == expected_schema
+    if not schema_valid:
+        issues.append("unsupported or missing evidence-pack schema")
+
+    if not manifest:
+        issues.append("manifest is missing or invalid")
+    if not sections:
+        issues.append("sections are missing or invalid")
+
+    section_results: dict[str, dict] = {}
+    all_section_names = sorted(set(sections) | set(declared_section_hashes) | set(manifest_section_hashes))
+    for name in all_section_names:
+        present = name in sections
+        computed = _evidence_sha256(sections.get(name)) if present else None
+        declared = declared_section_hashes.get(name)
+        expected = manifest_section_hashes.get(name)
+        matches = bool(
+            present
+            and isinstance(declared, str)
+            and isinstance(expected, str)
+            and declared == expected == computed
+        )
+        section_results[name] = {
+            "present": present,
+            "computed_sha256": computed,
+            "declared_sha256": declared,
+            "manifest_sha256": expected,
+            "matches": matches,
+        }
+        if not matches:
+            issues.append(f"section hash mismatch: {name}")
+
+    content = {key: value for key, value in pack.items() if key != "manifest"}
+    computed_pack_sha256 = _evidence_sha256(content)
+    manifest_pack_sha256 = str(manifest.get("pack_sha256") or "").lower()
+    pack_hash_matches = bool(
+        len(manifest_pack_sha256) == 64
+        and manifest_pack_sha256 == computed_pack_sha256
+    )
+    if not pack_hash_matches:
+        issues.append("pack SHA-256 does not match manifest")
+
+    normalized_anchor = str(expected_pack_sha256 or "").strip().lower()
+    anchored = bool(normalized_anchor)
+    anchor_format_valid = (not anchored) or bool(re.fullmatch(r"[0-9a-f]{64}", normalized_anchor))
+    anchor_valid = None
+    if anchored:
+        if not anchor_format_valid:
+            anchor_valid = False
+            issues.append("trusted SHA-256 anchor must contain exactly 64 hexadecimal characters")
+        else:
+            anchor_valid = normalized_anchor == computed_pack_sha256
+            if not anchor_valid:
+                issues.append("computed pack SHA-256 does not match trusted external anchor")
+
+    campaign_match = None
+    normalized_campaign = str(expected_campaign_id or "").strip()
+    if normalized_campaign:
+        campaign_match = str(pack.get("campaign_id") or "") == normalized_campaign
+        if not campaign_match:
+            issues.append("campaign_id does not match expected campaign")
+
+    integrity_valid = bool(
+        schema_valid
+        and pack_hash_matches
+        and all(item["matches"] for item in section_results.values())
+        and bool(section_results)
+    )
+    valid = bool(
+        integrity_valid
+        and (anchor_valid is not False)
+        and (campaign_match is not False)
+    )
+
+    return {
+        "valid": valid,
+        "integrity_valid": integrity_valid,
+        "anchored": anchored,
+        "anchor_valid": anchor_valid,
+        "anchor_format_valid": anchor_format_valid,
+        "schema_valid": schema_valid,
+        "expected_schema": expected_schema,
+        "observed_schema": pack.get("schema"),
+        "campaign_match": campaign_match,
+        "campaign_id": pack.get("campaign_id"),
+        "pack_sha256": {
+            "computed": computed_pack_sha256,
+            "manifest": manifest_pack_sha256 or None,
+            "matches": pack_hash_matches,
+            "trusted_anchor": normalized_anchor or None,
+        },
+        "sections": section_results,
+        "summary": {
+            "sections": len(section_results),
+            "sections_valid": sum(1 for item in section_results.values() if item["matches"]),
+            "issues": len(issues),
+        },
+        "issues": issues,
+        "note": (
+            "Internal hashes prove self-consistency. A trusted SHA-256 recorded outside the pack "
+            "is required to detect deliberate modification followed by hash recomputation."
+        ),
+    }
+
+
 def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime | None = None) -> dict:
     reference = reference or now()
 
@@ -12666,6 +12795,39 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
             "verification": "Recompute SHA-256 over UTF-8 JSON with sorted keys and compact separators for the pack without the manifest field.",
         },
     }
+
+
+@app.post("/api/admin/evidence-pack/verify")
+def verify_evidence_pack(
+    body: dict,
+    principal=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    pack = body.get("pack") if isinstance(body, dict) else None
+    if not isinstance(pack, dict):
+        raise HTTPException(status_code=400, detail="pack must be a JSON object")
+
+    result = verify_campaign_evidence_pack(
+        pack,
+        expected_pack_sha256=str(body.get("expected_pack_sha256") or ""),
+        expected_campaign_id=str(body.get("expected_campaign_id") or ""),
+    )
+    audit(
+        db,
+        principal["actor"],
+        "campaign.evidence_pack.verified",
+        "campaign",
+        str(pack.get("campaign_id") or body.get("expected_campaign_id") or "unknown"),
+        {
+            "valid": result["valid"],
+            "integrity_valid": result["integrity_valid"],
+            "anchored": result["anchored"],
+            "anchor_valid": result["anchor_valid"],
+            "computed_pack_sha256": result["pack_sha256"]["computed"],
+            "issues": result["issues"][:20],
+        },
+    )
+    return result
 
 
 @app.get("/api/admin/campaigns/{campaign_id}/evidence-pack")
