@@ -14,7 +14,7 @@
       "Liberar quarentena do agente":"Release agent quarantine","Scan de updates":"Update scan","Crítico":"Critical","Atenção":"Attention","sim":"yes","não":"no",
       "Estratégia do canário":"Canary strategy","Balanced coverage-first":"Balanced coverage-first","Legacy hash determinístico":"Legacy deterministic hash",
       "Máx. crítico no canário (%)":"Max critical in canary (%)","Plano de rollout":"Rollout plan","Ring inicial (%)":"Initial ring (%)",
-      "Smart Canary":"Smart Canary","Collision Guard":"Collision Guard","Applicability":"Applicability","Reboot Plan":"Reboot Plan","Impact Preview":"Impact Preview","Evidence Pack":"Evidence Pack","Failure Intel":"Failure Intel","Safe Promotion":"Safe Promotion",
+      "Smart Canary":"Smart Canary","Collision Guard":"Collision Guard","Applicability":"Applicability","Reboot Plan":"Reboot Plan","Scope Drift":"Scope Drift","Impact Preview":"Impact Preview","Evidence Pack":"Evidence Pack","Failure Intel":"Failure Intel","Safe Promotion":"Safe Promotion",
       "GOVERNANÇA":"GOVERNANCE","Português (Brasil)":"Portuguese (Brazil)","English":"English","Español":"Spanish","Idioma":"Language","Idioma do tenant":"Tenant language"
     },
     es: {
@@ -31,7 +31,7 @@
       "Liberar quarentena do agente":"Liberar cuarentena del agente","Scan de updates":"Escaneo de actualizaciones","Crítico":"Crítico","Atenção":"Atención","sim":"sí","não":"no",
       "Estratégia do canário":"Estrategia canary","Balanced coverage-first":"Balanced coverage-first","Legacy hash determinístico":"Hash determinístico legacy",
       "Máx. crítico no canário (%)":"Máx. críticos en canary (%)","Plano de rollout":"Plan de rollout","Ring inicial (%)":"Ring inicial (%)",
-      "Smart Canary":"Smart Canary","Collision Guard":"Collision Guard","Applicability":"Aplicabilidad","Reboot Plan":"Plan de reinicio","Impact Preview":"Vista previa de impacto","Evidence Pack":"Paquete de evidencias","Failure Intel":"Inteligencia de fallos","Safe Promotion":"Promoción segura",
+      "Smart Canary":"Smart Canary","Collision Guard":"Collision Guard","Applicability":"Aplicabilidad","Reboot Plan":"Plan de reinicio","Scope Drift":"Deriva de alcance","Impact Preview":"Vista previa de impacto","Evidence Pack":"Paquete de evidencias","Failure Intel":"Inteligencia de fallos","Safe Promotion":"Promoción segura",
       "GOVERNANÇA":"GOBERNANZA","Português (Brasil)":"Portugués (Brasil)","English":"Inglés","Español":"Español","Idioma":"Idioma","Idioma do tenant":"Idioma del tenant"
     }
   };
