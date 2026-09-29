@@ -3495,6 +3495,7 @@ function campaignCard(campaign, compact = false) {
       <div class="campaign-actions">
         ${action || ''}
         <button class="secondary" onclick="showCampaignPreflight('${campaign.id}')">Preflight</button>
+        <button class="secondary" onclick="showCampaignRingPlan('${campaign.id}')">Smart Canary</button>
         <button class="secondary" onclick="showCampaignBlastRadius('${campaign.id}')">Impact Preview</button>
         <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
         <button class="secondary" onclick="showCampaignFailureIntel('${campaign.id}')">Failure Intel</button>
@@ -3909,6 +3910,54 @@ window.downloadCampaignEvidencePack = async (campaignId) => {
     toast('Evidence Pack: ' + error.message, 'fail');
   }
 };
+window.showCampaignRingPlan = async (campaignId) => {
+  try {
+    const plan = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/ring-plan');
+    const coverage = plan.coverage || {};
+    const selection = Array.isArray(plan.selection) ? plan.selection : [];
+    const lines = [
+      'Smart Canary / Ring Planner',
+      '',
+      'Estratégia: ' + String(plan.strategy || '-').toUpperCase(),
+      'Ring: ' + String(plan.percent || 0) + '%',
+      'Selecionados: ' + String(plan.selected_count || 0) + '/' + String(plan.candidate_count || 0),
+      'Critical cap: ' + String(plan.critical_cap_percent ?? '-') + '%' +
+        (plan.critical_cap_count !== null && plan.critical_cap_count !== undefined
+          ? ' · máximo preferencial ' + String(plan.critical_cap_count)
+          : ''),
+      'Críticos selecionados: ' + String(plan.critical_selected || 0),
+      '',
+      'Cobertura do canário:',
+      'Business services: ' + String(coverage.business_services || 0),
+      'Environments: ' + String(coverage.environments || 0),
+      'OS segments: ' + String(coverage.os_segments || 0),
+      'Owners: ' + String(coverage.owners || 0),
+    ];
+
+    if (selection.length) {
+      lines.push('', 'Ordem determinística do ring:');
+      selection.slice(0, 20).forEach((item, index) => lines.push(
+        String(index + 1) + '. ' + String(item.hostname || item.agent_id || '-') +
+        (item.business_service ? ' · ' + String(item.business_service) : '') +
+        (item.environment ? ' · ' + String(item.environment) : '') +
+        (item.os_family ? ' · ' + String(item.os_family) + ' ' + String(item.os_version || '') : '') +
+        (item.criticality !== undefined ? ' · crit ' + String(item.criticality) : '')
+      ));
+    }
+
+    if (Array.isArray(plan.rules) && plan.rules.length) {
+      lines.push('', 'Regras de seleção:');
+      plan.rules.forEach((rule, index) => lines.push(String(index + 1) + '. ' + String(rule)));
+    }
+
+    lines.push('', String(plan.note || ''));
+    alert(lines.join('\n'));
+  } catch (error) {
+    toast('Smart Canary: ' + error.message, 'fail');
+  }
+};
+
+
 window.showCampaignBlastRadius = async (campaignId) => {
   try {
     const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/blast-radius');
@@ -4711,6 +4760,8 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     promotion_min_success_rate: Number(form.get('promotion_min_success_rate') || 90),
     promotion_max_success_drop: Number(form.get('promotion_max_success_drop') || 10),
     pause_on_failure: form.get('pause_on_failure') === 'on',
+    ring_strategy: 'balanced',
+    canary_max_critical_percent: 25,
     target_agent_id: form.get('target_agent_id') || '',
     target_agent_ids: Array.isArray(state.campaignTargetAgentIds) ? state.campaignTargetAgentIds : [],
     target_finding_id: form.get('target_finding_id') || '',
