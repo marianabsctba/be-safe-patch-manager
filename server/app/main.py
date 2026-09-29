@@ -10451,16 +10451,6 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
     if campaign.status != "draft":
         raise HTTPException(status_code=409, detail="campaign already deployed")
 
-    preflight = campaign_preflight(db, campaign)
-    if not preflight["deploy_allowed"]:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "campaign preflight blocked deployment",
-                "preflight": preflight,
-            },
-        )
-
     enforce_campaign_freeze_guard(db, campaign)
 
     approval_state = serialize_campaign_approval(campaign)
@@ -10484,6 +10474,21 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
             detail={
                 "message": "patch deployment blocked by Patch Guard",
                 "blockers": blockers,
+            },
+        )
+
+    preflight = campaign_preflight(db, campaign)
+    additional_blockers = [
+        item for item in preflight["checks"]
+        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls"}
+    ]
+    if additional_blockers:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "campaign preflight blocked deployment",
+                "preflight": preflight,
+                "blockers": additional_blockers,
             },
         )
 
