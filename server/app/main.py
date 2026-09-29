@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
 from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignApprovalVote, CampaignPreflightSnapshot, CampaignRingDecision, IntegrationState, TenantSettings, PatchJob, PatchBlockRule, PatchPolicyDefinition, PatchPolicyWaiver, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, PatchPolicyCreate, PatchPolicyVersionCreate, PatchPolicySimulationRequest, PatchPolicyBundleRequest, PatchPolicyBundleImportRequest, PatchPolicyWaiverCreate, PatchPolicyWaiverRevoke, PatchPolicyWaiverApprove, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, TenantSettingsUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, PatchPolicyCreate, PatchPolicyVersionCreate, PatchPolicySimulationRequest, PatchPolicyBundleRequest, PatchPolicyBundleImportRequest, PatchPolicyWaiverCreate, PatchPolicyWaiverRevoke, PatchPolicyWaiverApprove, ExceptionBudgetCreate, ExceptionBudgetUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, TenantSettingsUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -34,7 +34,7 @@ from .evidence_attestation import EvidenceAttestationError, build_evidence_attes
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.57.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.58.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -7844,6 +7844,159 @@ def auto_patch_simulation(db: Session, policy: AutoPatchPolicy, patch_ref: str) 
     }
 
 
+def serialize_exception_budget(item: ExceptionBudget) -> dict:
+    return {
+        "id": item.id,
+        "name": item.name,
+        "enabled": bool(item.enabled),
+        "scope_type": item.scope_type,
+        "scope_value": item.scope_value,
+        "max_waivers_month": item.max_waivers_month,
+        "max_hours_month": item.max_hours_month,
+        "created_by": item.created_by,
+        "updated_by": item.updated_by,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+    }
+
+
+def _month_bounds(reference: datetime) -> tuple[datetime, datetime]:
+    reference = reference if reference.tzinfo else reference.replace(tzinfo=timezone.utc)
+    start = reference.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end
+
+
+def _campaign_business_services(campaign: Campaign) -> set[str]:
+    payload = load(campaign.payload_json, {})
+    baseline = payload.get("scope_baseline") if isinstance(payload.get("scope_baseline"), dict) else {}
+    assets = baseline.get("assets") if isinstance(baseline.get("assets"), list) else []
+    return {
+        str(asset.get("business_service") or "").strip().lower()
+        for asset in assets if isinstance(asset, dict)
+        if str(asset.get("business_service") or "").strip()
+    }
+
+
+def exception_budget_usage(db: Session, budget: ExceptionBudget, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    month_start, month_end = _month_bounds(reference)
+    items = db.query(PatchPolicyWaiver).filter(
+        PatchPolicyWaiver.created_at >= month_start,
+        PatchPolicyWaiver.created_at < month_end,
+        PatchPolicyWaiver.revoked_at.is_(None),
+    ).all()
+
+    matched = []
+    hours = 0.0
+    for item in items:
+        if budget.scope_type == "owner":
+            applies = item.owner.strip().lower() == budget.scope_value.strip().lower()
+        else:
+            campaign = db.get(Campaign, item.campaign_id)
+            applies = bool(campaign and budget.scope_value.strip().lower() in _campaign_business_services(campaign))
+        if not applies:
+            continue
+        matched.append(item)
+        created = item.created_at if item.created_at.tzinfo else item.created_at.replace(tzinfo=timezone.utc)
+        expires = item.expires_at if item.expires_at.tzinfo else item.expires_at.replace(tzinfo=timezone.utc)
+        start = max(created, month_start)
+        end = min(expires, month_end)
+        if end > start:
+            hours += (end - start).total_seconds() / 3600.0
+
+    return {
+        "budget": serialize_exception_budget(budget),
+        "period": {"start": month_start.isoformat(), "end": month_end.isoformat()},
+        "used_waivers": len(matched),
+        "used_hours": round(hours, 2),
+        "remaining_waivers": max(0, int(budget.max_waivers_month) - len(matched)),
+        "remaining_hours": round(max(0.0, float(budget.max_hours_month) - hours), 2),
+        "waiver_budget_exhausted": len(matched) >= int(budget.max_waivers_month),
+        "hours_budget_exhausted": hours >= float(budget.max_hours_month),
+    }
+
+
+def exception_budget_assessment(
+    db: Session,
+    campaign: Campaign,
+    owner: str,
+    expires_at: datetime,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    month_start, month_end = _month_bounds(reference)
+    services = _campaign_business_services(campaign)
+    budgets = db.query(ExceptionBudget).filter(
+        ExceptionBudget.enabled.is_(True)
+    ).order_by(ExceptionBudget.name.asc()).all()
+
+    matching = []
+    for budget in budgets:
+        if budget.scope_type == "owner":
+            applies = budget.scope_value.strip().lower() == owner.strip().lower()
+        else:
+            applies = budget.scope_value.strip().lower() in services
+        if not applies:
+            continue
+
+        usage = exception_budget_usage(db, budget, reference)
+        request_end = min(expires_at, month_end)
+        proposed_hours = max(0.0, (request_end - reference).total_seconds() / 3600.0)
+        projected_waivers = int(usage["used_waivers"]) + 1
+        projected_hours = float(usage["used_hours"]) + proposed_hours
+        exceeded = (
+            projected_waivers > int(budget.max_waivers_month)
+            or projected_hours > float(budget.max_hours_month)
+        )
+        matching.append({
+            **usage,
+            "proposed_hours": round(proposed_hours, 2),
+            "projected_waivers": projected_waivers,
+            "projected_hours": round(projected_hours, 2),
+            "exceeded": exceeded,
+        })
+
+    exceeded = [item for item in matching if item["exceeded"]]
+    return {
+        "matched_budgets": len(matching),
+        "exceeded_budgets": len(exceeded),
+        "requires_escalation": bool(exceeded),
+        "budgets": matching,
+        "note": "Exceeding an exception budget escalates the waiver to dual approval instead of silently bypassing governance.",
+    }
+
+
+def exception_budget_report(db: Session, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    budgets = db.query(ExceptionBudget).order_by(ExceptionBudget.name.asc()).all()
+    items = []
+    for budget in budgets:
+        usage = exception_budget_usage(db, budget, reference)
+        pct_waivers = round((usage["used_waivers"] / max(1, budget.max_waivers_month)) * 100, 1)
+        pct_hours = round((usage["used_hours"] / max(1, budget.max_hours_month)) * 100, 1)
+        items.append({
+            **usage,
+            "utilization_percent": max(pct_waivers, pct_hours),
+            "state": "exhausted" if (usage["waiver_budget_exhausted"] or usage["hours_budget_exhausted"]) else (
+                "warning" if max(pct_waivers, pct_hours) >= 80 else "healthy"
+            ),
+        })
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": {
+            "budgets": len(items),
+            "exhausted": sum(1 for item in items if item["state"] == "exhausted"),
+            "warning": sum(1 for item in items if item["state"] == "warning"),
+            "healthy": sum(1 for item in items if item["state"] == "healthy"),
+        },
+        "items": items,
+    }
+
+
 def waiver_governance_for_campaign(campaign: Campaign) -> dict:
     payload = load(campaign.payload_json, {})
     baseline = payload.get("scope_baseline") if isinstance(payload.get("scope_baseline"), dict) else {}
@@ -7924,6 +8077,66 @@ def waiver_governance_report(db: Session, reference: datetime | None = None) -> 
     }
 
 
+@app.get("/api/admin/exception-budgets")
+def list_exception_budgets(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    return [
+        serialize_exception_budget(item)
+        for item in db.query(ExceptionBudget).order_by(ExceptionBudget.name.asc()).all()
+    ]
+
+
+@app.post("/api/admin/exception-budgets")
+def create_exception_budget(body: ExceptionBudgetCreate, principal=Depends(require_admin), db: Session = Depends(get_db)):
+    name = body.name.strip()
+    scope_value = body.scope_value.strip()
+    if db.query(ExceptionBudget).filter(ExceptionBudget.name == name).first():
+        raise HTTPException(status_code=409, detail="exception budget name already exists")
+    if db.query(ExceptionBudget).filter(
+        ExceptionBudget.scope_type == body.scope_type,
+        func.lower(ExceptionBudget.scope_value) == scope_value.lower(),
+    ).first():
+        raise HTTPException(status_code=409, detail="exception budget already exists for this scope")
+    item = ExceptionBudget(
+        id=str(uuid.uuid4()),
+        name=name,
+        enabled=body.enabled,
+        scope_type=body.scope_type,
+        scope_value=scope_value,
+        max_waivers_month=body.max_waivers_month,
+        max_hours_month=body.max_hours_month,
+        created_by=principal["actor"],
+        updated_by=principal["actor"],
+    )
+    db.add(item)
+    db.commit()
+    audit(db, principal["actor"], "exception_budget.created", "exception_budget", item.id, serialize_exception_budget(item))
+    return serialize_exception_budget(item)
+
+
+@app.patch("/api/admin/exception-budgets/{budget_id}")
+def update_exception_budget(budget_id: str, body: ExceptionBudgetUpdate, principal=Depends(require_admin), db: Session = Depends(get_db)):
+    item = db.get(ExceptionBudget, budget_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="exception budget not found")
+    before = serialize_exception_budget(item)
+    if body.enabled is not None:
+        item.enabled = body.enabled
+    if body.max_waivers_month is not None:
+        item.max_waivers_month = body.max_waivers_month
+    if body.max_hours_month is not None:
+        item.max_hours_month = body.max_hours_month
+    item.updated_by = principal["actor"]
+    db.commit()
+    after = serialize_exception_budget(item)
+    audit(db, principal["actor"], "exception_budget.updated", "exception_budget", item.id, {"before": before, "after": after})
+    return after
+
+
+@app.get("/api/admin/reports/exception-budgets")
+def get_exception_budget_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    return exception_budget_report(db)
+
+
 @app.get("/api/admin/campaigns/{campaign_id}/policy-waivers")
 def list_campaign_policy_waivers(campaign_id: str, _=Depends(require_viewer), db: Session = Depends(get_db)):
     if not db.get(Campaign, campaign_id):
@@ -7979,6 +8192,16 @@ def create_campaign_policy_waiver(
         raise HTTPException(status_code=409, detail="active or pending waiver already exists for this policy and campaign")
 
     governance = waiver_governance_for_campaign(campaign)
+    budget_assessment = exception_budget_assessment(
+        db, campaign, body.owner.strip(), expires_at, reference
+    )
+    if budget_assessment["requires_escalation"]:
+        governance["required_approvals"] = max(2, int(governance["required_approvals"]))
+        governance["budget_escalation"] = True
+    else:
+        governance["budget_escalation"] = False
+    governance["exception_budget"] = budget_assessment
+
     active_count = db.query(PatchPolicyWaiver).filter(
         PatchPolicyWaiver.campaign_id == campaign_id,
         PatchPolicyWaiver.revoked_at.is_(None),
