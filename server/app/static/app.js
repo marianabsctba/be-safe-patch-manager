@@ -3496,6 +3496,7 @@ function campaignCard(campaign, compact = false) {
         ${action || ''}
         <button class="secondary" onclick="showCampaignPreflight('${campaign.id}')">Preflight</button>
         <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
+        <button class="secondary" onclick="showCampaignFailureIntel('${campaign.id}')">Failure Intel</button>
         <button class="secondary" onclick="showPromotionAnalysis('${campaign.id}')">Safe Promotion</button>
         <button class="secondary" onclick="showRingHistory('${campaign.id}')">Histórico de rings</button>
       </div>
@@ -3907,6 +3908,64 @@ window.downloadCampaignEvidencePack = async (campaignId) => {
     toast('Evidence Pack: ' + error.message, 'fail');
   }
 };
+window.showCampaignFailureIntel = async (campaignId) => {
+  try {
+    const [report, preflight] = await Promise.all([
+      api('/api/admin/reports/patch-failure-intelligence?lookback_days=30&limit=100'),
+      api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/preflight'),
+    ]);
+    const check = (preflight.checks || []).find((item) => item.key === 'local_regression') || {};
+    const matches = check.details && Array.isArray(check.details.matches) ? check.details.matches : [];
+    const summary = report.summary || {};
+    const lines = [
+      'Patch Failure Intelligence',
+      '',
+      'Janela: ' + String(report.lookback_days || 30) + ' dias',
+      'Regressões locais confirmadas: ' + String(summary.confirmed_local_regressions || 0),
+      'Taxas de falha elevadas: ' + String(summary.elevated_failure_rates || 0),
+      'Clusters de falha: ' + String(summary.failure_clusters || 0),
+      '',
+      'Campanha: ' + String(preflight.campaign_name || campaignId),
+      'Estado local: ' + String((check.details || {}).state || 'no_evidence'),
+    ];
+
+    if (matches.length) {
+      lines.push('', 'Evidência que casa com este ring:');
+      matches.slice(0, 12).forEach((item) => {
+        lines.push(
+          String(item.patch_ref || '-') + ' · ' +
+          String(item.os_family || '-') + ' ' + String(item.os_version || '-') +
+          ' · ' + String(item.regression_state || '-') +
+          ' · falha efetiva ' + String(item.effective_failure_rate ?? '-') + '%' +
+          ' · ' + String(item.failed || 0) + ' install fail / ' +
+          String(item.post_patch_regressions || 0) + ' pós-patch'
+        );
+      });
+    } else {
+      lines.push('', 'Nenhuma evidência local recente casando patch + SO/versão do ring.');
+    }
+
+    const relevantRefs = new Set(matches.map((item) => String(item.patch_ref || '').toLowerCase()));
+    const clusters = (report.clusters || []).filter((item) => !relevantRefs.size || relevantRefs.has(String(item.patch_ref || '').toLowerCase()));
+    if (clusters.length) {
+      lines.push('', 'Top failure signatures:');
+      clusters.slice(0, 8).forEach((item) => {
+        lines.push(
+          '[' + String(item.category || '-') + '] ' +
+          String(item.patch_ref || '-') + ' · ' +
+          String(item.count || 0) + 'x · ' +
+          String(item.signature || 'unspecified')
+        );
+      });
+    }
+
+    alert(lines.join('\n'));
+  } catch (error) {
+    toast('Failure Intelligence: ' + error.message, 'fail');
+  }
+};
+
+
 
 
 window.showPromotionAnalysis = async (campaignId) => {
