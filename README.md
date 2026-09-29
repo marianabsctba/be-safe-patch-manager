@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.41.0  
+> **Control plane:** v0.42.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -216,6 +216,55 @@ Patch Guard       PASSED  -> BLOCKED
 ```
 
 Toda tentativa de deploy também registra automaticamente um snapshot de preflight, preservando a evidência da condição operacional observada naquele momento.
+
+## Patch Failure Intelligence
+
+A plataforma aprende com o histórico local de deployment em vez de tratar toda falha como um evento isolado.
+
+A análise agrupa evidências por:
+
+- patch reference;
+- sistema operacional;
+- versão do sistema operacional;
+- categoria da falha;
+- assinatura normalizada do erro.
+
+Categorias operacionais incluem:
+
+- `install_failure`;
+- `download_or_network`;
+- `dependency_or_prerequisite`;
+- `reboot_required`;
+- `disk_capacity`;
+- `permission`;
+- `applicability_or_compatibility`;
+- `execution_stalled`;
+- `compatibility_blocked`;
+- `post_patch_regression`;
+- `rollback_failure`.
+
+A normalização remove valores voláteis como URL, códigos hexadecimais e números longos para agrupar ocorrências equivalentes sem fingir uma causa-raiz que não foi observada.
+
+Estados por patch + SO/versão:
+
+- `stable`;
+- `observed_failures`;
+- `elevated_failure_rate`;
+- `confirmed_local_regression`.
+
+Uma regressão local confirmada exige, na janela de 30 dias:
+
+```text
+>= 3 resultados comparáveis
+>= 2 falhas efetivas
+>= 50% de taxa de falha efetiva
+```
+
+Falha efetiva considera falha de instalação e regressão pós-patch observada pelo Health Gate.
+
+O Campaign Preflight cruza automaticamente a patch da campanha com o SO/versão real do ring. Quando existe regressão local confirmada exatamente nesse segmento, o deploy é bloqueado antes da criação de jobs.
+
+Uma falha isolada não gera bloqueio.
 
 ## Campaign Evidence Pack
 
@@ -730,7 +779,7 @@ O pipeline valida:
 - JavaScript;
 - pre-publish security check.
 
-A v0.41 passa pelo pipeline completo antes de ser considerada pronta.
+A v0.42 passa pelo pipeline completo antes de ser considerada pronta.
 
 ## Estrutura
 
