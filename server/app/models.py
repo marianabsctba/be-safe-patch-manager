@@ -626,6 +626,25 @@ class PatchPolicyWaiver(Base):
     revoke_reason = Column(Text, nullable=False, default="")
 
 
+class ExceptionBudget(Base):
+    __tablename__ = "exception_budgets"
+    __table_args__ = (
+        UniqueConstraint("scope_type", "scope_value", name="uq_exception_budget_scope"),
+    )
+
+    id = Column(String(36), primary_key=True)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    scope_type = Column(String(32), nullable=False, index=True)
+    scope_value = Column(String(255), nullable=False, index=True)
+    max_waivers_month = Column(Integer, nullable=False, default=5)
+    max_hours_month = Column(Integer, nullable=False, default=72)
+    created_by = Column(String(255), nullable=False)
+    updated_by = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class TenantSettings(Base):
     __tablename__ = "tenant_settings"
 
