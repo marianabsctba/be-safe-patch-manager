@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.47.0  
+> **Control plane:** v0.48.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -232,6 +232,50 @@ Patch Guard       PASSED  -> BLOCKED
 ```
 
 Toda tentativa de deploy também registra automaticamente um snapshot de preflight, preservando a evidência da condição operacional observada naquele momento.
+
+## Maintenance Risk & Reboot Orchestration
+
+Antes do deploy, a campanha calcula um plano explicável de manutenção e reboot usando evidência real do ambiente.
+
+A análise cruza:
+
+- reboot já pendente no endpoint;
+- metadata `reboot_behavior` do Patch Catalog;
+- applicability `missing` por endpoint;
+- criticidade e business context dos ativos;
+- critical services configurados no Health Gate;
+- reboot policy efetiva da campanha;
+- janela de manutenção;
+- duração histórica observada de jobs comparáveis.
+
+Estados:
+
+- `ready`;
+- `observe`;
+- `review`;
+- `blocked`;
+- `not_applicable`.
+
+Regra impeditiva explícita:
+
+```text
+patch missing exige reboot
++
+campanha proíbe reboot
+=> BLOCKED
+```
+
+Outros sinais são advisory e explicáveis:
+
+- endpoint já com reboot pendente;
+- ativo crítico com reboot pendente ou provável;
+- serviço crítico em mudança com potencial de reboot;
+- metadata de reboot desconhecida;
+- janela menor que o p95 observado quando existem pelo menos 3 jobs comparáveis.
+
+O histórico mostra mediana e p95 de duração apenas quando existe amostra observada. A plataforma não inventa duração estimada quando não há dados suficientes.
+
+O console ganha a ação `Reboot Plan`, o Preflight inclui `Maintenance & Reboot Readiness`, e o Evidence Pack passa a incluir `maintenance_risk` com SHA-256 próprio.
 
 ## Patch Applicability & Supersedence Guard
 
