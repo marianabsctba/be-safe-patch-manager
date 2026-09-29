@@ -184,7 +184,9 @@ jobs:
           node-version: "22"
 
       - name: JavaScript syntax
-        run: node --check server/app/static/app.js
+        run: |
+          node --check server/app/static/app.js
+          node --check server/app/static/i18n.js
 
       - name: Pre-publish security check
         run: python scripts/pre-publish-check.py
