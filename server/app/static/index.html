@@ -881,6 +881,19 @@
                 </label>
 
                 <label>
+                  <span>Estratégia do canário</span>
+                  <select name="ring_strategy">
+                    <option value="balanced" selected>Balanced coverage-first</option>
+                    <option value="hash">Legacy hash determinístico</option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>Máx. crítico no canário (%)</span>
+                  <input name="canary_max_critical_percent" type="number" min="0" max="100" value="25" />
+                </label>
+
+                <label>
                   <span>Plano de rollout</span>
                   <input name="rollout_plan" value="10,30,100" placeholder="5,10,30,100" />
                 </label>
