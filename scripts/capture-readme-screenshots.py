@@ -40,8 +40,11 @@ def base_state(page):
       () => {
         state.sessionToken = "readme-demo";
         state.user = {username: "admin", role: "admin"};
-        hideLogin();
-        applyPermissions();
+        document.querySelector("#loginGate").hidden = true;
+        document.querySelector("#authUser").hidden = false;
+        document.querySelector("#authUsername").textContent = "admin";
+        document.querySelector("#authRole").textContent = "ADMIN";
+        document.querySelectorAll("[data-min-role]").forEach((element) => { element.hidden = false; });
         document.querySelector("#lastUpdate").textContent = "Atualizado agora";
       }
     """)
