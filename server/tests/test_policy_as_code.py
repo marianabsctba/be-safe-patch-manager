@@ -373,3 +373,65 @@ def test_pending_waiver_does_not_suppress_policy_enforcement(db):
     report = main.campaign_policy_as_code_report(db, item)
     assert report["blocking"] is True
     assert report["active_waivers"] == []
+
+
+def test_exception_budget_overrun_escalates_to_dual_approval(db):
+    item = campaign(db, ring=10)
+    normalized = main.validate_patch_policy_document(document(max_ring=5))
+    policy = PatchPolicyDefinition(
+        id="budget-p1", name="Budget policy", version=1, enabled=True, priority=100,
+        policy_json=main.dump(normalized), policy_sha256=main._evidence_sha256(normalized),
+        created_by="admin",
+    )
+    from app.models import ExceptionBudget
+    db.add(policy)
+    db.add(ExceptionBudget(
+        id="b1", name="IAM budget", enabled=True,
+        scope_type="owner", scope_value="iam-owner",
+        max_waivers_month=1, max_hours_month=1,
+        created_by="admin", updated_by="admin",
+    ))
+    db.commit()
+
+    from app.schemas import PatchPolicyWaiverCreate
+    from datetime import datetime, timedelta, timezone
+    body = PatchPolicyWaiverCreate(
+        policy_id=policy.id,
+        owner="iam-owner",
+        reason="Temporary exception exceeding the monthly budget",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=6),
+    )
+    waiver = main.create_campaign_policy_waiver(
+        item.id, body,
+        principal={"actor": "user:admin1", "role": "admin"},
+        db=db,
+    )
+
+    assert waiver["required_approvals"] == 2
+    assert waiver["status"] == "pending"
+
+
+def test_exception_budget_report_tracks_usage(db):
+    item = campaign(db, ring=10)
+    from app.models import ExceptionBudget, PatchPolicyWaiver
+    from datetime import datetime, timedelta, timezone
+    budget = ExceptionBudget(
+        id="b1", name="IAM budget", enabled=True,
+        scope_type="owner", scope_value="iam-owner",
+        max_waivers_month=5, max_hours_month=24,
+        created_by="admin", updated_by="admin",
+    )
+    db.add(budget)
+    db.add(PatchPolicyWaiver(
+        id="bw1", campaign_id=item.id, policy_id="dummy",
+        policy_sha256="1" * 64, reason="Budget usage",
+        owner="iam-owner", requested_by="admin", approved_by="admin",
+        required_approvals=1, status="approved",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=6),
+    ))
+    db.commit()
+
+    report = main.exception_budget_report(db)
+    assert report["summary"]["budgets"] == 1
+    assert report["items"][0]["used_waivers"] == 1
+    assert report["items"][0]["used_hours"] > 0
