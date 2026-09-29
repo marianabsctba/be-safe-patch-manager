@@ -3497,6 +3497,7 @@ function campaignCard(campaign, compact = false) {
         <button class="secondary" onclick="showCampaignPreflight('${campaign.id}')">Preflight</button>
         <button class="secondary" onclick="showCampaignRingPlan('${campaign.id}')">Smart Canary</button>
         <button class="secondary" onclick="showCampaignCollisions('${campaign.id}')">Collision Guard</button>
+        <button class="secondary" onclick="showPatchApplicability('${campaign.id}')">Applicability</button>
         <button class="secondary" onclick="showCampaignBlastRadius('${campaign.id}')">Impact Preview</button>
         <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
         <button class="secondary" onclick="showCampaignFailureIntel('${campaign.id}')">Failure Intel</button>
@@ -3911,6 +3912,42 @@ window.downloadCampaignEvidencePack = async (campaignId) => {
     toast('Evidence Pack: ' + error.message, 'fail');
   }
 };
+window.showPatchApplicability = async (campaignId) => {
+  try {
+    const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/patch-applicability');
+    const s = report.summary || {};
+    const lines = [
+      'Patch Applicability & Supersedence',
+      '',
+      'Estado: ' + String(report.state || '-').toUpperCase(),
+      'Bloqueia deploy: ' + (report.blocking ? 'SIM' : 'não'),
+      'Pacotes: ' + String(s.packages || 0),
+      'Blocked: ' + String(s.blocked || 0),
+      'Warnings: ' + String(s.warnings || 0),
+      'Ready: ' + String(s.ready || 0),
+      'Assets no ring: ' + String(s.selected_assets || 0),
+    ];
+
+    (report.patches || []).slice(0, 20).forEach((item) => {
+      lines.push(
+        '',
+        String(item.patch_ref || '-') + ' · ' + String(item.state || '-').toUpperCase(),
+        'missing ' + String(item.missing_assets || 0) +
+          ' · unknown ' + String(item.unknown_assets || 0) +
+          ' · observed ' + String(item.observed_assets || 0) +
+          (item.preferred_replacement ? ' · replacement ' + String(item.preferred_replacement) : '')
+      );
+      (item.reasons || []).forEach((reason) => lines.push('  - ' + String(reason)));
+    });
+
+    lines.push('', String(report.note || ''));
+    alert(lines.join('\n'));
+  } catch (error) {
+    toast('Applicability: ' + error.message, 'fail');
+  }
+};
+
+
 window.showCampaignCollisions = async (campaignId) => {
   try {
     const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/change-collisions');
