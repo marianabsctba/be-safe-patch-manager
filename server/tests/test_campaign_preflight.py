@@ -1123,3 +1123,93 @@ def test_evidence_pack_includes_scope_drift_hash(db):
     assert pack["manifest"]["section_hashes"]["scope_drift"] == main._evidence_sha256(
         pack["sections"]["scope_drift"]
     )
+
+
+def test_change_risk_is_explainable_and_separates_urgency(db):
+    agent = make_agent(db)
+    db.add(AssetRiskProfile(
+        agent_id=agent.id,
+        criticality_override=5,
+        external_override=True,
+        owner="",
+        business_service="identity",
+        environment="production",
+        updated_by="user:risk",
+    ))
+    db.commit()
+    campaign = make_campaign(
+        db,
+        payload_extra={
+            "prepare_rollback": False,
+            "rollback_required": False,
+            "health_policy": {"enabled": False},
+        },
+    )
+
+    report = main.campaign_change_risk(db, campaign)
+
+    assert report["score"] >= 25
+    assert report["level"] in {"moderate", "high", "critical"}
+    assert report["model"]["name"] == "be_safe_change_risk_v1"
+    assert all("points" in factor and "source" in factor for factor in report["factors"])
+    assert "urgency_context" in report
+
+
+def test_critical_change_risk_blocks_when_required_controls_missing(db):
+    agent = make_agent(db)
+    db.add(AssetRiskProfile(
+        agent_id=agent.id,
+        criticality_override=5,
+        external_override=True,
+        owner="",
+        business_service="identity",
+        environment="production",
+        updated_by="user:risk",
+    ))
+    db.commit()
+    campaign = make_campaign(
+        db,
+        payload_extra={
+            "prepare_rollback": False,
+            "rollback_required": False,
+            "health_policy": {"enabled": False},
+            "maintenance_start": "",
+            "maintenance_end": "",
+        },
+    )
+    campaign.ring_percent = 100
+    db.commit()
+
+    report = main.campaign_change_risk(db, campaign)
+    preflight = main.campaign_preflight(db, campaign)
+
+    assert report["level"] == "critical"
+    assert report["blocking"] is True
+    assert set(report["missing_controls"]) >= {"health_gate", "rollback_prepared", "initial_ring_max_10", "maintenance_window"}
+    assert check(preflight, "change_risk")["blocking"] is True
+
+
+def test_low_change_risk_does_not_invent_blocker(db):
+    agent = make_agent(db)
+    db.add(AssetRiskProfile(
+        agent_id=agent.id,
+        criticality_override=1,
+        external_override=False,
+        owner="ops",
+        business_service="lab",
+        environment="test",
+        updated_by="user:risk",
+    ))
+    db.commit()
+    campaign = make_campaign(
+        db,
+        payload_extra={
+            "maintenance_start": "22:00",
+            "maintenance_end": "23:00",
+        },
+    )
+
+    report = main.campaign_change_risk(db, campaign)
+
+    assert report["blocking"] is False
+    assert report["model"]["method"].startswith("deterministic")
