@@ -43,6 +43,10 @@ services:
       AGENT_UPDATE_MAX_HEARTBEAT_AGE_SECONDS: ${AGENT_UPDATE_MAX_HEARTBEAT_AGE_SECONDS:-900}
       AGENT_RELEASE_DIR: /agent-releases
       AGENT_UPDATE_PUBLIC_KEY_FILE: /update-trust/agent-update-public.pem
+      EVIDENCE_ATTESTATION_ENABLED: ${EVIDENCE_ATTESTATION_ENABLED:-false}
+      EVIDENCE_ATTESTATION_ISSUER: ${EVIDENCE_ATTESTATION_ISSUER:-Be Safe Patch Manager}
+      EVIDENCE_ATTESTATION_PRIVATE_KEY_FILE: /evidence-trust/evidence-attestation-private.pem
+      EVIDENCE_ATTESTATION_PUBLIC_KEY_FILE: /evidence-trust/evidence-attestation-public.pem
       BACKUP_STATUS_FILE: /runtime/backup-status.json
       JOB_CLAIM_LEASE_SECONDS: ${JOB_CLAIM_LEASE_SECONDS:-300}
       JOB_RUNNING_LEASE_SECONDS: ${JOB_RUNNING_LEASE_SECONDS:-7200}
@@ -69,6 +73,7 @@ services:
       - ./runtime:/runtime:ro
       - ./releases:/agent-releases:ro
       - ./deploy/update-trust:/update-trust:ro
+      - ./deploy/evidence-trust:/evidence-trust:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=3)"]
       interval: 30s
