@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.38.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.39.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -10077,6 +10077,302 @@ def campaign_patch_blockers(
     return blockers
 
 
+
+def campaign_required_capabilities(campaign: Campaign) -> list[str]:
+    payload = load(campaign.payload_json, {})
+    required = {"job_leases_v1"}
+
+    if campaign.action == "scan_updates":
+        required.add("scan_updates")
+    elif campaign.action == "install_updates":
+        required.add("install_updates")
+        if payload.get("prepare_rollback", True):
+            required.add("rollback_checkpoint_v1")
+        health_policy = payload.get("health_policy")
+        if isinstance(health_policy, dict) and health_policy.get("enabled"):
+            required.add("health_telemetry_v1")
+    elif campaign.action == "rollback_checkpoint":
+        required.add("rollback_restore_v1")
+    elif campaign.action == "activate_agent_update":
+        required.add("signed_update_activation_v1")
+    elif campaign.action == "clear_agent_update_quarantine":
+        required.add("signed_update_quarantine_v1")
+
+    return sorted(required)
+
+
+def campaign_preflight(
+    db: Session,
+    campaign: Campaign,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    payload = load(campaign.payload_json, {})
+    candidates = campaign_candidates(db, campaign)
+    selected = agents_for_ring(db, campaign, campaign.ring_percent)
+    checks = []
+
+    def add_check(key: str, label: str, status: str, message: str, *, blocking: bool = False, details=None):
+        checks.append({
+            "key": key,
+            "label": label,
+            "status": status,
+            "blocking": bool(blocking),
+            "message": message,
+            "details": details or {},
+        })
+
+    if not candidates:
+        add_check(
+            "scope",
+            "Target scope",
+            "blocked",
+            "nenhum endpoint corresponde ao escopo da campanha",
+            blocking=True,
+            details={"candidates": 0, "selected_ring": 0},
+        )
+    else:
+        add_check(
+            "scope",
+            "Target scope",
+            "passed",
+            f"{len(candidates)} endpoint(s) elegíveis; {len(selected)} no ring inicial de {campaign.ring_percent}%",
+            details={"candidates": len(candidates), "selected_ring": len(selected), "ring_percent": campaign.ring_percent},
+        )
+
+    approval = serialize_campaign_approval(campaign)
+    if approval.get("required") and approval.get("status") != "approved":
+        add_check(
+            "approval",
+            "Approval Gate",
+            "blocked",
+            f"aprovação administrativa está {approval.get('status') or 'pendente'}",
+            blocking=True,
+            details=approval,
+        )
+    else:
+        add_check(
+            "approval",
+            "Approval Gate",
+            "passed",
+            "aprovação atendida" if approval.get("required") else "aprovação não exigida",
+            details=approval,
+        )
+
+    freeze = campaign_freeze_guard(db, campaign, reference)
+    if freeze["blocked"]:
+        add_check(
+            "change_freeze",
+            "Change Freeze",
+            "blocked",
+            f"{len(freeze['windows'])} janela(s) ativa(s) bloqueiam a mudança",
+            blocking=True,
+            details=freeze,
+        )
+    elif freeze["windows"] and freeze["override"]:
+        add_check(
+            "change_freeze",
+            "Change Freeze",
+            "warning",
+            "freeze ativa com emergency override auditado",
+            details=freeze,
+        )
+    else:
+        add_check(
+            "change_freeze",
+            "Change Freeze",
+            "passed",
+            "nenhuma freeze ativa aplicável",
+            details=freeze,
+        )
+
+    patch_blockers = campaign_patch_blockers(db, campaign, selected, reference)
+    if patch_blockers:
+        add_check(
+            "patch_guard",
+            "Patch Guard",
+            "blocked",
+            f"{len(patch_blockers)} regra(s) bloqueiam patch no ring selecionado",
+            blocking=True,
+            details={"blockers": patch_blockers},
+        )
+    else:
+        add_check(
+            "patch_guard",
+            "Patch Guard",
+            "passed",
+            "nenhum bloqueio de patch aplicável",
+        )
+
+    required_capabilities = campaign_required_capabilities(campaign)
+    incompatible = []
+    stale = []
+    mtls_missing = []
+    for agent in selected:
+        runtime = agent_runtime_metadata(agent)
+        available = set(runtime.get("capabilities") or [])
+        missing = sorted(set(required_capabilities) - available)
+        if runtime.get("status") != "supported" or missing:
+            incompatible.append({
+                "agent_id": agent.id,
+                "hostname": agent.hostname,
+                "status": runtime.get("status"),
+                "version": runtime.get("version"),
+                "protocol": runtime.get("protocol"),
+                "missing_capabilities": missing,
+            })
+        if not agent_heartbeat_fresh(agent):
+            stale.append({"agent_id": agent.id, "hostname": agent.hostname, "last_seen": agent.last_seen.isoformat() if agent.last_seen else None})
+        if AGENT_MTLS_REQUIRED and not agent.client_cert_fingerprint:
+            mtls_missing.append({"agent_id": agent.id, "hostname": agent.hostname})
+
+    if incompatible:
+        enforced = bool(AGENT_ENFORCE_COMPATIBILITY)
+        add_check(
+            "agent_compatibility",
+            "Agent compatibility",
+            "blocked" if enforced else "warning",
+            f"{len(incompatible)} endpoint(s) não atendem versão/protocolo/capabilities exigidas" +
+            ("; enforcement ativo" if enforced else "; enforcement está em observação"),
+            blocking=enforced,
+            details={
+                "required_capabilities": required_capabilities,
+                "incompatible": incompatible[:20],
+                "enforced": enforced,
+            },
+        )
+    else:
+        add_check(
+            "agent_compatibility",
+            "Agent compatibility",
+            "passed",
+            f"{len(selected)} endpoint(s) atendem as capabilities exigidas",
+            details={"required_capabilities": required_capabilities, "enforced": AGENT_ENFORCE_COMPATIBILITY},
+        )
+
+    if stale:
+        add_check(
+            "heartbeat",
+            "Agent freshness",
+            "warning",
+            f"{len(stale)} endpoint(s) sem heartbeat recente",
+            details={"stale": stale[:20], "max_age_seconds": AGENT_UPDATE_MAX_HEARTBEAT_AGE_SECONDS},
+        )
+    else:
+        add_check(
+            "heartbeat",
+            "Agent freshness",
+            "passed",
+            "heartbeats do ring estão recentes" if selected else "sem endpoints selecionados",
+        )
+
+    if mtls_missing:
+        add_check(
+            "mtls",
+            "Agent mTLS",
+            "blocked",
+            f"{len(mtls_missing)} endpoint(s) sem fingerprint mTLS vinculada",
+            blocking=True,
+            details={"missing": mtls_missing[:20], "required": True},
+        )
+    else:
+        add_check(
+            "mtls",
+            "Agent mTLS",
+            "passed",
+            "mTLS atendido" if AGENT_MTLS_REQUIRED else "mTLS não é obrigatório neste ambiente",
+            details={"required": AGENT_MTLS_REQUIRED},
+        )
+
+    window = maintenance_window_state(payload, reference)
+    if window.get("enabled") and not window.get("eligible_now"):
+        add_check(
+            "maintenance_window",
+            "Maintenance window",
+            "warning",
+            window.get("reason") or "fora da janela de manutenção",
+            details=window,
+        )
+    else:
+        add_check(
+            "maintenance_window",
+            "Maintenance window",
+            "passed",
+            window.get("reason") or "janela disponível",
+            details=window,
+        )
+
+    if campaign.action == "install_updates":
+        packages = sorted({str(value).strip() for value in payload.get("packages", []) if str(value).strip()})
+        confidence_map = {
+            str(item.get("patch_ref") or "").strip().lower(): item
+            for item in patch_confidence_report(db, limit=1000).get("items", [])
+        }
+        confidence_items = []
+        warning_refs = []
+        for ref in packages:
+            item = confidence_map.get(ref.lower())
+            if item:
+                confidence_items.append(item)
+                if item.get("confidence") in {"low", "insufficient_data"}:
+                    warning_refs.append(ref)
+            else:
+                confidence_items.append({"patch_ref": ref, "confidence": "insufficient_data", "completed_jobs": 0})
+                warning_refs.append(ref)
+        if packages and warning_refs:
+            add_check(
+                "patch_confidence",
+                "Patch Confidence",
+                "warning",
+                f"{len(warning_refs)} patch(es) sem confiança local suficiente",
+                details={"items": confidence_items},
+            )
+        elif packages:
+            add_check(
+                "patch_confidence",
+                "Patch Confidence",
+                "passed",
+                "histórico local de deployment disponível para as patches",
+                details={"items": confidence_items},
+            )
+        else:
+            add_check(
+                "patch_confidence",
+                "Patch Confidence",
+                "warning",
+                "campanha de instalação sem patch reference explícita",
+                details={"items": []},
+            )
+
+    blockers = [item for item in checks if item["blocking"]]
+    warnings = [item for item in checks if item["status"] == "warning"]
+    if blockers:
+        readiness = "BLOCKED"
+    elif warnings:
+        readiness = "REVIEW"
+    else:
+        readiness = "READY"
+
+    return {
+        "generated_at": reference.isoformat(),
+        "campaign_id": campaign.id,
+        "campaign_name": campaign.name,
+        "campaign_status": campaign.status,
+        "readiness": readiness,
+        "deploy_allowed": not blockers,
+        "summary": {
+            "checks": len(checks),
+            "passed": sum(1 for item in checks if item["status"] == "passed"),
+            "warnings": len(warnings),
+            "blockers": len(blockers),
+            "candidates": len(candidates),
+            "selected_ring": len(selected),
+        },
+        "checks": checks,
+        "note": "Preflight is an explicit checklist of operational controls. It does not compute a hidden readiness score.",
+    }
+
+
 def campaign_candidates(db: Session, campaign: Campaign):
     candidates = []
     payload = load(campaign.payload_json, {})
@@ -10134,6 +10430,19 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
     return created
 
 
+
+@app.get("/api/admin/campaigns/{campaign_id}/preflight")
+def get_campaign_preflight(
+    campaign_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return campaign_preflight(db, campaign)
+
+
 @app.post("/api/admin/campaigns/{campaign_id}/deploy")
 def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: Session = Depends(get_db)):
     campaign = db.get(Campaign, campaign_id)
@@ -10141,6 +10450,17 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
         raise HTTPException(status_code=404, detail="campaign not found")
     if campaign.status != "draft":
         raise HTTPException(status_code=409, detail="campaign already deployed")
+
+    preflight = campaign_preflight(db, campaign)
+    if not preflight["deploy_allowed"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "campaign preflight blocked deployment",
+                "preflight": preflight,
+            },
+        )
+
     enforce_campaign_freeze_guard(db, campaign)
 
     approval_state = serialize_campaign_approval(campaign)
