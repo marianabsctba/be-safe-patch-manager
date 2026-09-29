@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.54.0  
+> **Control plane:** v0.55.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -176,6 +176,23 @@ Assim o histórico consegue responder:
 > por que esta patch estava READY ontem?
 
 sem recalcular a resposta com os dados de hoje.
+
+## Policy Bundles / GitOps
+
+A v0.55 torna o Policy-as-Code transportável entre ambientes e adequado a GitOps.
+
+O endpoint `GET /api/admin/patch-policies/bundle/export` exporta somente a versão mais recente de cada policy em um bundle `be-safe-patch-policy-bundle/v1`, contendo:
+
+- versão, prioridade e estado enabled;
+- documento normalizado;
+- SHA-256 individual de cada policy;
+- manifest com SHA-256 do bundle completo.
+
+Antes de importar, `POST /api/admin/patch-policies/bundle/dry-run` valida todos os hashes e compara o bundle proposto com até 500 campanhas existentes, classificando impacto como `newly_blocked`, `resolved`, `still_blocked` ou `still_compliant`.
+
+O import é transacional no sentido de validação: nenhum registro é alterado antes de o bundle inteiro ser validado. Policies modificadas criam **nova versão local**; versões anteriores permanecem na cadeia e são desabilitadas. Policies idênticas ficam `unchanged`.
+
+Isso permite manter o JSON exportado em Git, revisar mudanças por pull request e executar dry-run antes de promover uma policy para outro ambiente.
 
 ## Patch Policy-as-Code
 
