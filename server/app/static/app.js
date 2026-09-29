@@ -3494,9 +3494,11 @@ function campaignCard(campaign, compact = false) {
 
       <div class="campaign-actions">
         ${action || ''}
+        <button class="secondary" onclick="showCampaignPreflight('${campaign.id}')">Preflight</button>
         <button class="secondary" onclick="showPromotionAnalysis('${campaign.id}')">Safe Promotion</button>
         <button class="secondary" onclick="showRingHistory('${campaign.id}')">Histórico de rings</button>
       </div>
+      <div id="preflight-${campaign.id}" class="preflight-box" hidden></div>
     </article>
   `;
 }
@@ -3753,6 +3755,59 @@ window.deploy = async (id) => {
     toast(error.message, 'fail');
   }
 };
+
+window.showCampaignPreflight = async (campaignId) => {
+  const target = document.getElementById('preflight-' + campaignId);
+  if (!target) return;
+
+  if (!target.hidden && target.dataset.loaded === '1') {
+    target.hidden = true;
+    return;
+  }
+
+  target.hidden = false;
+  target.dataset.loaded = '0';
+  target.innerHTML = '<div class="empty-state">Executando preflight...</div>';
+
+  try {
+    const result = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/preflight');
+    const summary = result.summary || {};
+    const readiness = String(result.readiness || 'REVIEW').toUpperCase();
+    const readinessClass = readiness === 'READY' ? 'ok' : readiness === 'BLOCKED' ? 'fail' : 'warn';
+    const statusClass = (status) => status === 'passed' ? 'ok' : status === 'blocked' ? 'fail' : 'warn';
+
+    target.innerHTML =
+      '<div class="preflight-head">' +
+        '<div><p class="section-kicker">CHANGE READINESS</p><h4>Campaign Preflight</h4></div>' +
+        '<div>' + badge(readiness, readinessClass) + '</div>' +
+      '</div>' +
+      '<div class="preflight-summary">' +
+        '<span>Checks <strong>' + esc(summary.checks || 0) + '</strong></span>' +
+        '<span>Passed <strong>' + esc(summary.passed || 0) + '</strong></span>' +
+        '<span>Warnings <strong>' + esc(summary.warnings || 0) + '</strong></span>' +
+        '<span>Blockers <strong>' + esc(summary.blockers || 0) + '</strong></span>' +
+        '<span>Ring <strong>' + esc(summary.selected_ring || 0) + '/' + esc(summary.candidates || 0) + '</strong></span>' +
+      '</div>' +
+      '<div class="preflight-grid">' +
+        (result.checks || []).map((check) =>
+          '<article class="preflight-check ' + statusClass(check.status) + '">' +
+            '<div class="preflight-check-head">' +
+              '<strong>' + esc(check.label || check.key || '-') + '</strong>' +
+              badge(String(check.status || '-').toUpperCase(), statusClass(check.status)) +
+            '</div>' +
+            '<p>' + esc(check.message || '-') + '</p>' +
+            (check.blocking ? '<small class="text-danger">Bloqueia deploy</small>' : '') +
+          '</article>'
+        ).join('') +
+      '</div>' +
+      '<p class="preflight-note">' + esc(result.note || '') + '</p>';
+
+    target.dataset.loaded = '1';
+  } catch (error) {
+    target.innerHTML = '<div class="empty-state text-danger">Preflight: ' + esc(error.message) + '</div>';
+  }
+};
+
 
 window.showPromotionAnalysis = async (campaignId) => {
   try {
