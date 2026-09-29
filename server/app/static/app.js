@@ -3940,6 +3940,14 @@ window.verifyCampaignEvidencePackFile = async (campaignId) => {
           expected_campaign_id: campaignId,
         }),
       });
+      const attestation = result.attestation || {};
+      const signatureLabel = !attestation.present
+        ? 'não assinada'
+        : attestation.valid === true
+          ? 'ASSINATURA OK'
+          : attestation.valid === false
+            ? 'ASSINATURA INVÁLIDA'
+            : 'não verificada';
 
       const box = document.getElementById('preflight-' + campaignId);
       if (box) {
@@ -3957,7 +3965,12 @@ window.verifyCampaignEvidencePackFile = async (campaignId) => {
           '<span>Integridade <strong>' + esc(result.integrity_valid ? 'OK' : 'FALHOU') + '</strong></span>' +
           '<span>Âncora externa <strong>' + esc(result.anchored ? (result.anchor_valid ? 'OK' : 'FALHOU') : 'não informada') + '</strong></span>' +
           '<span>Campanha <strong>' + esc(result.campaign_match === false ? 'DIVERGENTE' : 'OK') + '</strong></span>' +
+          '<span>Assinatura <strong>' + esc(signatureLabel) + '</strong></span>' +
           '</div>' +
+          (attestation.present
+            ? '<p><small class="muted">Issuer: ' + esc(attestation.issuer || '-') +
+              ' · key id: <code>' + esc((attestation.key_id || '').slice(0, 16)) + '…</code></small></p>'
+            : '') +
           '<p><small class="muted">SHA-256 calculado: <code>' + esc(result.pack_sha256.computed || '-') + '</code></small></p>' +
           ((result.issues || []).length
             ? '<div class="callout danger"><strong>Problemas encontrados</strong><br>' + esc(result.issues.join(' · ')) + '</div>'
