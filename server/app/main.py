@@ -10724,8 +10724,17 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
 
 
 
+def _evidence_canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 def _evidence_sha256(value: Any) -> str:
-    return hashlib.sha256(dump(value).encode("utf-8")).hexdigest()
+    return hashlib.sha256(_evidence_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime | None = None) -> dict:
@@ -10835,7 +10844,7 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
             "hash_algorithm": "SHA-256",
             "pack_sha256": pack_sha256,
             "section_hashes": section_hashes,
-            "verification": "Recompute SHA-256 over canonical compact JSON of the pack without the manifest field.",
+            "verification": "Recompute SHA-256 over UTF-8 JSON with sorted keys and compact separators for the pack without the manifest field.",
         },
     }
 
