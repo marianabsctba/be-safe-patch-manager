@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.42.0
+
+- control plane e dashboard passam para versão 0.42.0; agente permanece em 0.16.0;
+- adicionado Patch Failure Intelligence baseado exclusivamente no histórico local observado;
+- falhas são agrupadas por patch, SO, versão, categoria e assinatura normalizada;
+- assinaturas removem valores voláteis como URL, hex e números longos para reduzir fragmentação de clusters;
+- categorias incluem install, download/network, dependency, reboot, disk, permission, applicability, stalled, compatibility, post-patch regression e rollback;
+- estados por segmento passam a ser stable, observed_failures, elevated_failure_rate ou confirmed_local_regression;
+- regressão local confirmada exige no mínimo 3 resultados comparáveis, 2 falhas efetivas e taxa >=50%;
+- Campaign Preflight cruza patch + SO/versão do ring com a inteligência local e bloqueia regressões confirmadas antes de criar jobs;
+- console ganha ação Failure Intel por campanha;
+- adicionado endpoint de relatório /api/admin/reports/patch-failure-intelligence;
+- adicionados testes de clustering, normalização, matching por patch e bloqueio do Preflight.
+
+
 ## 0.41.0
 
 - control plane e dashboard passam para versão 0.41.0; agente permanece em 0.16.0;
