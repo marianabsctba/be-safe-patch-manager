@@ -905,18 +905,6 @@ def test_maintenance_risk_uses_observed_history_for_window_capacity(db):
         status="missing",
         evidence="agent_scan",
     ))
-    for index, minutes in enumerate([70, 80, 90], start=1):
-        started = datetime.now(timezone.utc) - timedelta(days=index, minutes=minutes)
-        db.add(PatchJob(
-            id=f"history-{index}",
-            campaign_id=None,
-            agent_id=agent.id,
-            action="install_updates",
-            payload_json=main.dump({"packages": ["KB-WINDOW"]}),
-            status="success",
-            started_at=started,
-            finished_at=started + timedelta(minutes=minutes),
-        ))
     db.commit()
 
     campaign = make_campaign(db, payload_extra={
@@ -927,6 +915,20 @@ def test_maintenance_risk_uses_observed_history_for_window_capacity(db):
         "maintenance_end": "02:00",
     })
     campaign.allow_reboot = True
+    db.commit()
+
+    for index, minutes in enumerate([70, 80, 90], start=1):
+        started = datetime.now(timezone.utc) - timedelta(days=index, minutes=minutes)
+        db.add(PatchJob(
+            id=f"history-{index}",
+            campaign_id=campaign.id,
+            agent_id=agent.id,
+            action="install_updates",
+            payload_json=main.dump({"packages": ["KB-WINDOW"]}),
+            status="success",
+            started_at=started,
+            finished_at=started + timedelta(minutes=minutes),
+        ))
     db.commit()
 
     risk = main.campaign_maintenance_risk(db, campaign)
