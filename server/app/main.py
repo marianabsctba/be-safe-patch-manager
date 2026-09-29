@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.47.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.48.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -11088,6 +11088,274 @@ def campaign_patch_applicability_guard(
     }
 
 
+def _reboot_behavior_state(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return "unknown"
+    if any(token in text for token in ("not required", "no reboot", "never reboot", "none")):
+        return "none"
+    if any(token in text for token in ("always", "required", "must reboot", "restart required", "reboot required")):
+        return "required"
+    if any(token in text for token in ("may", "possible", "sometimes", "if required", "can require", "might")):
+        return "possible"
+    return "unknown"
+
+
+def _maintenance_window_minutes(payload: dict) -> int | None:
+    start_text = str(payload.get("maintenance_start") or "").strip()
+    end_text = str(payload.get("maintenance_end") or "").strip()
+    if not start_text or not end_text:
+        return None
+    try:
+        start = parse_clock(start_text)
+        end = parse_clock(end_text)
+    except ValueError:
+        return None
+    if start == end:
+        return 1440
+    if end > start:
+        return end - start
+    return (1440 - start) + end
+
+
+def campaign_maintenance_risk(
+    db: Session,
+    campaign: Campaign,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    payload = load(campaign.payload_json, {})
+    selected = agents_for_ring(db, campaign, campaign.ring_percent)
+
+    if campaign.action != "install_updates":
+        return {
+            "generated_at": reference.isoformat(),
+            "campaign_id": campaign.id,
+            "state": "not_applicable",
+            "blocking": False,
+            "summary": {
+                "selected_assets": len(selected),
+                "reboot_required_now": 0,
+                "reboot_required_by_patch": 0,
+                "reboot_possible_by_patch": 0,
+                "reboot_unknown": 0,
+                "critical_assets_exposed": 0,
+                "critical_services": 0,
+            },
+            "note": "Maintenance & Reboot Readiness applies only to install campaigns.",
+        }
+
+    packages = sorted({
+        str(value).strip()
+        for value in payload.get("packages", [])
+        if str(value).strip()
+    })
+    selected_ids = {agent.id for agent in selected}
+    entries = db.query(PatchCatalogEntry).options(
+        selectinload(PatchCatalogEntry.observations),
+    ).filter(PatchCatalogEntry.patch_key.in_([patch_ref_key(ref) for ref in packages])).all() if packages else []
+    entries_by_key = {entry.patch_key: entry for entry in entries}
+
+    package_rows = []
+    package_states = {}
+    for package in packages:
+        key = patch_ref_key(package)
+        entry = entries_by_key.get(key)
+        behavior = _reboot_behavior_state(entry.reboot_behavior if entry else "")
+        package_states[key] = behavior
+        package_rows.append({
+            "patch_ref": entry.patch_ref if entry else package,
+            "patch_key": key,
+            "reboot_behavior_raw": entry.reboot_behavior if entry else "",
+            "reboot_behavior": behavior,
+            "catalog_known": bool(entry),
+        })
+
+    endpoint_rows = []
+    reboot_required_by_patch = 0
+    reboot_possible_by_patch = 0
+    reboot_unknown = 0
+    critical_assets_exposed = 0
+    reboot_required_now = 0
+
+    observations_by_agent: dict[str, list[tuple[str, str]]] = {}
+    for entry in entries:
+        state = package_states.get(entry.patch_key, "unknown")
+        for obs in entry.observations or []:
+            if obs.agent_id in selected_ids and obs.status == "missing":
+                observations_by_agent.setdefault(obs.agent_id, []).append((entry.patch_ref, state))
+
+    for agent in selected:
+        context = _agent_canary_context(agent)
+        missing_states = observations_by_agent.get(agent.id, [])
+        states = {state for _, state in missing_states}
+        if "required" in states:
+            predicted = "required"
+            reboot_required_by_patch += 1
+        elif "possible" in states:
+            predicted = "possible"
+            reboot_possible_by_patch += 1
+        elif missing_states and states == {"none"}:
+            predicted = "none"
+        elif packages:
+            predicted = "unknown"
+            reboot_unknown += 1
+        else:
+            predicted = "unknown"
+
+        if agent.reboot_required:
+            reboot_required_now += 1
+
+        critical = bool(context.get("critical"))
+        if critical and (agent.reboot_required or predicted in {"required", "possible"}):
+            critical_assets_exposed += 1
+
+        endpoint_rows.append({
+            "agent_id": agent.id,
+            "hostname": agent.hostname,
+            "business_service": context.get("service"),
+            "environment": context.get("environment"),
+            "owner": context.get("owner"),
+            "criticality": context.get("criticality"),
+            "critical": critical,
+            "reboot_required_now": bool(agent.reboot_required),
+            "predicted_reboot": predicted,
+            "missing_patch_evidence": [
+                {"patch_ref": ref, "reboot_behavior": state}
+                for ref, state in missing_states
+            ],
+        })
+
+    comparable_jobs = []
+    package_keys = {patch_ref_key(ref) for ref in packages}
+    history = db.query(PatchJob).filter(
+        PatchJob.action == "install_updates",
+        PatchJob.started_at.isnot(None),
+        PatchJob.finished_at.isnot(None),
+        PatchJob.status.in_(["success", "failed"]),
+    ).order_by(PatchJob.finished_at.desc()).limit(1000).all()
+    for job in history:
+        job_payload = load(job.payload_json, {})
+        job_keys = {patch_ref_key(ref) for ref in job_payload.get("packages", []) if str(ref).strip()}
+        if package_keys and not (package_keys & job_keys):
+            continue
+        started = job.started_at if job.started_at.tzinfo else job.started_at.replace(tzinfo=timezone.utc)
+        finished = job.finished_at if job.finished_at.tzinfo else job.finished_at.replace(tzinfo=timezone.utc)
+        duration = max(0.0, (finished - started).total_seconds())
+        comparable_jobs.append(duration)
+
+    comparable_jobs.sort()
+    p95_seconds = None
+    median_seconds = None
+    if comparable_jobs:
+        middle = len(comparable_jobs) // 2
+        if len(comparable_jobs) % 2:
+            median_seconds = comparable_jobs[middle]
+        else:
+            median_seconds = (comparable_jobs[middle - 1] + comparable_jobs[middle]) / 2.0
+    if len(comparable_jobs) >= 3:
+        p95_index = max(0, math.ceil(len(comparable_jobs) * 0.95) - 1)
+        p95_seconds = comparable_jobs[min(p95_index, len(comparable_jobs) - 1)]
+
+    window = maintenance_window_state(payload, reference)
+    window_minutes = _maintenance_window_minutes(payload)
+    critical_services = [
+        str(name).strip()
+        for name in ((payload.get("health_policy") or {}).get("critical_services") or [])
+        if str(name).strip()
+    ]
+    reboot_policy = str(payload.get("reboot_policy") or ("if_required" if campaign.allow_reboot else "never"))
+    reboot_allowed = bool(campaign.allow_reboot and reboot_policy == "if_required")
+
+    signals = []
+    blocking = False
+
+    if reboot_required_by_patch and not reboot_allowed:
+        blocking = True
+        signals.append({
+            "key": "reboot_policy_conflict",
+            "severity": "high",
+            "message": f"{reboot_required_by_patch} endpoint(s) possuem patch missing com reboot requerido, mas a campanha proíbe reboot",
+        })
+    if reboot_required_now:
+        signals.append({
+            "key": "preexisting_reboot",
+            "severity": "medium",
+            "message": f"{reboot_required_now} endpoint(s) já entram no ring com reboot pendente",
+        })
+    if critical_assets_exposed:
+        signals.append({
+            "key": "critical_reboot_exposure",
+            "severity": "high",
+            "message": f"{critical_assets_exposed} ativo(s) crítico(s) possuem reboot pendente ou provável",
+        })
+    if critical_services and (reboot_required_by_patch or reboot_possible_by_patch):
+        signals.append({
+            "key": "critical_services",
+            "severity": "medium",
+            "message": f"{len(critical_services)} serviço(s) crítico(s) serão monitorados durante mudança com potencial de reboot",
+        })
+    if reboot_unknown:
+        signals.append({
+            "key": "unknown_reboot_behavior",
+            "severity": "low",
+            "message": f"{reboot_unknown} endpoint(s) possuem applicability sem metadata suficiente de reboot",
+        })
+    if window_minutes is not None and p95_seconds is not None and (p95_seconds / 60.0) > window_minutes:
+        signals.append({
+            "key": "window_capacity",
+            "severity": "high",
+            "message": f"janela de {window_minutes} min é menor que o p95 observado de {round(p95_seconds / 60.0, 1)} min",
+        })
+
+    if blocking:
+        state = "blocked"
+    elif any(item["severity"] in {"high", "medium"} for item in signals):
+        state = "review"
+    elif signals:
+        state = "observe"
+    else:
+        state = "ready"
+
+    return {
+        "generated_at": reference.isoformat(),
+        "campaign_id": campaign.id,
+        "state": state,
+        "blocking": blocking,
+        "summary": {
+            "selected_assets": len(selected),
+            "packages": len(packages),
+            "reboot_required_now": reboot_required_now,
+            "reboot_required_by_patch": reboot_required_by_patch,
+            "reboot_possible_by_patch": reboot_possible_by_patch,
+            "reboot_unknown": reboot_unknown,
+            "critical_assets_exposed": critical_assets_exposed,
+            "critical_services": len(critical_services),
+            "window_minutes": window_minutes,
+            "history_samples": len(comparable_jobs),
+            "median_duration_minutes": round(median_seconds / 60.0, 1) if median_seconds is not None else None,
+            "p95_duration_minutes": round(p95_seconds / 60.0, 1) if p95_seconds is not None else None,
+        },
+        "reboot_policy": {
+            "policy": reboot_policy,
+            "allow_reboot": bool(campaign.allow_reboot),
+            "effective_reboot_allowed": reboot_allowed,
+        },
+        "maintenance_window": window,
+        "critical_services": critical_services,
+        "packages": package_rows,
+        "signals": signals,
+        "assets": endpoint_rows[:200],
+        "rules": {
+            "reboot_policy_conflict": "BLOCK when missing patch evidence requires reboot and campaign reboot policy forbids it",
+            "preexisting_reboot": "WARNING when endpoint already reports reboot_required before deployment",
+            "critical_reboot_exposure": "WARNING when a critical asset has pending or likely reboot exposure",
+            "window_capacity": "WARNING when at least 3 comparable historical jobs exist and observed p95 duration exceeds configured window length",
+        },
+        "note": "Maintenance Risk uses observed endpoint state, catalog reboot metadata and historical job durations. Unknown reboot metadata remains explicit and is not guessed.",
+    }
+
+
 def campaign_preflight(
     db: Session,
     campaign: Campaign,
@@ -11113,6 +11381,7 @@ def campaign_preflight(
     blast_radius = campaign_blast_radius(db, campaign, reference)
     change_collisions = campaign_change_collisions(db, campaign, reference)
     applicability_guard = campaign_patch_applicability_guard(db, campaign, reference)
+    maintenance_risk = campaign_maintenance_risk(db, campaign, reference)
 
     if not candidates:
         add_check(
@@ -11233,6 +11502,40 @@ def campaign_preflight(
             "passed",
             "patches possuem applicability local suficiente para o ring e não estão superseded",
             details=applicability_guard,
+        )
+
+    if maintenance_risk["state"] == "blocked":
+        add_check(
+            "maintenance_reboot",
+            "Maintenance & Reboot Readiness",
+            "blocked",
+            f"{maintenance_risk['summary']['reboot_required_by_patch']} endpoint(s) exigem reboot incompatível com a policy da campanha",
+            blocking=True,
+            details=maintenance_risk,
+        )
+    elif maintenance_risk["state"] in {"review", "observe"}:
+        add_check(
+            "maintenance_reboot",
+            "Maintenance & Reboot Readiness",
+            "warning",
+            f"{len(maintenance_risk.get('signals') or [])} sinal(is) de impacto de manutenção/reboot exigem revisão",
+            details=maintenance_risk,
+        )
+    elif maintenance_risk["state"] == "not_applicable":
+        add_check(
+            "maintenance_reboot",
+            "Maintenance & Reboot Readiness",
+            "passed",
+            "check não aplicável a esta ação",
+            details=maintenance_risk,
+        )
+    else:
+        add_check(
+            "maintenance_reboot",
+            "Maintenance & Reboot Readiness",
+            "passed",
+            "nenhum conflito objetivo de reboot ou capacidade da janela foi observado",
+            details=maintenance_risk,
         )
 
     approval = serialize_campaign_approval(campaign)
@@ -11755,6 +12058,18 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
 
 
 
+@app.get("/api/admin/campaigns/{campaign_id}/maintenance-risk")
+def get_campaign_maintenance_risk(
+    campaign_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return campaign_maintenance_risk(db, campaign)
+
+
 @app.get("/api/admin/campaigns/{campaign_id}/patch-applicability")
 def get_campaign_patch_applicability(
     campaign_id: str,
@@ -11941,7 +12256,7 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
 
     additional_blockers = [
         item for item in preflight["checks"]
-        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision", "patch_applicability"}
+        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision", "patch_applicability", "maintenance_reboot"}
     ]
     if additional_blockers:
         raise HTTPException(
@@ -12044,6 +12359,7 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
         "ring_plan": campaign_ring_plan(db, campaign, campaign.ring_percent),
         "change_collisions": campaign_change_collisions(db, campaign, reference),
         "patch_applicability": campaign_patch_applicability_guard(db, campaign, reference),
+        "maintenance_risk": campaign_maintenance_risk(db, campaign, reference),
         "preflight_snapshots": [
             serialize_campaign_preflight_snapshot(item, include_result=True)
             for item in preflight_items
