@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.43.0
+
+- control plane e dashboard passam para versão 0.43.0; agente permanece em 0.16.0;
+- adicionado Blast Radius Intelligence / Change Impact Preview por campanha;
+- impacto do ring reutiliza Asset Risk, criticality, external exposure, risk appetite, owner, business service e environment;
+- relatório mostra escopo total, ring real, concentração, ativos críticos, externos, acima do appetite e críticos sem owner;
+- estados explícitos: contained, concentrated e critical_scope;
+- regras de classificação são documentadas e não usam score composto oculto;
+- Preflight passa a incluir Blast Radius como warning explicável, sem bloquear por padrão;
+- Evidence Pack passa a incluir a seção blast_radius com SHA-256 próprio;
+- console ganha ação Impact Preview;
+- adicionados testes de Business Context, criticidade, concentração, warning do Preflight e integridade no Evidence Pack.
+
+
 ## 0.42.0
 
 - control plane e dashboard passam para versão 0.42.0; agente permanece em 0.16.0;
