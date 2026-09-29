@@ -193,9 +193,21 @@ def capture_campaigns(page):
         }
 
         q("#campaigns").innerHTML =
-          '<article class="campaign"><div class="campaign-head"><div><strong>Windows Setembro - Tier0</strong><small>KB5072198 · 20 endpoints · plano 5 → 10 → 30 → 100</small></div><span class="badge ok">SOAK</span></div><div class="campaign-meta"><span>ring atual 30%</span><span>success 96%</span><span>regression STABLE</span></div></article>'+
-          '<article class="campaign"><div class="campaign-head"><div><strong>Ubuntu external - OpenSSL</strong><small>USN-7081-1 · 38 endpoints · health telemetry required</small></div><span class="badge warn">PAUSE</span></div><div class="campaign-meta"><span>ring atual 25%</span><span>success 91%</span><span>regression -9 p.p.</span></div></article>'+
-          '<article class="campaign"><div class="campaign-head"><div><strong>Finance workstations</strong><small>KB5074021 · 64 endpoints</small></div><span class="badge fail">BLOCKED</span></div><div class="campaign-meta"><span>Change Freeze ativo</span></div></article>';
+          '<article class="campaign">'+
+            '<div class="campaign-head"><div><strong>Windows Setembro - Tier0</strong><small>KB5072198 · 20 endpoints · plano 5 → 10 → 30 → 100</small></div><span class="badge ok">SOAK</span></div>'+
+            '<div class="campaign-meta"><span>ring atual 30%</span><span>success 96%</span><span>regression STABLE</span></div>'+
+            '<div class="preflight-box">'+
+              '<div class="preflight-head"><div><p class="section-kicker">CHANGE READINESS</p><h4>Campaign Preflight</h4></div><span class="badge warn">REVIEW</span></div>'+
+              '<div class="preflight-summary"><span>Checks <strong>9</strong></span><span>Passed <strong>7</strong></span><span>Warnings <strong>2</strong></span><span>Blockers <strong>0</strong></span><span>Ring <strong>1/20</strong></span></div>'+
+              '<div class="preflight-grid">'+
+                '<article class="preflight-check ok"><div class="preflight-check-head"><strong>Target scope</strong><span class="badge ok">PASSED</span></div><p>20 endpoints elegíveis; 1 no ring inicial de 5%</p></article>'+
+                '<article class="preflight-check ok"><div class="preflight-check-head"><strong>Approval Gate</strong><span class="badge ok">PASSED</span></div><p>aprovação administrativa atendida</p></article>'+
+                '<article class="preflight-check ok"><div class="preflight-check-head"><strong>Patch Guard</strong><span class="badge ok">PASSED</span></div><p>nenhum bloqueio aplicável</p></article>'+
+                '<article class="preflight-check warn"><div class="preflight-check-head"><strong>Patch Confidence</strong><span class="badge warn">WARNING</span></div><p>histórico local ainda insuficiente; manter piloto controlado</p></article>'+
+              '</div>'+
+            '</div>'+
+          '</article>'+
+          '<article class="campaign"><div class="campaign-head"><div><strong>Ubuntu external - OpenSSL</strong><small>USN-7081-1 · 38 endpoints · health telemetry required</small></div><span class="badge warn">PAUSE</span></div><div class="campaign-meta"><span>ring atual 25%</span><span>success 91%</span><span>regression -9 p.p.</span></div></article>';
       }
     """)
     page.locator("#campaignForm").scroll_into_view_if_needed()
