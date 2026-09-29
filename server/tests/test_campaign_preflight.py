@@ -17,7 +17,7 @@ os.environ["THREAT_INTEL_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine
 from app import main
-from app.models import Agent, Campaign, CampaignApproval, CampaignPreflightSnapshot, PatchBlockRule, PatchJob
+from app.models import Agent, AssetRiskProfile, Campaign, CampaignApproval, CampaignPreflightSnapshot, PatchBlockRule, PatchJob
 
 
 @pytest.fixture(autouse=True)
@@ -398,3 +398,88 @@ def test_preflight_does_not_apply_regression_from_other_patch(db):
 
     assert regression["status"] == "passed"
     assert regression["blocking"] is False
+
+
+
+def test_blast_radius_reuses_business_context_and_risk(db):
+    a1 = make_agent(db, "a1")
+    a2 = make_agent(db, "a2")
+    a3 = make_agent(db, "a3")
+    db.add_all([
+        AssetRiskProfile(
+            agent_id=a1.id,
+            criticality_override=5,
+            external_override=True,
+            owner="soc-owner",
+            business_service="identity",
+            environment="prod",
+            updated_by="user:admin",
+        ),
+        AssetRiskProfile(
+            agent_id=a2.id,
+            criticality_override=4,
+            external_override=False,
+            owner="soc-owner",
+            business_service="identity",
+            environment="prod",
+            updated_by="user:admin",
+        ),
+        AssetRiskProfile(
+            agent_id=a3.id,
+            criticality_override=2,
+            external_override=False,
+            owner="app-owner",
+            business_service="erp",
+            environment="prod",
+            updated_by="user:admin",
+        ),
+    ])
+    db.commit()
+
+    campaign = make_campaign(db, payload_extra={"target_agent_ids": ["a1", "a2", "a3"]})
+    campaign.ring_percent = 100
+    db.commit()
+
+    report = main.campaign_blast_radius(db, campaign)
+
+    assert report["summary"]["ring_assets"] == 3
+    assert report["summary"]["critical_assets"] == 2
+    assert report["summary"]["external_assets"] == 1
+    assert report["summary"]["top_business_service"]["name"] == "identity"
+    assert report["summary"]["top_business_service"]["percent"] == 66.7
+    assert report["impact_state"] == "critical_scope"
+
+
+def test_blast_radius_warns_preflight_without_becoming_hidden_blocker(db):
+    agent = make_agent(db)
+    db.add(AssetRiskProfile(
+        agent_id=agent.id,
+        criticality_override=5,
+        external_override=False,
+        owner="",
+        business_service="identity",
+        environment="prod",
+        updated_by="user:admin",
+    ))
+    db.commit()
+    campaign = make_campaign(db)
+
+    report = main.campaign_preflight(db, campaign)
+    blast = check(report, "blast_radius")
+
+    assert blast["status"] == "warning"
+    assert blast["blocking"] is False
+    assert blast["details"]["impact_state"] == "critical_scope"
+
+
+def test_blast_radius_is_included_in_evidence_pack(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+
+    pack = main.campaign_evidence_pack(db, campaign)
+
+    assert "blast_radius" in pack["sections"]
+    assert "blast_radius" in pack["manifest"]["section_hashes"]
+    assert pack["manifest"]["section_hashes"]["blast_radius"] == main._evidence_sha256(
+        pack["sections"]["blast_radius"]
+    )
