@@ -310,3 +310,66 @@ def test_policy_waiver_does_not_survive_policy_digest_change(db):
 
     assert report["blocking"] is True
     assert report["waived_violations"] == []
+
+
+def test_critical_scope_waiver_requires_second_admin(db):
+    item = campaign(db, ring=10)
+    normalized = main.validate_patch_policy_document(document(max_ring=5))
+    policy = PatchPolicyDefinition(
+        id="gov-p1", name="Tier0 Governance", version=1, enabled=True, priority=100,
+        policy_json=main.dump(normalized), policy_sha256=main._evidence_sha256(normalized),
+        created_by="admin",
+    )
+    db.add(policy)
+    db.commit()
+
+    from app.schemas import PatchPolicyWaiverCreate, PatchPolicyWaiverApprove
+    from datetime import datetime, timedelta, timezone
+    body = PatchPolicyWaiverCreate(
+        policy_id=policy.id,
+        owner="iam-owner",
+        reason="Temporary controlled exception for emergency maintenance",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=6),
+    )
+    waiver = main.create_campaign_policy_waiver(
+        item.id, body,
+        principal={"actor": "user:admin1", "role": "admin"},
+        db=db,
+    )
+    assert waiver["status"] == "pending"
+    assert waiver["required_approvals"] == 2
+
+    approved = main.approve_policy_waiver(
+        waiver["id"],
+        PatchPolicyWaiverApprove(reason="Independent second approval"),
+        principal={"actor": "user:admin2", "role": "admin"},
+        db=db,
+    )
+    assert approved["status"] == "approved"
+    assert approved["second_approved_by"] == "user:admin2"
+
+
+def test_pending_waiver_does_not_suppress_policy_enforcement(db):
+    item = campaign(db, ring=10)
+    normalized = main.validate_patch_policy_document(document(max_ring=5))
+    policy = PatchPolicyDefinition(
+        id="gov-p1", name="Tier0 Governance", version=1, enabled=True, priority=100,
+        policy_json=main.dump(normalized), policy_sha256=main._evidence_sha256(normalized),
+        created_by="admin",
+    )
+    db.add(policy)
+    db.commit()
+    from app.models import PatchPolicyWaiver
+    from datetime import datetime, timedelta, timezone
+    db.add(PatchPolicyWaiver(
+        id="pending-w1", campaign_id=item.id, policy_id=policy.id,
+        policy_sha256=policy.policy_sha256, reason="Pending approval",
+        owner="iam", requested_by="admin1", approved_by="admin1",
+        required_approvals=2, status="pending",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=6),
+    ))
+    db.commit()
+
+    report = main.campaign_policy_as_code_report(db, item)
+    assert report["blocking"] is True
+    assert report["active_waivers"] == []
