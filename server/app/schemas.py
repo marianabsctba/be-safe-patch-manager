@@ -396,6 +396,24 @@ class AutoPatchPolicyUpdate(BaseModel):
 
 
 
+class PatchPolicyCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
+    priority: int = Field(default=100, ge=0, le=10000)
+    enabled: bool = True
+    policy: Dict[str, Any]
+
+
+class PatchPolicyVersionCreate(BaseModel):
+    priority: Optional[int] = Field(default=None, ge=0, le=10000)
+    enabled: bool = True
+    policy: Dict[str, Any]
+
+
+class PatchPolicySimulationRequest(BaseModel):
+    campaign_id: str = Field(min_length=1, max_length=36)
+    policy: Dict[str, Any]
+
+
 class AutoPatchSimulationRequest(BaseModel):
     policy_id: str = Field(min_length=1, max_length=36)
     patch_ref: str = Field(min_length=1, max_length=255)
