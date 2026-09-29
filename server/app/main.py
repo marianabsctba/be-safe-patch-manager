@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.48.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.49.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -9781,6 +9781,59 @@ def update_patch_block_rule(
 
 
 @app.post("/api/admin/campaigns")
+def _scope_snapshot_context(agent: Agent) -> dict:
+    ctx = _agent_canary_context(agent)
+    return {
+        "agent_id": agent.id,
+        "hostname": agent.hostname,
+        "os_family": str(agent.os_family or "").lower(),
+        "os_version": str(agent.os_version or ""),
+        "tags": sorted(str(tag) for tag in load(agent.tags, []) if str(tag)),
+        "business_service": ctx.get("service"),
+        "environment": ctx.get("environment"),
+        "owner": ctx.get("owner"),
+        "criticality": ctx.get("criticality"),
+        "external": bool(ctx.get("external")),
+    }
+
+
+def build_scope_baseline(agents: list[Agent], reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    items = sorted(
+        (_scope_snapshot_context(agent) for agent in agents),
+        key=lambda item: item["agent_id"],
+    )
+    content = {
+        "captured_at": reference.isoformat(),
+        "asset_count": len(items),
+        "assets": items,
+    }
+    return {
+        **content,
+        "sha256": _evidence_sha256(content),
+        "policy": "block_membership_drift",
+    }
+
+
+def scope_candidates_for_create(db: Session, body: CampaignCreate, target_agent, target_agents: list[Agent]) -> list[Agent]:
+    if target_agent:
+        return [target_agent]
+    if target_agents:
+        return sorted(target_agents, key=lambda agent: agent.id)
+
+    items = []
+    target_os = str(body.target_os or "all").lower()
+    target_tag = str(body.target_tag or "").strip()
+    for agent in db.query(Agent).options(selectinload(Agent.risk_profile)).all():
+        if target_os != "all" and agent.os_family != target_os:
+            continue
+        tags = load(agent.tags, [])
+        if target_tag and target_tag not in tags:
+            continue
+        items.append(agent)
+    return sorted(items, key=lambda agent: agent.id)
+
+
 def default_rollout_plan(ring_percent: int) -> list[int]:
     ring = max(1, min(int(ring_percent), 100))
     if ring >= 100:
@@ -9871,8 +9924,14 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
         reboot_policy = "if_required"
     allow_reboot = reboot_policy == "if_required"
 
+    scope_baseline = build_scope_baseline(
+        scope_candidates_for_create(db, body, target_agent, target_agents),
+        now(),
+    )
+
     policy_payload = {
         **body.payload,
+        "scope_baseline": scope_baseline,
         "allow_reboot": allow_reboot,
         "reboot_policy": reboot_policy,
         "maintenance_start": body.maintenance_start.strip(),
@@ -9956,6 +10015,11 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             "pause_on_failure": bool(body.pause_on_failure),
             "ring_strategy": body.ring_strategy,
             "canary_max_critical_percent": int(body.canary_max_critical_percent),
+            "scope_baseline": {
+                "asset_count": scope_baseline["asset_count"],
+                "sha256": scope_baseline["sha256"],
+                "policy": scope_baseline["policy"],
+            },
         },
     )
     return serialize_campaign(campaign)
@@ -11356,6 +11420,124 @@ def campaign_maintenance_risk(
     }
 
 
+def campaign_scope_drift(
+    db: Session,
+    campaign: Campaign,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    payload = load(campaign.payload_json, {})
+    baseline = payload.get("scope_baseline") if isinstance(payload.get("scope_baseline"), dict) else None
+    current_agents = campaign_candidates(db, campaign)
+
+    if not baseline or not isinstance(baseline.get("assets"), list):
+        return {
+            "generated_at": reference.isoformat(),
+            "campaign_id": campaign.id,
+            "state": "no_baseline",
+            "blocking": False,
+            "summary": {
+                "baseline_assets": 0,
+                "current_assets": len(current_agents),
+                "added": 0,
+                "removed": 0,
+                "context_changed": 0,
+            },
+            "added": [],
+            "removed": [],
+            "context_changed": [],
+            "note": "Campaign predates scope baseline capture; membership drift cannot be proven retrospectively.",
+        }
+
+    baseline_items = {
+        str(item.get("agent_id")): item
+        for item in baseline.get("assets", [])
+        if isinstance(item, dict) and str(item.get("agent_id") or "")
+    }
+    current_items = {
+        agent.id: _scope_snapshot_context(agent)
+        for agent in current_agents
+    }
+
+    baseline_ids = set(baseline_items)
+    current_ids = set(current_items)
+    added_ids = sorted(current_ids - baseline_ids)
+    removed_ids = sorted(baseline_ids - current_ids)
+
+    context_changed = []
+    compared_fields = [
+        "hostname", "os_family", "os_version", "tags",
+        "business_service", "environment", "owner",
+        "criticality", "external",
+    ]
+    for agent_id in sorted(baseline_ids & current_ids):
+        before = baseline_items[agent_id]
+        after = current_items[agent_id]
+        changes = {}
+        for field in compared_fields:
+            if before.get(field) != after.get(field):
+                changes[field] = {
+                    "before": before.get(field),
+                    "after": after.get(field),
+                }
+        if changes:
+            context_changed.append({
+                "agent_id": agent_id,
+                "hostname": after.get("hostname") or before.get("hostname"),
+                "changes": changes,
+            })
+
+    added = [current_items[agent_id] for agent_id in added_ids]
+    removed = [baseline_items[agent_id] for agent_id in removed_ids]
+    blocking = bool(added or removed)
+
+    if blocking:
+        state = "membership_drift"
+    elif context_changed:
+        state = "context_drift"
+    else:
+        state = "stable"
+
+    current_content = {
+        "captured_at": reference.isoformat(),
+        "asset_count": len(current_items),
+        "assets": [current_items[key] for key in sorted(current_items)],
+    }
+
+    return {
+        "generated_at": reference.isoformat(),
+        "campaign_id": campaign.id,
+        "state": state,
+        "blocking": blocking,
+        "policy": baseline.get("policy") or "block_membership_drift",
+        "baseline": {
+            "captured_at": baseline.get("captured_at"),
+            "asset_count": int(baseline.get("asset_count") or len(baseline_items)),
+            "sha256": baseline.get("sha256"),
+        },
+        "current": {
+            "asset_count": len(current_items),
+            "sha256": _evidence_sha256(current_content),
+        },
+        "summary": {
+            "baseline_assets": len(baseline_items),
+            "current_assets": len(current_items),
+            "added": len(added),
+            "removed": len(removed),
+            "context_changed": len(context_changed),
+        },
+        "added": added[:200],
+        "removed": removed[:200],
+        "context_changed": context_changed[:200],
+        "rules": {
+            "membership_drift": "BLOCK when an endpoint entered or left the campaign target scope after creation",
+            "context_drift": "WARNING when membership is stable but business/OS/risk context changed",
+            "stable": "PASS when membership and compared context are unchanged",
+        },
+        "note": "Scope Drift Guard compares the campaign creation baseline with the current target scope; it does not infer intent.",
+    }
+
+
 def campaign_preflight(
     db: Session,
     campaign: Campaign,
@@ -11382,6 +11564,7 @@ def campaign_preflight(
     change_collisions = campaign_change_collisions(db, campaign, reference)
     applicability_guard = campaign_patch_applicability_guard(db, campaign, reference)
     maintenance_risk = campaign_maintenance_risk(db, campaign, reference)
+    scope_drift = campaign_scope_drift(db, campaign, reference)
 
     if not candidates:
         add_check(
@@ -11536,6 +11719,40 @@ def campaign_preflight(
             "passed",
             "nenhum conflito objetivo de reboot ou capacidade da janela foi observado",
             details=maintenance_risk,
+        )
+
+    if scope_drift["state"] == "membership_drift":
+        add_check(
+            "scope_drift",
+            "Scope Drift Guard",
+            "blocked",
+            f"escopo mudou desde a criação: +{scope_drift['summary']['added']} / -{scope_drift['summary']['removed']} endpoint(s)",
+            blocking=True,
+            details=scope_drift,
+        )
+    elif scope_drift["state"] == "context_drift":
+        add_check(
+            "scope_drift",
+            "Scope Drift Guard",
+            "warning",
+            f"{scope_drift['summary']['context_changed']} endpoint(s) mantiveram membership, mas mudaram contexto operacional",
+            details=scope_drift,
+        )
+    elif scope_drift["state"] == "no_baseline":
+        add_check(
+            "scope_drift",
+            "Scope Drift Guard",
+            "warning",
+            "campanha legada sem baseline de escopo; drift histórico não pode ser comprovado",
+            details=scope_drift,
+        )
+    else:
+        add_check(
+            "scope_drift",
+            "Scope Drift Guard",
+            "passed",
+            "membership e contexto comparado permanecem estáveis desde a criação",
+            details=scope_drift,
         )
 
     approval = serialize_campaign_approval(campaign)
@@ -12058,6 +12275,18 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
 
 
 
+@app.get("/api/admin/campaigns/{campaign_id}/scope-drift")
+def get_campaign_scope_drift(
+    campaign_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return campaign_scope_drift(db, campaign)
+
+
 @app.get("/api/admin/campaigns/{campaign_id}/maintenance-risk")
 def get_campaign_maintenance_risk(
     campaign_id: str,
@@ -12256,7 +12485,7 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
 
     additional_blockers = [
         item for item in preflight["checks"]
-        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision", "patch_applicability", "maintenance_reboot"}
+        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision", "patch_applicability", "maintenance_reboot", "scope_drift"}
     ]
     if additional_blockers:
         raise HTTPException(
@@ -12360,6 +12589,7 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
         "change_collisions": campaign_change_collisions(db, campaign, reference),
         "patch_applicability": campaign_patch_applicability_guard(db, campaign, reference),
         "maintenance_risk": campaign_maintenance_risk(db, campaign, reference),
+        "scope_drift": campaign_scope_drift(db, campaign, reference),
         "preflight_snapshots": [
             serialize_campaign_preflight_snapshot(item, include_result=True)
             for item in preflight_items
