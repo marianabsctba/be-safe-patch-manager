@@ -3772,14 +3772,20 @@ window.showCampaignPreflight = async (campaignId) => {
   try {
     const result = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/preflight');
     const summary = result.summary || {};
+    const drift = result.drift || { status: 'NO_BASELINE', changes: [] };
+    const latest = result.latest_snapshot || null;
     const readiness = String(result.readiness || 'REVIEW').toUpperCase();
     const readinessClass = readiness === 'READY' ? 'ok' : readiness === 'BLOCKED' ? 'fail' : 'warn';
     const statusClass = (status) => status === 'passed' ? 'ok' : status === 'blocked' ? 'fail' : 'warn';
+    const driftClass = drift.status === 'DEGRADED' ? 'fail' : drift.status === 'UNCHANGED' || drift.status === 'IMPROVED' ? 'ok' : 'warn';
 
     target.innerHTML =
       '<div class="preflight-head">' +
         '<div><p class="section-kicker">CHANGE READINESS</p><h4>Campaign Preflight</h4></div>' +
-        '<div>' + badge(readiness, readinessClass) + '</div>' +
+        '<div class="preflight-head-actions">' +
+          badge(readiness, readinessClass) +
+          badge('DRIFT ' + String(drift.status || 'NO_BASELINE'), driftClass) +
+        '</div>' +
       '</div>' +
       '<div class="preflight-summary">' +
         '<span>Checks <strong>' + esc(summary.checks || 0) + '</strong></span>' +
@@ -3787,7 +3793,21 @@ window.showCampaignPreflight = async (campaignId) => {
         '<span>Warnings <strong>' + esc(summary.warnings || 0) + '</strong></span>' +
         '<span>Blockers <strong>' + esc(summary.blockers || 0) + '</strong></span>' +
         '<span>Ring <strong>' + esc(summary.selected_ring || 0) + '/' + esc(summary.candidates || 0) + '</strong></span>' +
+        (latest ? '<span>Último snapshot <strong>' + esc(shortWhen(latest.created_at)) + '</strong></span>' : '<span>Snapshot <strong>nenhum</strong></span>') +
       '</div>' +
+      ((drift.changes || []).length
+        ? '<div class="preflight-drift">' +
+          '<strong>Drift desde o último snapshot</strong>' +
+          (drift.changes || []).slice(0, 8).map((change) =>
+            '<span class="drift-row ' + esc(change.direction || 'changed') + '">' +
+              '<b>' + esc(change.label || change.key || '-') + '</b> ' +
+              esc(String(change.from_status || '-').toUpperCase()) + ' → ' +
+              esc(String(change.to_status || '-').toUpperCase()) +
+              (change.to_message ? ' · ' + esc(change.to_message) : '') +
+            '</span>'
+          ).join('') +
+          '</div>'
+        : '') +
       '<div class="preflight-grid">' +
         (result.checks || []).map((check) =>
           '<article class="preflight-check ' + statusClass(check.status) + '">' +
@@ -3800,6 +3820,10 @@ window.showCampaignPreflight = async (campaignId) => {
           '</article>'
         ).join('') +
       '</div>' +
+      '<div class="preflight-actions">' +
+        (roleAtLeast('operator') ? '<button onclick="snapshotCampaignPreflight(\'' + campaignId + '\')">Registrar snapshot</button>' : '') +
+        '<button class="secondary" onclick="showPreflightHistory(\'' + campaignId + '\')">Histórico de preflight</button>' +
+      '</div>' +
       '<p class="preflight-note">' + esc(result.note || '') + '</p>';
 
     target.dataset.loaded = '1';
@@ -3808,6 +3832,48 @@ window.showCampaignPreflight = async (campaignId) => {
   }
 };
 
+
+window.snapshotCampaignPreflight = async (campaignId) => {
+  if (!requireRole('operator', 'Perfil operator ou admin necessário.')) return;
+  try {
+    const result = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/preflight/snapshot', {
+      method: 'POST',
+    });
+    const snapshot = result.snapshot || {};
+    const drift = result.drift || {};
+    toast(
+      'Snapshot ' + String(snapshot.readiness || '-') +
+      ' registrado · SHA ' + String(snapshot.result_sha256 || '').slice(0, 12) +
+      ' · drift ' + String(drift.status || 'NO_BASELINE')
+    );
+    const target = document.getElementById('preflight-' + campaignId);
+    if (target) {
+      target.dataset.loaded = '0';
+      target.hidden = true;
+    }
+    await showCampaignPreflight(campaignId);
+  } catch (error) {
+    toast('Snapshot de preflight: ' + error.message, 'fail');
+  }
+};
+
+
+window.showPreflightHistory = async (campaignId) => {
+  try {
+    const items = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/preflight/history?limit=50');
+    if (!items.length) {
+      alert('Nenhum snapshot de preflight registrado.');
+      return;
+    }
+    alert(items.map((item) =>
+      when(item.created_at) + ' · ' + item.actor + ' · ' + item.source + '\n' +
+      'Readiness: ' + item.readiness + ' · deploy ' + (item.deploy_allowed ? 'allowed' : 'blocked') + '\n' +
+      'SHA256: ' + item.result_sha256
+    ).join('\n\n'));
+  } catch (error) {
+    toast('Histórico de preflight: ' + error.message, 'fail');
+  }
+};
 
 window.showPromotionAnalysis = async (campaignId) => {
   try {
