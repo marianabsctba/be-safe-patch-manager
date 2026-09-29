@@ -273,6 +273,7 @@ def test_campaign_evidence_pack_hashes_sections_and_pack(db):
         "campaign",
         "approval",
         "blast_radius",
+        "ring_plan",
         "preflight_snapshots",
         "ring_decisions",
         "jobs",
@@ -483,4 +484,119 @@ def test_blast_radius_is_included_in_evidence_pack(db):
     assert "blast_radius" in pack["manifest"]["section_hashes"]
     assert pack["manifest"]["section_hashes"]["blast_radius"] == main._evidence_sha256(
         pack["sections"]["blast_radius"]
+    )
+
+
+
+def test_balanced_ring_planner_is_deterministic_and_context_diverse(db):
+    agents = [make_agent(db, f"a{index}") for index in range(1, 7)]
+    profiles = [
+        ("svc-a", "prod", "owner-a", 2),
+        ("svc-a", "prod", "owner-a", 5),
+        ("svc-b", "prod", "owner-b", 2),
+        ("svc-b", "stage", "owner-b", 4),
+        ("svc-c", "stage", "owner-c", 2),
+        ("svc-c", "dev", "owner-c", 2),
+    ]
+    for agent, (service, environment, owner, criticality) in zip(agents, profiles):
+        db.add(AssetRiskProfile(
+            agent_id=agent.id,
+            criticality_override=criticality,
+            external_override=False,
+            owner=owner,
+            business_service=service,
+            environment=environment,
+            updated_by="user:admin",
+        ))
+    db.commit()
+
+    campaign = make_campaign(db, payload_extra={
+        "target_agent_ids": [agent.id for agent in agents],
+        "ring_strategy": "balanced",
+        "canary_max_critical_percent": 25,
+    })
+    campaign.ring_percent = 50
+    db.commit()
+
+    first = main.campaign_ring_plan(db, campaign)
+    second = main.campaign_ring_plan(db, campaign)
+
+    assert first["strategy"] == "balanced"
+    assert first["target_count"] == 3
+    assert first["selected_count"] == 3
+    assert [item["agent_id"] for item in first["selection"]] == [
+        item["agent_id"] for item in second["selection"]
+    ]
+    assert first["coverage"]["business_services"] >= 2
+    assert first["coverage"]["environments"] >= 2
+    assert first["critical_selected"] <= 1
+
+
+def test_balanced_ring_planner_uses_critical_asset_when_no_alternative(db):
+    agents = [make_agent(db, f"c{index}") for index in range(1, 4)]
+    for agent in agents:
+        db.add(AssetRiskProfile(
+            agent_id=agent.id,
+            criticality_override=5,
+            external_override=False,
+            owner="identity-owner",
+            business_service="identity",
+            environment="prod",
+            updated_by="user:admin",
+        ))
+    db.commit()
+
+    campaign = make_campaign(db, payload_extra={
+        "target_agent_ids": [agent.id for agent in agents],
+        "ring_strategy": "balanced",
+        "canary_max_critical_percent": 0,
+    })
+    campaign.ring_percent = 34
+    db.commit()
+
+    plan = main.campaign_ring_plan(db, campaign)
+
+    assert plan["target_count"] == 2
+    assert plan["critical_selected"] == 2
+    assert len(plan["selection"]) == 2
+
+
+def test_preflight_exposes_smart_canary_evidence(db):
+    agents = [make_agent(db, f"s{index}") for index in range(1, 5)]
+    for index, agent in enumerate(agents, start=1):
+        db.add(AssetRiskProfile(
+            agent_id=agent.id,
+            criticality_override=2,
+            external_override=False,
+            owner=f"owner-{index % 2}",
+            business_service=f"svc-{index % 2}",
+            environment="prod" if index % 2 else "stage",
+            updated_by="user:admin",
+        ))
+    db.commit()
+    campaign = make_campaign(db, payload_extra={
+        "target_agent_ids": [agent.id for agent in agents],
+        "ring_strategy": "balanced",
+        "canary_max_critical_percent": 25,
+    })
+    campaign.ring_percent = 50
+    db.commit()
+
+    report = main.campaign_preflight(db, campaign)
+    smart = check(report, "smart_canary")
+
+    assert smart["status"] == "passed"
+    assert smart["details"]["strategy"] == "balanced"
+    assert smart["details"]["selected_count"] == 2
+
+
+def test_evidence_pack_includes_ring_plan_hash(db):
+    make_agent(db)
+    campaign = make_campaign(db, payload_extra={"ring_strategy": "balanced"})
+
+    pack = main.campaign_evidence_pack(db, campaign)
+
+    assert "ring_plan" in pack["sections"]
+    assert pack["manifest"]["section_hashes"]["ring_plan"] == main._evidence_sha256(
+        pack["sections"]["ring_plan"]
     )
