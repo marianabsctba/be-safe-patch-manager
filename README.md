@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.52.0  
+> **Control plane:** v0.53.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -176,6 +176,29 @@ Assim o histórico consegue responder:
 > por que esta patch estava READY ontem?
 
 sem recalcular a resposta com os dados de hoje.
+
+## Explainable Change Risk Engine
+
+A v0.53 adiciona um engine determinístico para risco operacional de mudança.
+
+O score de 0–100 é composto por fatores visíveis e auditáveis, como:
+
+- ativos críticos e exposição externa;
+- concentração do blast radius;
+- colisão com mudanças concorrentes;
+- reboot em ativos críticos;
+- applicability/supersedence incerta ou bloqueada;
+- regressão e failure rate observados localmente;
+- ausência de health gate, rollback ou janela;
+- tamanho do ring inicial.
+
+Faixas: LOW, MODERATE, HIGH e CRITICAL.
+
+O engine **não mistura risco da vulnerabilidade com risco da mudança**. CISA KEV, ransomware e EPSS aparecem como contexto de urgência, mas não aumentam artificialmente o score operacional.
+
+Mudanças CRITICAL exigem controles mínimos objetivos. Se health gate, rollback, ring inicial ≤10% ou janela obrigatória estiverem ausentes, o Preflight bloqueia a implantação e mostra exatamente qual controle falta.
+
+O endpoint `/api/admin/campaigns/{id}/change-risk` e o botão **Change Risk** exibem fatores, pontos, fontes e controles requeridos. O mesmo snapshot entra no Evidence Pack.
 
 ## CAB / Change Authority
 
