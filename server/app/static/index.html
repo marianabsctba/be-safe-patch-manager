@@ -32,7 +32,7 @@
         <span class="status-dot"></span>
         <div>
           <strong>Patch Manager</strong>
-          <small>dashboard v0.46</small>
+          <small>dashboard v0.47</small>
         </div>
       </div>
     </aside>
@@ -45,6 +45,14 @@
         </div>
 
         <div class="topbar-actions">
+          <label class="tenant-locale-control" title="Idioma do tenant">
+            <span class="sr-only">Idioma do tenant</span>
+            <select id="tenantLocale" aria-label="Idioma do tenant">
+              <option value="pt-BR">PT-BR</option>
+              <option value="en">EN</option>
+              <option value="es">ES</option>
+            </select>
+          </label>
           <span id="lastUpdate" class="last-update">Aguardando autenticação</span>
           <button id="refresh" class="icon-button" title="Atualizar">↻</button>
           <div class="auth-user" id="authUser" hidden>
@@ -1289,6 +1297,7 @@
   </div>
 
   <div id="toast" class="toast" aria-live="polite"></div>
+  <script src="/static/i18n.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
