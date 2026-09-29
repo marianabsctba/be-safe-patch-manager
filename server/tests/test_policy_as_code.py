@@ -251,3 +251,62 @@ def test_policy_bundle_import_versions_changed_policy(db):
     assert len(result["created"]) == 1
     assert result["created"][0]["version"] == 2
     assert result["created"][0]["supersedes_id"] == "import-p1"
+
+
+def test_policy_waiver_suppresses_enforcement_but_preserves_violation(db):
+    item = campaign(db, ring=10)
+    normalized = main.validate_patch_policy_document(document(max_ring=5))
+    policy = PatchPolicyDefinition(
+        id="waiver-p1", name="Tier0 Waiver", version=1, enabled=True, priority=100,
+        policy_json=main.dump(normalized), policy_sha256=main._evidence_sha256(normalized),
+        created_by="admin",
+    )
+    db.add(policy)
+    db.commit()
+
+    from app.models import PatchPolicyWaiver
+    from datetime import datetime, timedelta, timezone
+    waiver = PatchPolicyWaiver(
+        id="w1",
+        campaign_id=item.id,
+        policy_id=policy.id,
+        policy_sha256=policy.policy_sha256,
+        reason="Approved temporary exception for controlled maintenance",
+        approved_by="user:admin",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=6),
+    )
+    db.add(waiver)
+    db.commit()
+
+    report = main.campaign_policy_as_code_report(db, item)
+
+    assert report["blocking"] is False
+    assert len(report["waived_violations"]) == 1
+    assert report["evaluations"][0]["violations"][0]["waived"] is True
+
+
+def test_policy_waiver_does_not_survive_policy_digest_change(db):
+    item = campaign(db, ring=10)
+    normalized = main.validate_patch_policy_document(document(max_ring=5))
+    policy = PatchPolicyDefinition(
+        id="waiver-p1", name="Tier0 Waiver", version=1, enabled=True, priority=100,
+        policy_json=main.dump(normalized), policy_sha256=main._evidence_sha256(normalized),
+        created_by="admin",
+    )
+    db.add(policy)
+    db.commit()
+
+    from app.models import PatchPolicyWaiver
+    from datetime import datetime, timedelta, timezone
+    db.add(PatchPolicyWaiver(
+        id="w1", campaign_id=item.id, policy_id=policy.id,
+        policy_sha256="0" * 64,
+        reason="Old exception", approved_by="user:admin",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=6),
+    ))
+    db.commit()
+
+    report = main.campaign_policy_as_code_report(db, item)
+
+    assert report["blocking"] is True
+    assert report["waived_violations"] == []
