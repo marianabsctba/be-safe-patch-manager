@@ -127,6 +127,19 @@ The public key is an anchor of trust even though it is not secret. Do not replac
 Ed25519 release signing is not a substitute for platform code signing. If the Windows agent is later distributed as an EXE or MSI, Authenticode/EV Code Signing should be applied in addition to the signed release-manifest chain.
 
 
+## Evidence Pack signing
+
+Campaign Evidence Pack signing uses a **different Ed25519 keypair** from agent release signing. Do not reuse cryptographic keys across these trust domains.
+
+Unlike the agent release signing key, which is designed to remain offline, the current Evidence Pack attestation implementation can sign at export time and therefore needs access to an attestation private key when the feature is enabled. Treat this key as a high-value production secret.
+
+For production deployments, prefer a KMS/HSM or remote signing service. The PEM-file implementation is intended as a deployable baseline and should be provided through a tightly controlled read-only secret mount, never committed to Git or baked into an image.
+
+The corresponding public key is the trust anchor used by the console and offline verifier. Distribute that public key, or at minimum its SHA-256 key identifier, through an administrative channel independent from the Evidence Pack itself.
+
+If `EVIDENCE_ATTESTATION_ENABLED=true`, signing failure is intentionally fail-closed: the server must not silently downgrade an expected signed export to an unsigned export.
+
+
 ## Linux agent activation safety
 
 The v0.15 Linux activation path uses a stable launcher that is not replaced as part of a normal agent release.
