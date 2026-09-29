@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.41.0
+
+- control plane e dashboard passam para versão 0.41.0; agente permanece em 0.16.0;
+- adicionado Campaign Evidence Pack exportável por campanha;
+- pack consolida configuração, approval, preflight snapshots, decisões de rings, jobs, health/validation, rollback, remediation evidence, freeze override e audit trail;
+- manifest inclui SHA-256 do pacote e SHA-256 individual por seção;
+- hashing usa JSON canonicalizado com chaves ordenadas para verificação reproduzível fora da plataforma;
+- console ganha ação Evidence Pack e download direto em JSON;
+- exportação gera evento de auditoria próprio com digest e resumo do pacote;
+- adicionados testes de integridade do manifest e preservação de evidências de job.
+
+
 ## 0.40.0
 
 - control plane e dashboard passam para versão 0.40.0; agente permanece em 0.16.0;
