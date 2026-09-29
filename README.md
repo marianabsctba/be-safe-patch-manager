@@ -3,13 +3,29 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.46.0  
+> **Control plane:** v0.47.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
 ![Be Safe Patch Manager — Visão geral](docs/screenshots/01-dashboard-overview.png)
 
 > As capturas deste README são geradas automaticamente a partir do front-end atual da `main`, com dados demonstrativos apenas para preencher a interface. Assim, menu, componentes, formulários, labels e estilos acompanham o produto real.
+
+## Tenant Localization
+
+O console possui configuração de idioma persistente por tenant com três locales suportados:
+
+- `pt-BR` — Português (Brasil);
+- `en` — English;
+- `es` — Español.
+
+O idioma padrão é `pt-BR`.
+
+O endpoint público `GET /api/tenant` fornece o locale padrão antes da autenticação. Administradores podem persistir a preferência do tenant por `PUT /api/admin/tenant`, e toda alteração é registrada no audit trail.
+
+O seletor no topo também permite preview local para usuários não administradores sem alterar a configuração global do tenant.
+
+A camada de i18n traduz o shell, navegação, autenticação, estados e os fluxos principais, com fallback seguro para PT-BR quando uma string ainda não possui tradução específica.
 
 ## Visão geral
 
