@@ -3502,6 +3502,7 @@ function campaignCard(campaign, compact = false) {
         <button class="secondary" onclick="showCampaignRingPlan('${campaign.id}')">Smart Canary</button>
         <button class="secondary" onclick="showCampaignCollisions('${campaign.id}')">Collision Guard</button>
         <button class="secondary" onclick="showPatchApplicability('${campaign.id}')">Applicability</button>
+        <button class="secondary" onclick="showMaintenanceRisk('${campaign.id}')">Reboot Plan</button>
         <button class="secondary" onclick="showCampaignBlastRadius('${campaign.id}')">Impact Preview</button>
         <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
         <button class="secondary" onclick="showCampaignFailureIntel('${campaign.id}')">Failure Intel</button>
@@ -3916,6 +3917,71 @@ window.downloadCampaignEvidencePack = async (campaignId) => {
     toast('Evidence Pack: ' + error.message, 'fail');
   }
 };
+window.showMaintenanceRisk = async (campaignId) => {
+  try {
+    const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/maintenance-risk');
+    const s = report.summary || {};
+    const policy = report.reboot_policy || {};
+    const windowState = report.maintenance_window || {};
+    const lines = [
+      'Maintenance & Reboot Readiness',
+      '',
+      'Estado: ' + String(report.state || '-').toUpperCase(),
+      'Bloqueia deploy: ' + (report.blocking ? 'SIM' : 'não'),
+      'Assets no ring: ' + String(s.selected_assets || 0),
+      'Reboot já pendente: ' + String(s.reboot_required_now || 0),
+      'Reboot requerido por patch: ' + String(s.reboot_required_by_patch || 0),
+      'Reboot possível por patch: ' + String(s.reboot_possible_by_patch || 0),
+      'Reboot desconhecido: ' + String(s.reboot_unknown || 0),
+      'Ativos críticos expostos: ' + String(s.critical_assets_exposed || 0),
+      'Serviços críticos: ' + String(s.critical_services || 0),
+      '',
+      'Policy: ' + String(policy.policy || '-') +
+        ' · allow_reboot=' + String(Boolean(policy.effective_reboot_allowed)),
+      'Janela: ' + (s.window_minutes == null ? 'não configurada' : String(s.window_minutes) + ' min') +
+        (windowState.timezone ? ' · ' + String(windowState.timezone) : ''),
+      'Histórico comparável: ' + String(s.history_samples || 0) + ' job(s)',
+      'Duração mediana: ' + String(s.median_duration_minutes == null ? '-' : s.median_duration_minutes + ' min'),
+      'P95 observado: ' + String(s.p95_duration_minutes == null ? '-' : s.p95_duration_minutes + ' min'),
+    ];
+
+    if ((report.signals || []).length) {
+      lines.push('', 'Sinais:');
+      report.signals.forEach((item) => lines.push(
+        '[' + String(item.severity || '-').toUpperCase() + '] ' + String(item.message || '-')
+      ));
+    }
+
+    const exposed = (report.assets || []).filter((item) =>
+      item.reboot_required_now || ['required', 'possible'].includes(String(item.predicted_reboot || ''))
+    );
+    if (exposed.length) {
+      lines.push('', 'Endpoints com exposição de reboot:');
+      exposed.slice(0, 15).forEach((item) => lines.push(
+        String(item.hostname || item.agent_id || '-') +
+        ' · ' + String(item.predicted_reboot || '-') +
+        (item.reboot_required_now ? ' · reboot já pendente' : '') +
+        ' · crit ' + String(item.criticality || 0) +
+        ' · ' + String(item.business_service || 'sem service')
+      ));
+    }
+
+    if ((report.packages || []).length) {
+      lines.push('', 'Metadata de reboot por patch:');
+      report.packages.slice(0, 15).forEach((item) => lines.push(
+        String(item.patch_ref || '-') + ' · ' + String(item.reboot_behavior || 'unknown').toUpperCase() +
+        (item.reboot_behavior_raw ? ' · ' + String(item.reboot_behavior_raw) : '')
+      ));
+    }
+
+    lines.push('', String(report.note || ''));
+    alert(lines.join('\n'));
+  } catch (error) {
+    toast('Reboot Plan: ' + error.message, 'fail');
+  }
+};
+
+
 window.showPatchApplicability = async (campaignId) => {
   try {
     const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/patch-applicability');
