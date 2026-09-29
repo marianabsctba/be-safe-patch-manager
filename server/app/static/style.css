@@ -1887,3 +1887,56 @@ button:disabled:hover {
   font-size:11px;
 }
 
+
+
+.preflight-head-actions {
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+  gap:8px;
+}
+
+.preflight-drift {
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  margin:0 0 12px;
+  padding:11px 12px;
+  border:1px solid var(--border-soft);
+  border-radius:9px;
+  background:var(--surface-2);
+}
+
+.preflight-drift > strong {
+  font-size:12px;
+}
+
+.drift-row {
+  display:block;
+  padding-left:9px;
+  border-left:3px solid var(--border);
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.4;
+}
+
+.drift-row.degraded {
+  border-left-color:var(--red);
+}
+
+.drift-row.improved {
+  border-left-color:var(--green);
+}
+
+.drift-row.changed,
+.drift-row.new,
+.drift-row.removed {
+  border-left-color:var(--yellow);
+}
+
+.preflight-actions {
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:12px;
+}
