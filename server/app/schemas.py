@@ -110,6 +110,8 @@ class CampaignCreate(BaseModel):
     promotion_min_success_rate: float = Field(default=90.0, ge=0.0, le=100.0)
     promotion_max_success_drop: float = Field(default=10.0, ge=0.0, le=100.0)
     pause_on_failure: bool = True
+    ring_strategy: str = Field(default="balanced", pattern=r"^(balanced|hash)$")
+    canary_max_critical_percent: int = Field(default=25, ge=0, le=100)
 
 
 class CampaignApprovalDecision(BaseModel):
