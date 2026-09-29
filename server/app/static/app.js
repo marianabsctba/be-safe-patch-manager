@@ -4760,8 +4760,8 @@ $('#campaignForm').addEventListener('submit', async (event) => {
     promotion_min_success_rate: Number(form.get('promotion_min_success_rate') || 90),
     promotion_max_success_drop: Number(form.get('promotion_max_success_drop') || 10),
     pause_on_failure: form.get('pause_on_failure') === 'on',
-    ring_strategy: 'balanced',
-    canary_max_critical_percent: 25,
+    ring_strategy: String(form.get('ring_strategy') || 'balanced'),
+    canary_max_critical_percent: Number(form.get('canary_max_critical_percent') || 25),
     target_agent_id: form.get('target_agent_id') || '',
     target_agent_ids: Array.isArray(state.campaignTargetAgentIds) ? state.campaignTargetAgentIds : [],
     target_finding_id: form.get('target_finding_id') || '',
@@ -4779,6 +4779,8 @@ $('#campaignForm').addEventListener('submit', async (event) => {
 
     event.target.reset();
     event.target.elements.ring_percent.value = 10;
+    event.target.elements.ring_strategy.value = 'balanced';
+    event.target.elements.canary_max_critical_percent.value = 25;
     event.target.elements.rollout_plan.value = '10,30,100';
     event.target.elements.soak_minutes.value = 60;
     event.target.elements.promotion_min_success_rate.value = 90;
