@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.46.0
+
+- control plane e dashboard passam para versão 0.46.0; agente permanece em 0.16.0;
+- adicionado Patch Applicability & Supersedence Guard;
+- campanhas cruzam os pacotes com Patch Catalog, lifecycle, grafo de supersedence e applicability real por endpoint;
+- patch superseded com replacement leaf conhecido passa a bloquear deploy;
+- patch sem nenhum endpoint missing, quando todos os alvos possuem observação, passa a bloquear deploy como not applicable;
+- EOL, metadata stale e applicability parcial/ausente geram warning explicável;
+- Preflight ganha check Patch Applicability & Supersedence;
+- console ganha ação Applicability por campanha;
+- Evidence Pack passa a incluir patch_applicability com SHA-256 próprio;
+- adicionados testes de supersedence e ausência comprovada de applicability.
+
+
 ## 0.45.0
 
 - control plane e dashboard passam para versão 0.45.0; agente permanece em 0.16.0;
