@@ -21,7 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignRingDecision, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignPreflightSnapshot, CampaignRingDecision, IntegrationState, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
 from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.39.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.40.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -10078,6 +10078,126 @@ def campaign_patch_blockers(
 
 
 
+def serialize_campaign_preflight_snapshot(item: CampaignPreflightSnapshot, include_result: bool = False) -> dict:
+    data = {
+        "id": item.id,
+        "campaign_id": item.campaign_id,
+        "readiness": item.readiness,
+        "deploy_allowed": bool(item.deploy_allowed),
+        "summary": load(item.summary_json, {}),
+        "result_sha256": item.result_sha256,
+        "actor": item.actor,
+        "source": item.source,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+    if include_result:
+        data["result"] = load(item.result_json, {})
+    return data
+
+
+def latest_campaign_preflight_snapshot(db: Session, campaign_id: str):
+    return db.query(CampaignPreflightSnapshot).filter(
+        CampaignPreflightSnapshot.campaign_id == campaign_id
+    ).order_by(CampaignPreflightSnapshot.created_at.desc()).first()
+
+
+def campaign_preflight_drift(previous_result: dict | None, current_result: dict) -> dict:
+    if not previous_result:
+        return {
+            "status": "NO_BASELINE",
+            "changed": False,
+            "degraded": 0,
+            "improved": 0,
+            "changes": [],
+        }
+
+    rank = {"passed": 0, "warning": 1, "blocked": 2}
+    previous_checks = {
+        str(item.get("key") or ""): item
+        for item in previous_result.get("checks", [])
+        if str(item.get("key") or "")
+    }
+    current_checks = {
+        str(item.get("key") or ""): item
+        for item in current_result.get("checks", [])
+        if str(item.get("key") or "")
+    }
+    changes = []
+
+    for key in sorted(set(previous_checks) | set(current_checks)):
+        old = previous_checks.get(key)
+        new = current_checks.get(key)
+        old_status = str((old or {}).get("status") or "missing")
+        new_status = str((new or {}).get("status") or "missing")
+        old_message = str((old or {}).get("message") or "")
+        new_message = str((new or {}).get("message") or "")
+        if old_status == new_status and old_message == new_message:
+            continue
+
+        if old is None:
+            direction = "new"
+        elif new is None:
+            direction = "removed"
+        else:
+            old_rank = rank.get(old_status, 1)
+            new_rank = rank.get(new_status, 1)
+            direction = "degraded" if new_rank > old_rank else "improved" if new_rank < old_rank else "changed"
+
+        changes.append({
+            "key": key,
+            "label": str((new or old or {}).get("label") or key),
+            "direction": direction,
+            "from_status": old_status,
+            "to_status": new_status,
+            "from_message": old_message,
+            "to_message": new_message,
+        })
+
+    degraded = sum(1 for item in changes if item["direction"] == "degraded")
+    improved = sum(1 for item in changes if item["direction"] == "improved")
+    if degraded:
+        status = "DEGRADED"
+    elif improved and not any(item["direction"] in {"changed", "new"} for item in changes):
+        status = "IMPROVED"
+    elif changes:
+        status = "CHANGED"
+    else:
+        status = "UNCHANGED"
+
+    return {
+        "status": status,
+        "changed": bool(changes),
+        "degraded": degraded,
+        "improved": improved,
+        "changes": changes,
+    }
+
+
+def persist_campaign_preflight_snapshot(
+    db: Session,
+    campaign: Campaign,
+    result: dict,
+    actor: str,
+    source: str = "manual",
+) -> CampaignPreflightSnapshot:
+    canonical = dump(result)
+    item = CampaignPreflightSnapshot(
+        id=str(uuid.uuid4()),
+        campaign_id=campaign.id,
+        readiness=str(result.get("readiness") or "REVIEW"),
+        deploy_allowed=bool(result.get("deploy_allowed")),
+        summary_json=dump(result.get("summary") or {}),
+        result_json=canonical,
+        result_sha256=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        actor=actor,
+        source=source,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
 def campaign_required_capabilities(campaign: Campaign) -> list[str]:
     payload = load(campaign.payload_json, {})
     required = {"job_leases_v1"}
@@ -10440,7 +10560,68 @@ def get_campaign_preflight(
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="campaign not found")
-    return campaign_preflight(db, campaign)
+    result = campaign_preflight(db, campaign)
+    latest = latest_campaign_preflight_snapshot(db, campaign.id)
+    previous_result = load(latest.result_json, {}) if latest else None
+    result["latest_snapshot"] = serialize_campaign_preflight_snapshot(latest) if latest else None
+    result["drift"] = campaign_preflight_drift(previous_result, result)
+    return result
+
+
+@app.post("/api/admin/campaigns/{campaign_id}/preflight/snapshot")
+def snapshot_campaign_preflight(
+    campaign_id: str,
+    principal=Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+
+    result = campaign_preflight(db, campaign)
+    previous = latest_campaign_preflight_snapshot(db, campaign.id)
+    previous_result = load(previous.result_json, {}) if previous else None
+    drift = campaign_preflight_drift(previous_result, result)
+    item = persist_campaign_preflight_snapshot(
+        db,
+        campaign,
+        result,
+        principal["actor"],
+        "manual",
+    )
+    audit(
+        db,
+        principal["actor"],
+        "campaign.preflight.snapshot",
+        "campaign",
+        campaign.id,
+        {
+            "snapshot_id": item.id,
+            "readiness": item.readiness,
+            "deploy_allowed": item.deploy_allowed,
+            "result_sha256": item.result_sha256,
+            "drift": drift,
+        },
+    )
+    return {
+        "snapshot": serialize_campaign_preflight_snapshot(item, include_result=True),
+        "drift": drift,
+    }
+
+
+@app.get("/api/admin/campaigns/{campaign_id}/preflight/history")
+def get_campaign_preflight_history(
+    campaign_id: str,
+    limit: int = 50,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    if not db.get(Campaign, campaign_id):
+        raise HTTPException(status_code=404, detail="campaign not found")
+    items = db.query(CampaignPreflightSnapshot).filter(
+        CampaignPreflightSnapshot.campaign_id == campaign_id
+    ).order_by(CampaignPreflightSnapshot.created_at.desc()).limit(max(1, min(limit, 200))).all()
+    return [serialize_campaign_preflight_snapshot(item) for item in items]
 
 
 @app.post("/api/admin/campaigns/{campaign_id}/deploy")
@@ -10450,6 +10631,18 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
         raise HTTPException(status_code=404, detail="campaign not found")
     if campaign.status != "draft":
         raise HTTPException(status_code=409, detail="campaign already deployed")
+
+    preflight = campaign_preflight(db, campaign)
+    previous_snapshot = latest_campaign_preflight_snapshot(db, campaign.id)
+    previous_result = load(previous_snapshot.result_json, {}) if previous_snapshot else None
+    preflight_drift = campaign_preflight_drift(previous_result, preflight)
+    deploy_snapshot = persist_campaign_preflight_snapshot(
+        db,
+        campaign,
+        preflight,
+        principal["actor"],
+        "deploy_attempt",
+    )
 
     enforce_campaign_freeze_guard(db, campaign)
 
@@ -10477,7 +10670,6 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
             },
         )
 
-    preflight = campaign_preflight(db, campaign)
     additional_blockers = [
         item for item in preflight["checks"]
         if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls"}
@@ -10511,12 +10703,20 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
         "campaign.deployed",
         "campaign",
         campaign.id,
-        {"agents": len(selected), "ring_percent": campaign.ring_percent},
+        {
+            "agents": len(selected),
+            "ring_percent": campaign.ring_percent,
+            "preflight_snapshot_id": deploy_snapshot.id,
+            "preflight_readiness": preflight.get("readiness"),
+            "preflight_drift": preflight_drift,
+        },
     )
     return {
         "ok": True,
         "agents_selected": len(selected),
         "ring_percent": campaign.ring_percent,
+        "preflight_snapshot": serialize_campaign_preflight_snapshot(deploy_snapshot),
+        "preflight_drift": preflight_drift,
         "campaign": serialize_campaign(campaign),
     }
 
