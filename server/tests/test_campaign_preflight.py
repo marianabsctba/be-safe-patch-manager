@@ -732,3 +732,77 @@ def test_evidence_pack_includes_change_collision_hash(db):
     assert pack["manifest"]["section_hashes"]["change_collisions"] == main._evidence_sha256(
         pack["sections"]["change_collisions"]
     )
+
+
+
+def test_applicability_guard_blocks_superseded_patch_with_known_replacement(db):
+    agent = make_agent(db, "superseded-agent")
+    old = PatchCatalogEntry(
+        patch_key="kb-old",
+        patch_ref="KB-OLD",
+        vendor="microsoft",
+        product="windows",
+        title="Old cumulative update",
+        severity="high",
+        supersedes_json=main.dump([]),
+        source="test",
+    )
+    new = PatchCatalogEntry(
+        patch_key="kb-new",
+        patch_ref="KB-NEW",
+        vendor="microsoft",
+        product="windows",
+        title="New cumulative update",
+        severity="high",
+        supersedes_json=main.dump(["KB-OLD"]),
+        source="test",
+    )
+    db.add_all([old, new])
+    db.flush()
+    db.add(PatchApplicability(
+        id="app-old",
+        patch_key=old.patch_key,
+        agent_id=agent.id,
+        status="missing",
+        evidence="agent_scan",
+    ))
+    db.commit()
+
+    campaign = make_campaign(db, payload_extra={"packages": ["KB-OLD"], "target_agent_ids": [agent.id]})
+    guard = main.campaign_patch_applicability_guard(db, campaign)
+
+    assert guard["state"] == "blocked"
+    assert guard["blocking"] is True
+    assert guard["patches"][0]["state"] == "superseded"
+    assert guard["patches"][0]["preferred_replacement"] == "KB-NEW"
+
+
+def test_applicability_guard_blocks_when_all_targets_report_not_missing(db):
+    agent = make_agent(db, "not-applicable-agent")
+    entry = PatchCatalogEntry(
+        patch_key="kb-na",
+        patch_ref="KB-NA",
+        vendor="microsoft",
+        product="windows",
+        title="Already installed update",
+        severity="high",
+        supersedes_json=main.dump([]),
+        source="test",
+    )
+    db.add(entry)
+    db.flush()
+    db.add(PatchApplicability(
+        id="app-na",
+        patch_key=entry.patch_key,
+        agent_id=agent.id,
+        status="installed_inferred",
+        evidence="agent_scan",
+    ))
+    db.commit()
+
+    campaign = make_campaign(db, payload_extra={"packages": ["KB-NA"], "target_agent_ids": [agent.id]})
+    guard = main.campaign_patch_applicability_guard(db, campaign)
+
+    assert guard["state"] == "blocked"
+    assert guard["patches"][0]["state"] == "not_applicable"
+    assert guard["patches"][0]["missing_assets"] == 0
