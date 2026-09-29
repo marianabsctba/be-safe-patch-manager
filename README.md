@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.43.0  
+> **Control plane:** v0.44.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -216,6 +216,44 @@ Patch Guard       PASSED  -> BLOCKED
 ```
 
 Toda tentativa de deploy também registra automaticamente um snapshot de preflight, preservando a evidência da condição operacional observada naquele momento.
+
+## Smart Canary / Adaptive Ring Planner
+
+Campanhas novas usam, por padrão, um canário determinístico `balanced` em vez de depender apenas do hash dos endpoints.
+
+A seleção é **coverage-first** e não usa score composto oculto.
+
+Para cada vaga do ring, a plataforma avalia lexicograficamente:
+
+1. manter ativos críticos abaixo do teto configurado, quando existir alternativa não crítica;
+2. escolher o business service menos representado;
+3. escolher o environment menos representado;
+4. escolher o segmento de SO/versão menos representado;
+5. escolher o owner menos representado;
+6. usar o hash estável do agent somente como desempate final.
+
+Parâmetros configuráveis por campanha:
+
+- `ring_strategy = balanced | hash`;
+- `canary_max_critical_percent`.
+
+O modo `hash` preserva o comportamento legado.
+
+O modo `balanced` é determinístico: o mesmo conjunto de endpoints e contexto produz a mesma seleção e a mesma ordem.
+
+O console exibe:
+
+- quantidade selecionada;
+- cobertura de business services;
+- environments;
+- segmentos de SO;
+- owners;
+- quantidade de críticos no canário;
+- teto configurado;
+- ordem determinística dos endpoints;
+- regras utilizadas.
+
+O Preflight registra um check `Smart Canary` e o Evidence Pack inclui o `ring_plan` completo com SHA-256 próprio.
 
 ## Blast Radius Intelligence
 
@@ -825,7 +863,7 @@ O pipeline valida:
 - JavaScript;
 - pre-publish security check.
 
-A v0.43 passa pelo pipeline completo antes de ser considerada pronta.
+A v0.44 passa pelo pipeline completo antes de ser considerada pronta.
 
 ## Estrutura
 
