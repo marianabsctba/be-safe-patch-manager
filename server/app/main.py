@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.42.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.43.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -10510,6 +10510,180 @@ def campaign_local_regression_evidence(
     }
 
 
+def campaign_blast_radius(
+    db: Session,
+    campaign: Campaign,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    candidates = campaign_candidates(db, campaign)
+    selected = agents_for_ring(db, campaign, campaign.ring_percent)
+    selected_ids = {agent.id for agent in selected}
+
+    # Reload selected assets with the existing risk/business context relationships.
+    enriched = []
+    if selected_ids:
+        enriched = db.query(Agent).options(
+            selectinload(Agent.vulnerabilities),
+            selectinload(Agent.risk_profile),
+            selectinload(Agent.risk_acceptances),
+            selectinload(Agent.risk_treatments),
+        ).filter(Agent.id.in_(selected_ids)).order_by(Agent.hostname.asc()).all()
+
+    services: dict[str, int] = {}
+    owners: dict[str, int] = {}
+    environments: dict[str, int] = {}
+    critical_assets = []
+    external_assets = []
+    above_appetite_assets = []
+    critical_without_owner = []
+    scores = []
+    assets = []
+
+    for agent in enriched:
+        profile = serialize_asset_risk_profile(agent.risk_profile) or {}
+        owner = str(profile.get("owner") or "").strip()
+        service = str(profile.get("business_service") or "").strip()
+        environment = str(profile.get("environment") or "").strip()
+        owner_key = owner or "unassigned"
+        service_key = service or "unassigned"
+        environment_key = environment or "unassigned"
+        owners[owner_key] = owners.get(owner_key, 0) + 1
+        services[service_key] = services.get(service_key, 0) + 1
+        environments[environment_key] = environments.get(environment_key, 0) + 1
+
+        risk = asset_risk_score(agent, list(agent.vulnerabilities or []), reference)
+        policy = effective_asset_risk_policy(db, agent)
+        score = float(risk.get("score") or 0.0)
+        scores.append(score)
+        criticality = int((risk.get("asset_criticality") or {}).get("score") or 0)
+        external = bool((risk.get("exposure") or {}).get("external"))
+        above_appetite = score >= float(policy.get("risk_appetite") or ASSET_RISK_APPETITE)
+
+        item = {
+            "agent_id": agent.id,
+            "hostname": agent.hostname,
+            "os_family": agent.os_family,
+            "os_version": agent.os_version,
+            "owner": owner,
+            "business_service": service,
+            "environment": environment,
+            "criticality": criticality,
+            "external": external,
+            "asset_risk": score,
+            "risk_level": risk.get("level"),
+            "risk_appetite": policy.get("risk_appetite"),
+            "above_risk_appetite": above_appetite,
+        }
+        assets.append(item)
+
+        if criticality >= 4:
+            critical_assets.append(item)
+        if external:
+            external_assets.append(item)
+        if above_appetite:
+            above_appetite_assets.append(item)
+        if criticality >= 4 and not owner:
+            critical_without_owner.append(item)
+
+    ring_assets = len(enriched)
+    scope_assets = len(candidates)
+    ring_scope_percent = round(ring_assets / scope_assets * 100.0, 1) if scope_assets else 0.0
+    top_service = max(services.items(), key=lambda item: item[1]) if services else ("unassigned", 0)
+    top_service_percent = round(top_service[1] / ring_assets * 100.0, 1) if ring_assets else 0.0
+    top_owner = max(owners.items(), key=lambda item: item[1]) if owners else ("unassigned", 0)
+    top_environment = max(environments.items(), key=lambda item: item[1]) if environments else ("unassigned", 0)
+
+    signals = []
+    if critical_assets:
+        signals.append({
+            "key": "critical_assets",
+            "severity": "high",
+            "message": f"{len(critical_assets)} ativo(s) com criticidade 4-5 entram neste ring",
+        })
+    if external_assets:
+        signals.append({
+            "key": "external_assets",
+            "severity": "medium",
+            "message": f"{len(external_assets)} ativo(s) com exposição externa entram neste ring",
+        })
+    if critical_without_owner:
+        signals.append({
+            "key": "critical_without_owner",
+            "severity": "high",
+            "message": f"{len(critical_without_owner)} ativo(s) crítico(s) não possuem owner definido",
+        })
+    if ring_assets >= 3 and top_service_percent >= 50.0:
+        signals.append({
+            "key": "service_concentration",
+            "severity": "medium",
+            "message": f"{top_service_percent}% do ring pertence ao mesmo business service ({top_service[0]})",
+        })
+    if above_appetite_assets:
+        signals.append({
+            "key": "above_risk_appetite",
+            "severity": "medium",
+            "message": f"{len(above_appetite_assets)} ativo(s) já estão acima do risk appetite efetivo",
+        })
+
+    if critical_without_owner or (critical_assets and ring_scope_percent >= 50.0):
+        impact_state = "critical_scope"
+    elif critical_assets or external_assets or (ring_assets >= 3 and top_service_percent >= 50.0):
+        impact_state = "concentrated"
+    else:
+        impact_state = "contained"
+
+    return {
+        "generated_at": reference.isoformat(),
+        "campaign_id": campaign.id,
+        "ring_percent": campaign.ring_percent,
+        "impact_state": impact_state,
+        "summary": {
+            "scope_assets": scope_assets,
+            "ring_assets": ring_assets,
+            "ring_scope_percent": ring_scope_percent,
+            "critical_assets": len(critical_assets),
+            "external_assets": len(external_assets),
+            "above_risk_appetite": len(above_appetite_assets),
+            "critical_without_owner": len(critical_without_owner),
+            "business_services": len(services),
+            "owners": len(owners),
+            "environments": len(environments),
+            "average_asset_risk": round(sum(scores) / len(scores), 1) if scores else 0.0,
+            "max_asset_risk": round(max(scores), 1) if scores else 0.0,
+            "top_business_service": {
+                "name": top_service[0],
+                "assets": top_service[1],
+                "percent": top_service_percent,
+            },
+            "top_owner": {"name": top_owner[0], "assets": top_owner[1]},
+            "top_environment": {"name": top_environment[0], "assets": top_environment[1]},
+        },
+        "distribution": {
+            "business_services": [
+                {"name": name, "assets": count, "percent": round(count / ring_assets * 100.0, 1) if ring_assets else 0.0}
+                for name, count in sorted(services.items(), key=lambda item: (-item[1], item[0].lower()))
+            ],
+            "owners": [
+                {"name": name, "assets": count, "percent": round(count / ring_assets * 100.0, 1) if ring_assets else 0.0}
+                for name, count in sorted(owners.items(), key=lambda item: (-item[1], item[0].lower()))
+            ],
+            "environments": [
+                {"name": name, "assets": count, "percent": round(count / ring_assets * 100.0, 1) if ring_assets else 0.0}
+                for name, count in sorted(environments.items(), key=lambda item: (-item[1], item[0].lower()))
+            ],
+        },
+        "signals": signals,
+        "assets": assets[:200],
+        "rules": {
+            "critical_asset": "asset criticality >= 4",
+            "service_concentration": "same business service >= 50% of a ring with at least 3 assets",
+            "critical_scope": "critical asset without owner OR critical assets present while ring reaches >=50% of campaign scope",
+        },
+        "note": "Blast Radius reuses existing Asset Risk and Business Context. It does not calculate a hidden composite impact score.",
+    }
+
+
 def campaign_preflight(
     db: Session,
     campaign: Campaign,
@@ -10531,6 +10705,8 @@ def campaign_preflight(
             "details": details or {},
         })
 
+    blast_radius = campaign_blast_radius(db, campaign, reference)
+
     if not candidates:
         add_check(
             "scope",
@@ -10547,6 +10723,31 @@ def campaign_preflight(
             "passed",
             f"{len(candidates)} endpoint(s) elegíveis; {len(selected)} no ring inicial de {campaign.ring_percent}%",
             details={"candidates": len(candidates), "selected_ring": len(selected), "ring_percent": campaign.ring_percent},
+        )
+
+    if blast_radius["impact_state"] == "critical_scope":
+        add_check(
+            "blast_radius",
+            "Blast Radius",
+            "warning",
+            f"impacto crítico/concentrado: {blast_radius['summary']['critical_assets']} ativo(s) crítico(s), {blast_radius['summary']['critical_without_owner']} sem owner",
+            details=blast_radius,
+        )
+    elif blast_radius["impact_state"] == "concentrated":
+        add_check(
+            "blast_radius",
+            "Blast Radius",
+            "warning",
+            f"ring concentrado em contexto sensível; maior business service representa {blast_radius['summary']['top_business_service']['percent']}%",
+            details=blast_radius,
+        )
+    else:
+        add_check(
+            "blast_radius",
+            "Blast Radius",
+            "passed",
+            "ring sem concentração operacional relevante pelas regras atuais",
+            details=blast_radius,
         )
 
     approval = serialize_campaign_approval(campaign)
@@ -10867,6 +11068,18 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
 
 
 
+@app.get("/api/admin/campaigns/{campaign_id}/blast-radius")
+def get_campaign_blast_radius(
+    campaign_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return campaign_blast_radius(db, campaign)
+
+
 @app.get("/api/admin/reports/patch-failure-intelligence")
 def get_patch_failure_intelligence(
     lookback_days: int = 30,
@@ -11101,6 +11314,7 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
     sections = {
         "campaign": serialize_campaign(campaign),
         "approval": serialize_campaign_approval(campaign),
+        "blast_radius": campaign_blast_radius(db, campaign, reference),
         "preflight_snapshots": [
             serialize_campaign_preflight_snapshot(item, include_result=True)
             for item in preflight_items
