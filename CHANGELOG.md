@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.50.0
+
+- control plane e dashboard passam para versão 0.50.0; agente permanece em 0.16.0;
+- adicionado Evidence Pack Integrity Verifier;
+- verificador recalcula SHA-256 do pacote e de cada seção e confere consistência entre conteúdo, section_hashes e manifest;
+- validação pode receber SHA-256 confiável registrado fora do arquivo para detectar alteração seguida de recomputação dos hashes internos;
+- verificador também valida schema e vínculo opcional com campaign_id esperado;
+- console ganha ação Verify Pack com seleção local do JSON, resumo visual e estado de cada seção;
+- verificações pela API geram audit event com resultado, digest calculado e divergências;
+- adicionados testes de pacote íntegro, adulteração simples, adulteração com rehash e campaign binding.
+
+
 ## 0.49.0
 
 - control plane e dashboard passam para versão 0.49.0; agente permanece em 0.16.0;
