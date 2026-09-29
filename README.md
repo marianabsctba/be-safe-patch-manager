@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.38.0  
+> **Control plane:** v0.39.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -32,6 +32,7 @@ A plataforma conecta:
 - soak;
 - regression intelligence;
 - rollback;
+- Campaign Preflight / Change Readiness;
 - evidência pós-patch;
 - auditoria.
 
@@ -159,6 +160,30 @@ Assim o histórico consegue responder:
 > por que esta patch estava READY ontem?
 
 sem recalcular a resposta com os dados de hoje.
+
+## Campaign Preflight / Change Readiness
+
+Antes do deploy, a console pode executar um preflight explicável da campanha.
+
+O checklist consolida em um único lugar:
+
+- população total e tamanho real do ring inicial;
+- Approval Gate;
+- Change Freeze e emergency override;
+- Patch Guard;
+- versão, protocolo e capabilities do agente;
+- heartbeat freshness;
+- mTLS quando obrigatório;
+- maintenance window;
+- Patch Confidence local.
+
+O resultado é:
+
+- `READY`: nenhum bloqueio ou alerta;
+- `REVIEW`: deploy permitido, mas há alertas que merecem revisão humana;
+- `BLOCKED`: existe pelo menos um gate impeditivo.
+
+Não existe score oculto de readiness. Cada decisão traz o controle, o estado e a razão concreta.
 
 ## Progressive Rollout Governance
 
