@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.52.0
+
+- control plane e dashboard passam para versão 0.52.0; agente permanece em 0.16.0;
+- Approval Gate evolui para CAB / Change Authority com quorum explícito;
+- campanhas de install_updates com ativos criticality 4-5 ou tag Tier 0 passam a exigir automaticamente 2 aprovadores distintos;
+- campanhas comuns configuradas com approval_required continuam exigindo 1 aprovação;
+- solicitante não pode aprovar nem rejeitar a própria campanha;
+- mesmo ator não pode votar duas vezes na mesma mudança;
+- qualquer rejeição torna a decisão terminal;
+- adicionada tabela campaign_approval_votes com ator, decisão, motivo e timestamp;
+- campaign_approvals passa a persistir required_approvals e policy_json;
+- Preflight exibe progresso de quorum e continua bloqueando deploy até atingir todas as aprovações;
+- console passa a mostrar badge CAB com contagem aprovadas/necessárias;
+- Evidence Pack preserva a trilha completa do Change Authority via seção approval;
+- adicionados testes de enforcement automático Tier 0/critical, quorum duplo, voto duplicado e rejeição terminal.
+
+
 ## 0.51.0
 
 - control plane e dashboard passam para versão 0.51.0; agente permanece em 0.16.0;
