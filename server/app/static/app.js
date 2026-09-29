@@ -3495,6 +3495,7 @@ function campaignCard(campaign, compact = false) {
       <div class="campaign-actions">
         ${action || ''}
         <button class="secondary" onclick="showCampaignPreflight('${campaign.id}')">Preflight</button>
+        <button class="secondary" onclick="showCampaignBlastRadius('${campaign.id}')">Impact Preview</button>
         <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
         <button class="secondary" onclick="showCampaignFailureIntel('${campaign.id}')">Failure Intel</button>
         <button class="secondary" onclick="showPromotionAnalysis('${campaign.id}')">Safe Promotion</button>
@@ -3908,6 +3909,77 @@ window.downloadCampaignEvidencePack = async (campaignId) => {
     toast('Evidence Pack: ' + error.message, 'fail');
   }
 };
+window.showCampaignBlastRadius = async (campaignId) => {
+  try {
+    const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/blast-radius');
+    const s = report.summary || {};
+    const signals = Array.isArray(report.signals) ? report.signals : [];
+    const assets = Array.isArray(report.assets) ? report.assets : [];
+    const services = report.distribution && Array.isArray(report.distribution.business_services)
+      ? report.distribution.business_services
+      : [];
+
+    const lines = [
+      'Change Impact Preview',
+      '',
+      'Estado: ' + String(report.impact_state || '-').toUpperCase(),
+      'Ring: ' + String(s.ring_assets || 0) + '/' + String(s.scope_assets || 0) +
+        ' assets (' + String(s.ring_scope_percent || 0) + '% do escopo)',
+      'Críticos: ' + String(s.critical_assets || 0),
+      'Expostos externamente: ' + String(s.external_assets || 0),
+      'Acima do risk appetite: ' + String(s.above_risk_appetite || 0),
+      'Críticos sem owner: ' + String(s.critical_without_owner || 0),
+      'Business services: ' + String(s.business_services || 0),
+      'Owners: ' + String(s.owners || 0),
+      'Ambientes: ' + String(s.environments || 0),
+      'Asset Risk médio/máx: ' + String(s.average_asset_risk || 0) + ' / ' + String(s.max_asset_risk || 0),
+    ];
+
+    if (s.top_business_service) {
+      lines.push(
+        'Maior concentração: ' + String(s.top_business_service.name || '-') +
+        ' · ' + String(s.top_business_service.assets || 0) + ' asset(s) · ' +
+        String(s.top_business_service.percent || 0) + '%'
+      );
+    }
+
+    if (signals.length) {
+      lines.push('', 'Sinais de impacto:');
+      signals.forEach((item) => lines.push(
+        '[' + String(item.severity || '-').toUpperCase() + '] ' + String(item.message || '-')
+      ));
+    }
+
+    if (services.length) {
+      lines.push('', 'Distribuição por business service:');
+      services.slice(0, 8).forEach((item) => lines.push(
+        String(item.name || '-') + ' · ' + String(item.assets || 0) + ' · ' + String(item.percent || 0) + '%'
+      ));
+    }
+
+    const sensitive = assets
+      .slice()
+      .sort((a, b) => Number(b.criticality || 0) - Number(a.criticality || 0) || Number(b.asset_risk || 0) - Number(a.asset_risk || 0))
+      .slice(0, 10);
+    if (sensitive.length) {
+      lines.push('', 'Ativos mais sensíveis do ring:');
+      sensitive.forEach((item) => lines.push(
+        String(item.hostname || item.agent_id || '-') +
+        ' · crit ' + String(item.criticality || 0) +
+        ' · risk ' + String(item.asset_risk || 0) +
+        ' · ' + String(item.business_service || 'sem service') +
+        ' · ' + String(item.owner || 'sem owner')
+      ));
+    }
+
+    lines.push('', 'Sem score oculto: o estado usa somente as regras explícitas exibidas no relatório.');
+    alert(lines.join('\n'));
+  } catch (error) {
+    toast('Impact Preview: ' + error.message, 'fail');
+  }
+};
+
+
 window.showCampaignFailureIntel = async (campaignId) => {
   try {
     const [report, preflight] = await Promise.all([
