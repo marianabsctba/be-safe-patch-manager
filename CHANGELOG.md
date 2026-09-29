@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.49.0
+
+- control plane e dashboard passam para versão 0.49.0; agente permanece em 0.16.0;
+- adicionado Scope Drift Guard;
+- campanhas novas capturam baseline de escopo na criação com SHA-256 próprio;
+- baseline inclui agent id, hostname, SO/versão, tags, business service, environment, owner, criticidade e exposição externa;
+- endpoint entrando ou saindo do escopo após criação bloqueia deploy;
+- mudanças de contexto sem mudança de membership geram warning;
+- campanhas legadas sem baseline recebem warning, sem blocker retroativo;
+- console ganha ação Scope Drift;
+- Preflight ganha check Scope Drift Guard;
+- Evidence Pack passa a incluir scope_drift com SHA-256 próprio;
+- adicionados testes de asset entering/leaving scope, context drift, estabilidade e integridade do Evidence Pack.
+
+
 ## 0.48.0
 
 - control plane e dashboard passam para versão 0.48.0; agente permanece em 0.16.0;
