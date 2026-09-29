@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.40.0
+
+- control plane e dashboard passam para versão 0.40.0; agente permanece em 0.16.0;
+- adicionado Preflight Evidence Ledger com snapshots imutáveis por campanha;
+- cada snapshot registra readiness, deploy_allowed, resumo, resultado completo, ator, origem, timestamp e SHA-256;
+- adicionado Drift Detection entre o estado atual e o último snapshot;
+- drift classifica NO_BASELINE, UNCHANGED, IMPROVED, CHANGED ou DEGRADED e lista cada gate alterado;
+- tentativas de deploy passam a registrar automaticamente o preflight observado naquele momento;
+- console permite registrar snapshot manual, visualizar drift e consultar histórico de evidências;
+- adicionada migration 0030_campaign_preflight_snapshots;
+- adicionados testes de hashing, persistência, drift e snapshot automático no deploy.
+
+
 ## 0.39.0
 
 - control plane e dashboard passam para versão 0.39.0; agente permanece em 0.16.0;
