@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.48.0  
+> **Control plane:** v0.49.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -232,6 +232,55 @@ Patch Guard       PASSED  -> BLOCKED
 ```
 
 Toda tentativa de deploy também registra automaticamente um snapshot de preflight, preservando a evidência da condição operacional observada naquele momento.
+
+## Scope Drift Guard
+
+Toda campanha nova captura um baseline de escopo no momento da criação.
+
+O baseline registra, por endpoint:
+
+- agent id e hostname;
+- SO e versão;
+- tags;
+- business service;
+- environment;
+- owner;
+- criticidade;
+- exposição externa.
+
+Também grava SHA-256 do snapshot.
+
+Antes do deploy, o guard compara esse baseline com o escopo atual.
+
+Regras:
+
+```text
+endpoint entrou no escopo após a criação
+OU
+endpoint saiu do escopo após a criação
+=> BLOCKED
+
+membership estável,
+mas contexto operacional mudou
+=> WARNING
+
+membership + contexto comparado estáveis
+=> PASSED
+```
+
+Exemplos de context drift:
+
+- owner alterado;
+- business service alterado;
+- environment alterado;
+- criticidade mudou;
+- exposição externa mudou;
+- versão de SO mudou;
+- tags mudaram.
+
+Campanhas anteriores à v0.49 não são bloqueadas: aparecem como `no_baseline` e exigem revisão humana.
+
+O console ganha a ação `Scope Drift`, o Preflight inclui `Scope Drift Guard`, e o Evidence Pack passa a incluir `scope_drift` com SHA-256 próprio.
 
 ## Maintenance Risk & Reboot Orchestration
 
