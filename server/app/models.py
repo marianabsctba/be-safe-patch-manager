@@ -595,6 +595,22 @@ class PatchPolicyDefinition(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
 
 
+class PatchPolicyWaiver(Base):
+    __tablename__ = "patch_policy_waivers"
+
+    id = Column(String(36), primary_key=True)
+    campaign_id = Column(String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    policy_id = Column(String(36), ForeignKey("patch_policy_definitions.id"), nullable=False, index=True)
+    policy_sha256 = Column(String(64), nullable=False, index=True)
+    reason = Column(Text, nullable=False)
+    approved_by = Column(String(255), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    revoked_by = Column(String(255), nullable=False, default="")
+    revoke_reason = Column(Text, nullable=False, default="")
+
+
 class TenantSettings(Base):
     __tablename__ = "tenant_settings"
 
