@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.54.0
+
+- control plane e dashboard passam para versão 0.54.0; agente permanece em 0.16.0;
+- adicionado Patch Policy-as-Code com schema be-safe-patch-policy/v1;
+- policies possuem versionamento imutável, SHA-256, prioridade, autor e supersedes_id;
+- match suporta action, SO, tags, ambientes e criticidade mínima;
+- requirements suportam ring inicial máximo, health gate, rollback, janela e quorum mínimo de aprovação;
+- Preflight passa a avaliar a última versão habilitada por nome e bloquear violações;
+- deploy inclui policy_as_code entre blockers obrigatórios;
+- Evidence Pack ganha seção policy_as_code;
+- API adiciona listagem, criação, nova versão, simulação e avaliação por campanha;
+- console ganha botão Policy Eval com compliance, violações e digest da policy;
+- Auto Patch Policy continua separado: ele decide quando propor/draftar remediação; Policy-as-Code governa se a campanha pode executar.
+
+
 ## 0.53.0
 
 - control plane e dashboard passam para versão 0.53.0; agente permanece em 0.16.0;
