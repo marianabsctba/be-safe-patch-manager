@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.57.0  
+> **Control plane:** v0.58.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -176,6 +176,27 @@ Assim o histórico consegue responder:
 > por que esta patch estava READY ontem?
 
 sem recalcular a resposta com os dados de hoje.
+
+## Exception Budget / Risk Budget
+
+A v0.58 adiciona orçamento mensal de exceções por `owner` ou `business_service`.
+
+Cada budget define:
+
+- máximo de waivers no mês;
+- máximo de horas de waiver no mês;
+- estado `healthy`, `warning` (>=80%) ou `exhausted`.
+
+Antes de criar um waiver, o sistema calcula o consumo atual e o consumo projetado. Se o novo pedido ultrapassar quantidade ou horas disponíveis, o waiver é automaticamente escalado para **dual approval**, mesmo em campanha não crítica.
+
+Endpoints:
+
+- `GET /api/admin/exception-budgets`
+- `POST /api/admin/exception-budgets`
+- `PATCH /api/admin/exception-budgets/{id}`
+- `GET /api/admin/reports/exception-budgets`
+
+O cálculo é determinístico e mensal, preservando a governança sem transformar budget em bypass silencioso.
 
 ## Exception Governance
 
