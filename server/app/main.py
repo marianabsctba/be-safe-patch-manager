@@ -34,7 +34,7 @@ from .evidence_attestation import EvidenceAttestationError, build_evidence_attes
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.52.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.53.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -1970,6 +1970,35 @@ def choose_preferred_replacement(
         for key in graph_item.get("leaf_replacement_keys", [])
         if key in entries_by_key
     ]
+    if change_risk["blocking"]:
+        add_check(
+            "change_risk",
+            "Change Risk Engine",
+            "blocked",
+            (
+                f"risco operacional {change_risk['level'].upper()} ({change_risk['score']}/100); "
+                f"controles ausentes: {', '.join(change_risk['missing_controls'])}"
+            ),
+            blocking=True,
+            details=change_risk,
+        )
+    elif change_risk["level"] in {"high", "critical", "moderate"}:
+        add_check(
+            "change_risk",
+            "Change Risk Engine",
+            "warning",
+            f"risco operacional {change_risk['level'].upper()} ({change_risk['score']}/100)",
+            details=change_risk,
+        )
+    else:
+        add_check(
+            "change_risk",
+            "Change Risk Engine",
+            "passed",
+            f"risco operacional LOW ({change_risk['score']}/100)",
+            details=change_risk,
+        )
+
     if not candidates:
         return None
     candidates.sort(key=lambda candidate: (
@@ -11649,6 +11678,177 @@ def campaign_scope_drift(
     }
 
 
+def campaign_change_risk(
+    db: Session,
+    campaign: Campaign,
+    reference: datetime | None = None,
+) -> dict:
+    reference = reference or now()
+    payload = load(campaign.payload_json, {})
+    selected = agents_for_ring(db, campaign, campaign.ring_percent)
+    blast = campaign_blast_radius(db, campaign, reference)
+    collisions = campaign_change_collisions(db, campaign, reference)
+    applicability = campaign_patch_applicability_guard(db, campaign, reference)
+    maintenance = campaign_maintenance_risk(db, campaign, reference)
+    regression = campaign_local_regression_evidence(db, campaign, selected, reference)
+
+    factors = []
+    score = 0
+
+    def add_factor(key: str, points: int, message: str, *, source: str):
+        nonlocal score
+        if points <= 0:
+            return
+        score += points
+        factors.append({
+            "key": key,
+            "points": points,
+            "message": message,
+            "source": source,
+        })
+
+    blast_summary = blast.get("summary") or {}
+    critical_assets = int(blast_summary.get("critical_assets") or 0)
+    external_assets = int(blast_summary.get("external_assets") or 0)
+    critical_without_owner = int(blast_summary.get("critical_without_owner") or 0)
+    ring_scope_percent = float(blast_summary.get("ring_scope_percent") or 0.0)
+
+    if critical_assets:
+        add_factor("critical_assets", 20, f"{critical_assets} ativo(s) crítico(s) no ring", source="blast_radius")
+    if external_assets:
+        add_factor("external_assets", 8, f"{external_assets} ativo(s) externamente exposto(s)", source="blast_radius")
+    if critical_without_owner:
+        add_factor("critical_without_owner", 10, f"{critical_without_owner} ativo(s) crítico(s) sem owner", source="blast_radius")
+    if ring_scope_percent >= 50:
+        add_factor("large_ring", 10, f"ring cobre {ring_scope_percent}% do escopo", source="blast_radius")
+
+    collision_state = str(collisions.get("state") or "")
+    if collision_state == "direct_collision":
+        add_factor("direct_collision", 30, "há endpoint com mudança concorrente ativa", source="change_collision")
+    elif collision_state in {"context_collision", "owner_collision"}:
+        add_factor("context_collision", 10, "há sobreposição operacional com outra mudança ativa", source="change_collision")
+
+    maintenance_summary = maintenance.get("summary") or {}
+    if int(maintenance_summary.get("critical_assets_exposed") or 0):
+        add_factor("critical_reboot_exposure", 15, "ativo crítico possui reboot pendente ou provável", source="maintenance_risk")
+    if maintenance.get("blocking"):
+        add_factor("reboot_policy_conflict", 25, "reboot requerido conflita com a política da campanha", source="maintenance_risk")
+    elif int(maintenance_summary.get("reboot_required_by_patch") or 0):
+        add_factor("reboot_required", 8, "patch exige reboot em parte do ring", source="maintenance_risk")
+
+    applicability_state = str(applicability.get("state") or "")
+    if applicability_state == "blocked":
+        add_factor("applicability_blocked", 25, "há patch superseded ou comprovadamente não aplicável", source="patch_applicability")
+    elif applicability_state in {"review", "no_packages"}:
+        add_factor("applicability_uncertainty", 8, "applicability/lifecycle exige revisão", source="patch_applicability")
+
+    regression_state = str(regression.get("state") or "")
+    if regression_state == "confirmed_local_regression":
+        add_factor("confirmed_local_regression", 30, "há regressão local confirmada para patch + SO", source="failure_intelligence")
+    elif regression_state == "elevated_failure_rate":
+        add_factor("elevated_failure_rate", 18, "histórico local mostra taxa elevada de falha", source="failure_intelligence")
+    elif regression_state == "observed_failures":
+        add_factor("observed_failures", 8, "há falhas locais recentes observadas", source="failure_intelligence")
+
+    health_policy = payload.get("health_policy") if isinstance(payload.get("health_policy"), dict) else {}
+    health_enabled = bool(health_policy.get("enabled"))
+    rollback_prepared = bool(payload.get("prepare_rollback", True))
+    maintenance_window_configured = bool(payload.get("maintenance_start") and payload.get("maintenance_end"))
+
+    if campaign.action == "install_updates" and not health_enabled:
+        add_factor("health_gate_disabled", 10, "health gate está desabilitado", source="campaign_policy")
+    if campaign.action == "install_updates" and not rollback_prepared:
+        add_factor("rollback_not_prepared", 15, "checkpoint/rollback não será preparado", source="campaign_policy")
+    if campaign.action == "install_updates" and not maintenance_window_configured:
+        add_factor("no_maintenance_window", 5, "não há janela restritiva configurada", source="campaign_policy")
+
+    score = min(100, score)
+    if score >= 75:
+        level = "critical"
+    elif score >= 50:
+        level = "high"
+    elif score >= 25:
+        level = "moderate"
+    else:
+        level = "low"
+
+    required_controls = []
+    if level in {"high", "critical"}:
+        required_controls.extend(["health_gate", "rollback_prepared"])
+    if level == "critical":
+        required_controls.extend(["initial_ring_max_10", "maintenance_window"])
+    required_controls = list(dict.fromkeys(required_controls))
+
+    controls = {
+        "health_gate": health_enabled,
+        "rollback_prepared": rollback_prepared,
+        "initial_ring_max_10": int(campaign.ring_percent) <= 10,
+        "maintenance_window": maintenance_window_configured,
+    }
+    missing_controls = [name for name in required_controls if not controls.get(name)]
+    blocking = bool(level == "critical" and missing_controls)
+
+    packages = {
+        str(value).strip().lower()
+        for value in payload.get("packages", [])
+        if str(value).strip()
+    }
+    urgency = {
+        "kev": 0,
+        "ransomware": 0,
+        "high_epss": 0,
+        "max_epss": None,
+    }
+    if packages and selected:
+        selected_ids = {agent.id for agent in selected}
+        findings = db.query(VulnerabilityFinding).filter(
+            VulnerabilityFinding.status == "open",
+            VulnerabilityFinding.agent_id.in_(selected_ids),
+        ).all()
+        for finding in findings:
+            refs = {str(ref).strip().lower() for ref in load(finding.patch_refs_json, []) if str(ref).strip()}
+            if not refs.intersection(packages):
+                continue
+            detection = finding_detection_risk(finding, reference)
+            urgency["kev"] += 1 if detection.get("kev") else 0
+            urgency["ransomware"] += 1 if detection.get("ransomware") else 0
+            epss = detection.get("epss")
+            if epss is not None:
+                urgency["max_epss"] = max(float(epss), float(urgency["max_epss"] or 0.0))
+                urgency["high_epss"] += 1 if float(epss) >= 0.5 else 0
+
+    return {
+        "generated_at": reference.isoformat(),
+        "campaign_id": campaign.id,
+        "score": score,
+        "level": level,
+        "blocking": blocking,
+        "factors": sorted(factors, key=lambda item: (-item["points"], item["key"])),
+        "controls": controls,
+        "required_controls": required_controls,
+        "missing_controls": missing_controls,
+        "urgency_context": urgency,
+        "inputs": {
+            "blast_radius_state": blast.get("impact_state"),
+            "collision_state": collision_state,
+            "applicability_state": applicability_state,
+            "maintenance_state": maintenance.get("state"),
+            "regression_state": regression_state,
+            "ring_percent": campaign.ring_percent,
+        },
+        "model": {
+            "name": "be_safe_change_risk_v1",
+            "max_score": 100,
+            "thresholds": {"low": 0, "moderate": 25, "high": 50, "critical": 75},
+            "method": "deterministic additive factors with explicit caps and no hidden model",
+        },
+        "note": (
+            "Change Risk measures operational change risk, not vulnerability urgency. "
+            "KEV/EPSS/ransomware signals are shown separately as urgency context and do not increase the change-risk score."
+        ),
+    }
+
+
 def campaign_preflight(
     db: Session,
     campaign: Campaign,
@@ -11676,6 +11876,7 @@ def campaign_preflight(
     applicability_guard = campaign_patch_applicability_guard(db, campaign, reference)
     maintenance_risk = campaign_maintenance_risk(db, campaign, reference)
     scope_drift = campaign_scope_drift(db, campaign, reference)
+    change_risk = campaign_change_risk(db, campaign, reference)
 
     if not candidates:
         add_check(
@@ -12452,6 +12653,18 @@ def get_campaign_ring_plan(
     return campaign_ring_plan(db, campaign, percent)
 
 
+@app.get("/api/admin/campaigns/{campaign_id}/change-risk")
+def get_campaign_change_risk(
+    campaign_id: str,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return campaign_change_risk(db, campaign)
+
+
 @app.get("/api/admin/campaigns/{campaign_id}/blast-radius")
 def get_campaign_blast_radius(
     campaign_id: str,
@@ -12599,7 +12812,7 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
 
     additional_blockers = [
         item for item in preflight["checks"]
-        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision", "patch_applicability", "maintenance_reboot", "scope_drift"}
+        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision", "patch_applicability", "maintenance_reboot", "scope_drift", "change_risk"}
     ]
     if additional_blockers:
         raise HTTPException(
@@ -12861,6 +13074,7 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
         "change_collisions": campaign_change_collisions(db, campaign, reference),
         "patch_applicability": campaign_patch_applicability_guard(db, campaign, reference),
         "maintenance_risk": campaign_maintenance_risk(db, campaign, reference),
+        "change_risk": campaign_change_risk(db, campaign, reference),
         "scope_drift": campaign_scope_drift(db, campaign, reference),
         "preflight_snapshots": [
             serialize_campaign_preflight_snapshot(item, include_result=True)
