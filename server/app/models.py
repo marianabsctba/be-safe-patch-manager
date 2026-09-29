@@ -55,6 +55,24 @@ class Campaign(Base):
     jobs = relationship("PatchJob", back_populates="campaign", cascade="all, delete-orphan")
     remediation_evidence = relationship("RemediationEvidence", back_populates="campaign")
     approval = relationship("CampaignApproval", back_populates="campaign", uselist=False, cascade="all, delete-orphan")
+    preflight_snapshots = relationship("CampaignPreflightSnapshot", back_populates="campaign", cascade="all, delete-orphan")
+
+
+class CampaignPreflightSnapshot(Base):
+    __tablename__ = "campaign_preflight_snapshots"
+
+    id = Column(String(36), primary_key=True)
+    campaign_id = Column(String(36), ForeignKey("campaigns.id"), nullable=False, index=True)
+    readiness = Column(String(32), nullable=False, index=True)
+    deploy_allowed = Column(Boolean, nullable=False, default=False)
+    summary_json = Column(Text, nullable=False, default="{}")
+    result_json = Column(Text, nullable=False, default="{}")
+    result_sha256 = Column(String(64), nullable=False)
+    actor = Column(String(255), nullable=False, index=True)
+    source = Column(String(64), nullable=False, default="manual")
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+    campaign = relationship("Campaign", back_populates="preflight_snapshots")
 
 
 class CampaignRingDecision(Base):
