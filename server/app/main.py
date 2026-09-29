@@ -33,7 +33,7 @@ from .agent_updates import AgentReleaseError, load_signed_release
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.41.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.42.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -10221,6 +10221,295 @@ def campaign_required_capabilities(campaign: Campaign) -> list[str]:
     return sorted(required)
 
 
+def normalize_failure_signature(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return "unspecified"
+    text = re.sub(r"https?://\S+", "<url>", text)
+    text = re.sub(r"\b0x[0-9a-f]+\b", "<hex>", text)
+    text = re.sub(r"\b\d{4,}\b", "<n>", text)
+    text = re.sub(r"\s+", " ", text)
+    return text[:240]
+
+
+def patch_failure_category(job: PatchJob, validation: dict | None = None) -> tuple[str, str]:
+    validation = validation or {}
+    validation_status = str(validation.get("status") or "")
+    validation_reason = str(validation.get("reason") or "")
+    if validation_status == "failed":
+        health = validation.get("health_validation") if isinstance(validation.get("health_validation"), dict) else {}
+        issues = " ".join(str(item) for item in health.get("issues", []) if str(item))
+        reason = " ".join(part for part in [validation_reason, issues] if part).strip()
+        return "post_patch_regression", normalize_failure_signature(reason)
+
+    if job.status == "stalled":
+        return "execution_stalled", normalize_failure_signature(job.error or "job lease expired or execution stalled")
+    if job.status == "blocked":
+        return "compatibility_blocked", normalize_failure_signature(job.error or "job blocked before execution")
+
+    result = load(job.result_json, {})
+    raw = " ".join(
+        str(value)
+        for value in [
+            job.error,
+            result.get("error"),
+            result.get("message"),
+            result.get("stderr"),
+            result.get("reason"),
+        ]
+        if value
+    ).strip()
+    normalized = normalize_failure_signature(raw)
+    haystack = normalized
+
+    if job.action == "rollback_checkpoint":
+        return "rollback_failure", normalized
+    if any(token in haystack for token in ["download", "repository", "mirror", "timeout", "network", "connection"]):
+        return "download_or_network", normalized
+    if any(token in haystack for token in ["reboot", "restart", "pending restart"]):
+        return "reboot_required", normalized
+    if any(token in haystack for token in ["dependency", "conflict", "held package", "requires", "prerequisite"]):
+        return "dependency_or_prerequisite", normalized
+    if any(token in haystack for token in ["disk", "space", "no space"]):
+        return "disk_capacity", normalized
+    if any(token in haystack for token in ["permission", "access denied", "unauthorized", "forbidden"]):
+        return "permission", normalized
+    if any(token in haystack for token in ["not applicable", "not supported", "unsupported", "incompatible"]):
+        return "applicability_or_compatibility", normalized
+    return "install_failure", normalized
+
+
+def patch_failure_intelligence_report(
+    db: Session,
+    reference: datetime | None = None,
+    lookback_days: int = 30,
+    limit: int = 100,
+) -> dict:
+    reference = reference or now()
+    lookback_days = max(1, min(int(lookback_days), 365))
+    cutoff = reference - timedelta(days=lookback_days)
+
+    jobs = db.query(PatchJob).options(
+        selectinload(PatchJob.campaign),
+        selectinload(PatchJob.agent),
+    ).filter(
+        PatchJob.action.in_(["install_updates", "rollback_checkpoint"]),
+        PatchJob.created_at >= cutoff,
+    ).all()
+
+    patch_buckets: dict[tuple[str, str, str], dict] = {}
+    signature_buckets: dict[tuple[str, str, str, str, str], dict] = {}
+
+    for job in jobs:
+        campaign = job.campaign
+        payload = load(job.payload_json, {})
+        packages = sorted({
+            str(value).strip()
+            for value in payload.get("packages", [])
+            if str(value).strip()
+        })
+        if job.action == "rollback_checkpoint" and not packages:
+            original_id = str(payload.get("_rollback_of_job_id") or "")
+            original = db.get(PatchJob, original_id) if original_id else None
+            if original:
+                packages = sorted({
+                    str(value).strip()
+                    for value in load(original.payload_json, {}).get("packages", [])
+                    if str(value).strip()
+                })
+        if not packages:
+            packages = ["<unspecified>"]
+
+        agent = job.agent
+        os_family = str(agent.os_family or "unknown") if agent else "unknown"
+        os_version = str(agent.os_version or "unknown") if agent else "unknown"
+        validation = job_post_patch_validation(job) if job.action == "install_updates" and job.status == "success" else {}
+        validation_failed = validation.get("status") == "failed"
+        failed_event = job.status in {"failed", "stalled", "blocked"} or validation_failed
+
+        terminal_for_reliability = job.status in {"success", "failed"}
+        for patch_ref in packages:
+            key = (patch_ref.lower(), os_family.lower(), os_version.lower())
+            bucket = patch_buckets.setdefault(key, {
+                "patch_ref": patch_ref,
+                "os_family": os_family,
+                "os_version": os_version,
+                "completed": 0,
+                "success": 0,
+                "failed": 0,
+                "validation_failed": 0,
+                "stalled": 0,
+                "blocked": 0,
+                "affected_agents": set(),
+                "campaign_ids": set(),
+                "last_seen": None,
+            })
+            bucket["affected_agents"].add(job.agent_id)
+            if campaign:
+                bucket["campaign_ids"].add(campaign.id)
+            if terminal_for_reliability:
+                bucket["completed"] += 1
+                bucket["success"] += 1 if job.status == "success" and not validation_failed else 0
+                bucket["failed"] += 1 if job.status == "failed" else 0
+            if validation_failed:
+                bucket["validation_failed"] += 1
+            if job.status == "stalled":
+                bucket["stalled"] += 1
+            if job.status == "blocked":
+                bucket["blocked"] += 1
+            observed_at = job.finished_at or job.started_at or job.created_at
+            if observed_at and observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=timezone.utc)
+            if observed_at and (bucket["last_seen"] is None or observed_at > bucket["last_seen"]):
+                bucket["last_seen"] = observed_at
+
+            if failed_event:
+                category, signature = patch_failure_category(job, validation)
+                sig_key = (patch_ref.lower(), os_family.lower(), os_version.lower(), category, signature)
+                sig = signature_buckets.setdefault(sig_key, {
+                    "patch_ref": patch_ref,
+                    "os_family": os_family,
+                    "os_version": os_version,
+                    "category": category,
+                    "signature": signature,
+                    "count": 0,
+                    "agent_ids": set(),
+                    "campaign_ids": set(),
+                    "last_seen": None,
+                    "sample_job_ids": [],
+                })
+                sig["count"] += 1
+                sig["agent_ids"].add(job.agent_id)
+                if campaign:
+                    sig["campaign_ids"].add(campaign.id)
+                if len(sig["sample_job_ids"]) < 10:
+                    sig["sample_job_ids"].append(job.id)
+                if observed_at and (sig["last_seen"] is None or observed_at > sig["last_seen"]):
+                    sig["last_seen"] = observed_at
+
+    patches = []
+    for bucket in patch_buckets.values():
+        reliability_denominator = bucket["success"] + bucket["failed"] + bucket["validation_failed"]
+        effective_failures = bucket["failed"] + bucket["validation_failed"]
+        failure_rate = round(effective_failures / reliability_denominator * 100.0, 1) if reliability_denominator else None
+        if reliability_denominator >= 3 and effective_failures >= 2 and failure_rate is not None and failure_rate >= 50.0:
+            regression = "confirmed_local_regression"
+        elif reliability_denominator >= 3 and effective_failures >= 1 and failure_rate is not None and failure_rate >= 25.0:
+            regression = "elevated_failure_rate"
+        elif effective_failures or bucket["stalled"]:
+            regression = "observed_failures"
+        else:
+            regression = "stable"
+
+        patches.append({
+            "patch_ref": bucket["patch_ref"],
+            "os_family": bucket["os_family"],
+            "os_version": bucket["os_version"],
+            "completed_jobs": bucket["completed"],
+            "success": bucket["success"],
+            "failed": bucket["failed"],
+            "post_patch_regressions": bucket["validation_failed"],
+            "stalled": bucket["stalled"],
+            "blocked": bucket["blocked"],
+            "effective_failure_rate": failure_rate,
+            "regression_state": regression,
+            "asset_count": len(bucket["affected_agents"]),
+            "campaign_count": len(bucket["campaign_ids"]),
+            "last_seen": bucket["last_seen"].isoformat() if bucket["last_seen"] else None,
+        })
+
+    state_rank = {
+        "confirmed_local_regression": 0,
+        "elevated_failure_rate": 1,
+        "observed_failures": 2,
+        "stable": 3,
+    }
+    patches.sort(key=lambda item: (
+        state_rank[item["regression_state"]],
+        -(item["effective_failure_rate"] or 0.0),
+        -item["completed_jobs"],
+        item["patch_ref"].lower(),
+    ))
+
+    clusters = []
+    for sig in signature_buckets.values():
+        clusters.append({
+            "patch_ref": sig["patch_ref"],
+            "os_family": sig["os_family"],
+            "os_version": sig["os_version"],
+            "category": sig["category"],
+            "signature": sig["signature"],
+            "count": sig["count"],
+            "asset_count": len(sig["agent_ids"]),
+            "campaign_count": len(sig["campaign_ids"]),
+            "sample_job_ids": sig["sample_job_ids"],
+            "last_seen": sig["last_seen"].isoformat() if sig["last_seen"] else None,
+        })
+    clusters.sort(key=lambda item: (-item["count"], item["patch_ref"].lower(), item["category"]))
+
+    return {
+        "generated_at": reference.isoformat(),
+        "lookback_days": lookback_days,
+        "summary": {
+            "patch_os_segments": len(patches),
+            "confirmed_local_regressions": sum(1 for item in patches if item["regression_state"] == "confirmed_local_regression"),
+            "elevated_failure_rates": sum(1 for item in patches if item["regression_state"] == "elevated_failure_rate"),
+            "failure_clusters": len(clusters),
+        },
+        "patches": patches[:max(1, min(limit, 1000))],
+        "clusters": clusters[:max(1, min(limit, 1000))],
+        "thresholds": {
+            "confirmed_local_regression": ">=3 comparable outcomes, >=2 effective failures, >=50% effective failure rate",
+            "elevated_failure_rate": ">=3 comparable outcomes, >=1 effective failure, >=25% effective failure rate",
+        },
+        "note": "Failure Intelligence uses only local observed deployment evidence. Bundle jobs are attributed to each patch in the bundle. It does not infer vendor-wide reliability.",
+    }
+
+
+def campaign_local_regression_evidence(
+    db: Session,
+    campaign: Campaign,
+    agents: list[Agent],
+    reference: datetime | None = None,
+) -> dict:
+    if campaign.action != "install_updates":
+        return {"state": "not_applicable", "matches": []}
+    packages = {
+        str(value).strip().lower()
+        for value in load(campaign.payload_json, {}).get("packages", [])
+        if str(value).strip()
+    }
+    if not packages or not agents:
+        return {"state": "no_evidence", "matches": []}
+
+    target_segments = {
+        (str(agent.os_family or "unknown").lower(), str(agent.os_version or "unknown").lower())
+        for agent in agents
+    }
+    report = patch_failure_intelligence_report(db, reference=reference, lookback_days=30, limit=1000)
+    matches = [
+        item
+        for item in report["patches"]
+        if item["patch_ref"].lower() in packages
+        and (item["os_family"].lower(), item["os_version"].lower()) in target_segments
+        and item["regression_state"] != "stable"
+    ]
+    if any(item["regression_state"] == "confirmed_local_regression" for item in matches):
+        state = "confirmed_local_regression"
+    elif any(item["regression_state"] == "elevated_failure_rate" for item in matches):
+        state = "elevated_failure_rate"
+    elif matches:
+        state = "observed_failures"
+    else:
+        state = "no_evidence"
+    return {
+        "state": state,
+        "matches": matches,
+        "lookback_days": report["lookback_days"],
+        "thresholds": report["thresholds"],
+    }
+
+
 def campaign_preflight(
     db: Session,
     campaign: Campaign,
@@ -10423,6 +10712,33 @@ def campaign_preflight(
         )
 
     if campaign.action == "install_updates":
+        local_regression = campaign_local_regression_evidence(db, campaign, selected, reference)
+        if local_regression["state"] == "confirmed_local_regression":
+            add_check(
+                "local_regression",
+                "Local Regression Intelligence",
+                "blocked",
+                f"{len(local_regression['matches'])} patch/SO segment(s) apresentam regressão local confirmada nos últimos {local_regression['lookback_days']} dias",
+                blocking=True,
+                details=local_regression,
+            )
+        elif local_regression["state"] in {"elevated_failure_rate", "observed_failures"}:
+            add_check(
+                "local_regression",
+                "Local Regression Intelligence",
+                "warning",
+                f"{len(local_regression['matches'])} patch/SO segment(s) têm falhas locais recentes",
+                details=local_regression,
+            )
+        else:
+            add_check(
+                "local_regression",
+                "Local Regression Intelligence",
+                "passed",
+                "nenhuma regressão local conhecida para patch + SO/versão do ring",
+                details=local_regression,
+            )
+
         packages = sorted({str(value).strip() for value in payload.get("packages", []) if str(value).strip()})
         confidence_map = {
             str(item.get("patch_ref") or "").strip().lower(): item
@@ -10549,6 +10865,20 @@ def add_ring_jobs(db: Session, campaign: Campaign, agents, ring_percent: int):
         created.append(job)
     return created
 
+
+
+@app.get("/api/admin/reports/patch-failure-intelligence")
+def get_patch_failure_intelligence(
+    lookback_days: int = 30,
+    limit: int = 100,
+    _=Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    return patch_failure_intelligence_report(
+        db,
+        lookback_days=lookback_days,
+        limit=limit,
+    )
 
 
 @app.get("/api/admin/campaigns/{campaign_id}/preflight")
