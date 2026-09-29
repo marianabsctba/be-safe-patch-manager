@@ -17,7 +17,7 @@ os.environ["THREAT_INTEL_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine
 from app import main
-from app.models import Agent, AssetRiskProfile, Campaign, CampaignApproval, CampaignPreflightSnapshot, PatchBlockRule, PatchJob
+from app.models import Agent, AssetRiskProfile, Campaign, CampaignApproval, CampaignPreflightSnapshot, PatchApplicability, PatchBlockRule, PatchCatalogEntry, PatchJob
 
 
 @pytest.fixture(autouse=True)
@@ -275,6 +275,7 @@ def test_campaign_evidence_pack_hashes_sections_and_pack(db):
         "blast_radius",
         "ring_plan",
         "change_collisions",
+        "patch_applicability",
         "preflight_snapshots",
         "ring_decisions",
         "jobs",
