@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.39.0
+
+- control plane e dashboard passam para versão 0.39.0; agente permanece em 0.16.0;
+- adicionado Campaign Preflight / Change Readiness antes do deploy;
+- preflight consolida scope, Approval Gate, Change Freeze, Patch Guard, compatibilidade/capabilities de agente, heartbeat, mTLS, maintenance window e Patch Confidence;
+- readiness é explícito em READY, REVIEW ou BLOCKED, sem score composto oculto;
+- enforcement de compatibilidade e mTLS podem bloquear o deploy antes da criação de jobs;
+- console ganha painel visual de preflight dentro de cada campanha;
+- deploy retorna o snapshot completo do preflight quando um controle impeditivo bloqueia a mudança;
+- adicionados testes para approval pendente, Patch Guard, incompatibilidade de agente e heartbeat stale.
+
+
 ## 0.38.0
 
 - control plane e dashboard passam para versão 0.38.0; agente permanece em 0.16.0;
