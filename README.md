@@ -1,5 +1,11 @@
 # Be Safe Patch Manager
 
+<p align="center">
+  <img src="server/app/static/be-safe-patch-manager-logo.jpg" alt="Be Safe Patch Manager — pantera preta e rosa" width="360">
+</p>
+
+<p align="center"><strong>Be Safe Patch Manager</strong></p>
+
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
