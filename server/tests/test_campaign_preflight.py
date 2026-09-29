@@ -250,3 +250,66 @@ def test_deploy_attempt_persists_preflight_snapshot(db):
     assert snapshots[0].source == "deploy_attempt"
     assert result["preflight_snapshot"]["id"] == snapshots[0].id
     assert result["preflight_drift"]["status"] == "NO_BASELINE"
+
+
+
+def test_campaign_evidence_pack_hashes_sections_and_pack(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+
+    main.deploy_campaign(
+        campaign.id,
+        principal={"actor": "user:operator", "role": "operator"},
+        db=db,
+    )
+
+    pack = main.campaign_evidence_pack(db, campaign)
+
+    assert pack["schema"] == "be-safe-campaign-evidence-pack/v1"
+    assert pack["summary"]["jobs"] == 1
+    assert pack["summary"]["preflight_snapshots"] == 1
+    assert len(pack["manifest"]["pack_sha256"]) == 64
+    assert set(pack["manifest"]["section_hashes"]) == {
+        "campaign",
+        "approval",
+        "preflight_snapshots",
+        "ring_decisions",
+        "jobs",
+        "freeze_override",
+        "audit_events",
+    }
+
+    for key, value in pack["sections"].items():
+        assert pack["manifest"]["section_hashes"][key] == main._evidence_sha256(value)
+
+    content = {key: value for key, value in pack.items() if key != "manifest"}
+    assert pack["manifest"]["pack_sha256"] == main._evidence_sha256(content)
+
+
+def test_campaign_evidence_pack_preserves_job_health_and_rollback_evidence(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+    result = main.deploy_campaign(
+        campaign.id,
+        principal={"actor": "user:operator", "role": "operator"},
+        db=db,
+    )
+    db.refresh(campaign)
+    job = campaign.jobs[0]
+    job.status = "success"
+    job.started_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    job.finished_at = datetime.now(timezone.utc)
+    job.result_json = main.dump({
+        "validation": {"ok": True},
+        "health_validation": {"ok": True, "issues": []},
+        "rollback": {"checkpoint_id": "cp-123"},
+    })
+    db.commit()
+
+    pack = main.campaign_evidence_pack(db, campaign)
+    exported = pack["sections"]["jobs"][0]
+
+    assert exported["status"] == "success"
+    assert "validation" in exported
+    assert "rollback" in exported
+    assert exported["campaign_id"] == result["campaign"]["id"]
