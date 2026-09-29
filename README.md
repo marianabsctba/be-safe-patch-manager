@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.44.0  
+> **Control plane:** v0.45.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -216,6 +216,43 @@ Patch Guard       PASSED  -> BLOCKED
 ```
 
 Toda tentativa de deploy também registra automaticamente um snapshot de preflight, preservando a evidência da condição operacional observada naquele momento.
+
+## Change Collision Guard
+
+Antes do deploy, a plataforma verifica se o ring entra em conflito com outras mudanças ainda ativas.
+
+O guard cruza os endpoints do ring com jobs não terminais de outras campanhas:
+
+- `pending`;
+- `claimed`;
+- `running`;
+- `stalled`;
+- `blocked`.
+
+Regras:
+
+```text
+direct_asset_collision
+=> o mesmo endpoint já possui job não terminal em outra campanha
+=> BLOCKED
+
+context_collision
+=> o ring compartilha business service + environment
+   com jobs ativos de outra campanha
+=> WARNING
+
+owner_collision
+=> o ring compartilha owner com outra mudança ativa
+=> WARNING
+```
+
+A colisão direta bloqueia o deploy porque duas campanhas concorrentes no mesmo endpoint criariam uma condição operacional objetiva de conflito.
+
+Colisões apenas de contexto são advisory: a ferramenta mostra as campanhas, jobs, services, environments e owners envolvidos, mas não inventa uma regra corporativa de CAB.
+
+O console possui uma ação `Collision Guard` por campanha e o Preflight inclui o check `Change Collision Guard`.
+
+O Evidence Pack registra a seção `change_collisions` com SHA-256 próprio.
 
 ## Smart Canary / Adaptive Ring Planner
 
@@ -863,7 +900,7 @@ O pipeline valida:
 - JavaScript;
 - pre-publish security check.
 
-A v0.44 passa pelo pipeline completo antes de ser considerada pronta.
+A v0.45 passa pelo pipeline completo antes de ser considerada pronta.
 
 ## Estrutura
 
