@@ -60,6 +60,65 @@ jobs:
             --release-dir "$TMP_RELEASE/release"
           rm -rf "$TMP_RELEASE"
 
+      - name: Evidence Pack attestation drill
+        run: |
+          TMP_EVIDENCE="$(mktemp -d)"
+          python scripts/evidence-attestation-key.py generate-key \
+            --private-key "$TMP_EVIDENCE/evidence-private.pem" \
+            --public-key "$TMP_EVIDENCE/evidence-public.pem"
+          EVIDENCE_ATTESTATION_ENABLED=true \
+          EVIDENCE_ATTESTATION_PRIVATE_KEY_FILE="$TMP_EVIDENCE/evidence-private.pem" \
+          EVIDENCE_ATTESTATION_PUBLIC_KEY_FILE="$TMP_EVIDENCE/evidence-public.pem" \
+          PYTHONPATH=server \
+          TMP_EVIDENCE="$TMP_EVIDENCE" \
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          from app.evidence_attestation import build_evidence_attestation
+
+          def canonical(value):
+              return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+          def digest(value):
+              return hashlib.sha256(canonical(value).encode("utf-8")).hexdigest()
+
+          section = {"probe": "ok"}
+          section_hash = digest(section)
+          content = {
+              "schema": "be-safe-campaign-evidence-pack/v1",
+              "generated_at": "2026-09-29T00:00:00+00:00",
+              "campaign_id": "ci-campaign",
+              "summary": {},
+              "section_hashes": {"probe": section_hash},
+              "sections": {"probe": section},
+          }
+          pack_hash = digest(content)
+          attestation = build_evidence_attestation(
+              pack_sha256=pack_hash,
+              campaign_id="ci-campaign",
+              generated_at=content["generated_at"],
+          )
+          pack = {
+              **content,
+              "manifest": {
+                  "hash_algorithm": "SHA-256",
+                  "pack_sha256": pack_hash,
+                  "section_hashes": content["section_hashes"],
+                  "attestation": attestation,
+              },
+          }
+          Path(os.environ["TMP_EVIDENCE"], "pack.json").write_text(
+              json.dumps(pack, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          PY
+          python scripts/verify-evidence-pack.py "$TMP_EVIDENCE/pack.json" \
+            --public-key "$TMP_EVIDENCE/evidence-public.pem" \
+            --campaign-id ci-campaign
+          rm -rf "$TMP_EVIDENCE"
+
 
       - name: Alembic migration on PostgreSQL
         env:
