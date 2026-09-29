@@ -1,5 +1,5 @@
 const $ = (s) => document.querySelector(s);
-const $ = (s) => [...document.querySelectorAll(s)];
+const qsa = (s) => [...document.querySelectorAll(s)];
 const tr = (value) => window.BSI18N ? window.BSI18N.t(value) : String(value ?? '');
 const uiLocale = () => window.BSI18N ? window.BSI18N.browserLocale() : 'pt-BR';
 
@@ -236,11 +236,11 @@ function userRoleBadge(role) {
 
 function setView(view) {
   state.view = view;
-  $$('.nav-item').forEach((button) => {
+  qsa('.nav-item').forEach((button) => {
     button.classList.toggle('active', button.dataset.view === view);
   });
 
-  $$('.view').forEach((panel) => {
+  qsa('.view').forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.viewPanel === view);
   });
 
@@ -4374,11 +4374,11 @@ window.addEventListener('be-safe-locale-changed', () => {
 
 $('#refresh').addEventListener('click', load);
 
-$$('.nav-item').forEach((button) => {
+qsa('.nav-item').forEach((button) => {
   button.addEventListener('click', () => setView(button.dataset.view));
 });
 
-$$('.jump-view').forEach((button) => {
+qsa('.jump-view').forEach((button) => {
   button.addEventListener('click', () => setView(button.dataset.target));
 });
 
