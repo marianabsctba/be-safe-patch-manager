@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.53.0
+
+- control plane e dashboard passam para versão 0.53.0; agente permanece em 0.16.0;
+- adicionado Explainable Change Risk Engine com score determinístico 0-100;
+- fatores são decomponíveis, com pontos, evidência e fonte explícitos;
+- engine reutiliza Blast Radius, Change Collision, Maintenance Risk, Applicability e Failure Intelligence;
+- níveis LOW, MODERATE, HIGH e CRITICAL com thresholds documentados;
+- risco de vulnerabilidade é separado de risco operacional: KEV, ransomware e EPSS entram apenas como urgency context;
+- mudanças HIGH/CRITICAL passam a declarar controles mínimos requeridos;
+- mudanças CRITICAL bloqueiam Preflight quando faltam health gate, rollback preparado, ring inicial <=10% ou janela de manutenção;
+- deploy passa a respeitar o blocker change_risk;
+- novo endpoint /api/admin/campaigns/{campaign_id}/change-risk;
+- console ganha botão Change Risk com decomposição visual do score e controles ausentes;
+- Evidence Pack ganha seção change_risk com score, fatores, modelo e urgency context;
+- adicionados testes de explicabilidade, blocking de controles críticos e cenário low-risk sem blocker inventado.
+
+
 ## 0.52.0
 
 - control plane e dashboard passam para versão 0.52.0; agente permanece em 0.16.0;
