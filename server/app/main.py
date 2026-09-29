@@ -21,8 +21,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignApprovalVote, CampaignPreflightSnapshot, CampaignRingDecision, IntegrationState, TenantSettings, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, TenantSettingsUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignApprovalVote, CampaignPreflightSnapshot, CampaignRingDecision, IntegrationState, TenantSettings, PatchJob, PatchBlockRule, PatchPolicyDefinition, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, PatchPolicyCreate, PatchPolicyVersionCreate, PatchPolicySimulationRequest, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, TenantSettingsUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -34,7 +34,7 @@ from .evidence_attestation import EvidenceAttestationError, build_evidence_attes
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.53.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.54.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -7839,6 +7839,86 @@ def auto_patch_simulation(db: Session, policy: AutoPatchPolicy, patch_ref: str) 
     }
 
 
+@app.get("/api/admin/patch-policies")
+def list_patch_policies(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    items = db.query(PatchPolicyDefinition).order_by(
+        PatchPolicyDefinition.name.asc(),
+        PatchPolicyDefinition.version.desc(),
+    ).all()
+    return [serialize_patch_policy(item) for item in items]
+
+
+@app.post("/api/admin/patch-policies")
+def create_patch_policy(body: PatchPolicyCreate, principal=Depends(require_admin), db: Session = Depends(get_db)):
+    name = body.name.strip()
+    if db.query(PatchPolicyDefinition).filter(PatchPolicyDefinition.name == name).first():
+        raise HTTPException(status_code=409, detail="policy name already exists; create a new version instead")
+    policy = validate_patch_policy_document(body.policy)
+    digest = _evidence_sha256(policy)
+    item = PatchPolicyDefinition(
+        id=str(uuid.uuid4()),
+        name=name,
+        version=1,
+        enabled=body.enabled,
+        priority=body.priority,
+        policy_json=dump(policy),
+        policy_sha256=digest,
+        created_by=principal["actor"],
+    )
+    db.add(item)
+    db.commit()
+    audit(db, principal["actor"], "patch_policy.created", "patch_policy", item.id, serialize_patch_policy(item))
+    return serialize_patch_policy(item)
+
+
+@app.post("/api/admin/patch-policies/{policy_id}/versions")
+def create_patch_policy_version(policy_id: str, body: PatchPolicyVersionCreate, principal=Depends(require_admin), db: Session = Depends(get_db)):
+    current = db.get(PatchPolicyDefinition, policy_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="policy not found")
+    latest = db.query(PatchPolicyDefinition).filter(
+        PatchPolicyDefinition.name == current.name
+    ).order_by(PatchPolicyDefinition.version.desc()).first()
+    if latest.id != current.id:
+        raise HTTPException(status_code=409, detail="new versions must supersede the latest policy version")
+    policy = validate_patch_policy_document(body.policy)
+    current.enabled = False
+    item = PatchPolicyDefinition(
+        id=str(uuid.uuid4()),
+        name=current.name,
+        version=current.version + 1,
+        enabled=body.enabled,
+        priority=current.priority if body.priority is None else body.priority,
+        policy_json=dump(policy),
+        policy_sha256=_evidence_sha256(policy),
+        supersedes_id=current.id,
+        created_by=principal["actor"],
+    )
+    db.add(item)
+    db.commit()
+    audit(db, principal["actor"], "patch_policy.version.created", "patch_policy", item.id, {
+        "supersedes_id": current.id,
+        "policy": serialize_patch_policy(item),
+    })
+    return serialize_patch_policy(item)
+
+
+@app.post("/api/admin/patch-policies/simulate")
+def simulate_patch_policy(body: PatchPolicySimulationRequest, _=Depends(require_viewer), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, body.campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return evaluate_patch_policy_document(campaign, body.policy)
+
+
+@app.get("/api/admin/campaigns/{campaign_id}/policy-as-code")
+def get_campaign_policy_as_code(campaign_id: str, _=Depends(require_viewer), db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return campaign_policy_as_code_report(db, campaign)
+
+
 @app.get("/api/admin/auto-patch/policies")
 def list_auto_patch_policies(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return [serialize_auto_patch_policy(x) for x in db.query(AutoPatchPolicy).order_by(AutoPatchPolicy.name.asc()).all()]
@@ -11820,6 +11900,178 @@ def campaign_change_risk(
     }
 
 
+def validate_patch_policy_document(document: dict) -> dict:
+    if not isinstance(document, dict):
+        raise HTTPException(status_code=400, detail="policy must be a JSON object")
+    if document.get("schema") != "be-safe-patch-policy/v1":
+        raise HTTPException(status_code=400, detail="unsupported patch policy schema")
+
+    match = document.get("match") if isinstance(document.get("match"), dict) else {}
+    requirements = document.get("requirements") if isinstance(document.get("requirements"), dict) else {}
+
+    actions = [str(x).strip() for x in match.get("actions", ["install_updates"]) if str(x).strip()]
+    target_os = [str(x).strip().lower() for x in match.get("target_os", ["all"]) if str(x).strip()]
+    tags_any = [str(x).strip().lower() for x in match.get("tags_any", []) if str(x).strip()]
+    environments = [str(x).strip().lower() for x in match.get("environments", []) if str(x).strip()]
+    min_criticality = int(match.get("min_criticality") or 0)
+    if min_criticality < 0 or min_criticality > 5:
+        raise HTTPException(status_code=400, detail="min_criticality must be between 0 and 5")
+
+    max_ring = requirements.get("max_initial_ring_percent")
+    if max_ring is not None:
+        max_ring = int(max_ring)
+        if max_ring < 1 or max_ring > 100:
+            raise HTTPException(status_code=400, detail="max_initial_ring_percent must be between 1 and 100")
+
+    min_approvals = int(requirements.get("min_approvals") or 0)
+    if min_approvals < 0 or min_approvals > 5:
+        raise HTTPException(status_code=400, detail="min_approvals must be between 0 and 5")
+
+    normalized = {
+        "schema": "be-safe-patch-policy/v1",
+        "description": str(document.get("description") or "")[:1000],
+        "match": {
+            "actions": actions or ["install_updates"],
+            "target_os": target_os or ["all"],
+            "tags_any": sorted(set(tags_any)),
+            "environments": sorted(set(environments)),
+            "min_criticality": min_criticality,
+        },
+        "requirements": {
+            "max_initial_ring_percent": max_ring,
+            "require_health_gate": bool(requirements.get("require_health_gate", False)),
+            "require_rollback": bool(requirements.get("require_rollback", False)),
+            "require_maintenance_window": bool(requirements.get("require_maintenance_window", False)),
+            "min_approvals": min_approvals,
+        },
+    }
+    return normalized
+
+
+def serialize_patch_policy(item: PatchPolicyDefinition) -> dict:
+    return {
+        "id": item.id,
+        "name": item.name,
+        "version": item.version,
+        "enabled": bool(item.enabled),
+        "priority": item.priority,
+        "policy": load(item.policy_json, {}),
+        "policy_sha256": item.policy_sha256,
+        "supersedes_id": item.supersedes_id,
+        "created_by": item.created_by,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
+def evaluate_patch_policy_document(campaign: Campaign, document: dict) -> dict:
+    document = validate_patch_policy_document(document)
+    payload = load(campaign.payload_json, {})
+    baseline = payload.get("scope_baseline") if isinstance(payload.get("scope_baseline"), dict) else {}
+    assets = baseline.get("assets") if isinstance(baseline.get("assets"), list) else []
+    match = document["match"]
+    requirements = document["requirements"]
+
+    action_match = campaign.action in set(match["actions"])
+    os_match = "all" in set(match["target_os"]) or campaign.target_os.lower() in set(match["target_os"])
+
+    tags = {
+        str(tag).strip().lower()
+        for asset in assets if isinstance(asset, dict)
+        for tag in (asset.get("tags") or [])
+        if str(tag).strip()
+    }
+    envs = {
+        str(asset.get("environment") or "").strip().lower()
+        for asset in assets if isinstance(asset, dict)
+        if str(asset.get("environment") or "").strip()
+    }
+    max_criticality = max(
+        [int(asset.get("criticality") or 0) for asset in assets if isinstance(asset, dict)] or [0]
+    )
+
+    tag_match = not match["tags_any"] or bool(tags.intersection(match["tags_any"]))
+    env_match = not match["environments"] or bool(envs.intersection(match["environments"]))
+    criticality_match = max_criticality >= int(match["min_criticality"])
+    matched = bool(action_match and os_match and tag_match and env_match and criticality_match)
+
+    approval = serialize_campaign_approval(campaign)
+    health = payload.get("health_policy") if isinstance(payload.get("health_policy"), dict) else {}
+    actual = {
+        "initial_ring_percent": int(campaign.ring_percent),
+        "health_gate": bool(health.get("enabled")),
+        "rollback": bool(payload.get("prepare_rollback", True)),
+        "maintenance_window": bool(payload.get("maintenance_start") and payload.get("maintenance_end")),
+        "approvals": int(approval.get("required_approvals") or 0) if approval.get("required") else 0,
+    }
+
+    violations = []
+    if matched:
+        max_ring = requirements.get("max_initial_ring_percent")
+        if max_ring is not None and actual["initial_ring_percent"] > int(max_ring):
+            violations.append({"key": "max_initial_ring_percent", "expected": int(max_ring), "actual": actual["initial_ring_percent"]})
+        if requirements["require_health_gate"] and not actual["health_gate"]:
+            violations.append({"key": "require_health_gate", "expected": True, "actual": False})
+        if requirements["require_rollback"] and not actual["rollback"]:
+            violations.append({"key": "require_rollback", "expected": True, "actual": False})
+        if requirements["require_maintenance_window"] and not actual["maintenance_window"]:
+            violations.append({"key": "require_maintenance_window", "expected": True, "actual": False})
+        if int(requirements["min_approvals"]) > actual["approvals"]:
+            violations.append({"key": "min_approvals", "expected": int(requirements["min_approvals"]), "actual": actual["approvals"]})
+
+    return {
+        "matched": matched,
+        "compliant": bool(not matched or not violations),
+        "violations": violations,
+        "actual": actual,
+        "match_evidence": {
+            "action_match": action_match,
+            "os_match": os_match,
+            "tag_match": tag_match,
+            "environment_match": env_match,
+            "criticality_match": criticality_match,
+            "scope_tags": sorted(tags),
+            "scope_environments": sorted(envs),
+            "scope_max_criticality": max_criticality,
+        },
+        "policy": document,
+    }
+
+
+def campaign_policy_as_code_report(db: Session, campaign: Campaign) -> dict:
+    policies = db.query(PatchPolicyDefinition).filter(
+        PatchPolicyDefinition.enabled.is_(True)
+    ).order_by(PatchPolicyDefinition.priority.desc(), PatchPolicyDefinition.name.asc(), PatchPolicyDefinition.version.desc()).all()
+
+    latest_by_name = {}
+    for item in policies:
+        latest_by_name.setdefault(item.name, item)
+
+    evaluations = []
+    for item in latest_by_name.values():
+        result = evaluate_patch_policy_document(campaign, load(item.policy_json, {}))
+        evaluations.append({
+            "policy_id": item.id,
+            "name": item.name,
+            "version": item.version,
+            "priority": item.priority,
+            "policy_sha256": item.policy_sha256,
+            **result,
+        })
+
+    matched = [item for item in evaluations if item["matched"]]
+    violations = [v for item in matched for v in item["violations"]]
+    return {
+        "campaign_id": campaign.id,
+        "matched_policies": len(matched),
+        "evaluated_policies": len(evaluations),
+        "compliant": not violations,
+        "blocking": bool(violations),
+        "violations": violations,
+        "evaluations": evaluations,
+        "note": "Policy-as-Code enforcement is deterministic. Only the latest enabled version per policy name is evaluated.",
+    }
+
+
 def campaign_preflight(
     db: Session,
     campaign: Campaign,
@@ -11848,6 +12100,33 @@ def campaign_preflight(
     maintenance_risk = campaign_maintenance_risk(db, campaign, reference)
     scope_drift = campaign_scope_drift(db, campaign, reference)
     change_risk = campaign_change_risk(db, campaign, reference)
+    policy_as_code = campaign_policy_as_code_report(db, campaign)
+
+    if policy_as_code["blocking"]:
+        add_check(
+            "policy_as_code",
+            "Patch Policy-as-Code",
+            "blocked",
+            f"{len(policy_as_code['violations'])} violação(ões) em {policy_as_code['matched_policies']} policy(s) aplicável(is)",
+            blocking=True,
+            details=policy_as_code,
+        )
+    elif policy_as_code["matched_policies"]:
+        add_check(
+            "policy_as_code",
+            "Patch Policy-as-Code",
+            "passed",
+            f"{policy_as_code['matched_policies']} policy(s) aplicável(is) atendida(s)",
+            details=policy_as_code,
+        )
+    else:
+        add_check(
+            "policy_as_code",
+            "Patch Policy-as-Code",
+            "passed",
+            "nenhuma policy versionada aplicável à campanha",
+            details=policy_as_code,
+        )
 
     if change_risk["blocking"]:
         add_check(
@@ -12812,7 +13091,7 @@ def deploy_campaign(campaign_id: str, principal=Depends(require_operator), db: S
 
     additional_blockers = [
         item for item in preflight["checks"]
-        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision", "patch_applicability", "maintenance_reboot", "scope_drift", "change_risk"}
+        if item.get("blocking") and item.get("key") in {"agent_compatibility", "mtls", "change_collision", "patch_applicability", "maintenance_reboot", "scope_drift", "change_risk", "policy_as_code"}
     ]
     if additional_blockers:
         raise HTTPException(
@@ -13075,6 +13354,7 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
         "patch_applicability": campaign_patch_applicability_guard(db, campaign, reference),
         "maintenance_risk": campaign_maintenance_risk(db, campaign, reference),
         "change_risk": campaign_change_risk(db, campaign, reference),
+        "policy_as_code": campaign_policy_as_code_report(db, campaign),
         "scope_drift": campaign_scope_drift(db, campaign, reference),
         "preflight_snapshots": [
             serialize_campaign_preflight_snapshot(item, include_result=True)
