@@ -17,7 +17,7 @@ os.environ["THREAT_INTEL_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine
 from app import main
-from app.models import Agent, Campaign, CampaignApproval, PatchBlockRule
+from app.models import Agent, Campaign, CampaignApproval, CampaignPreflightSnapshot, PatchBlockRule
 
 
 @pytest.fixture(autouse=True)
@@ -178,3 +178,75 @@ def test_preflight_warns_on_stale_heartbeat(db):
     assert heartbeat["status"] == "warning"
     assert heartbeat["blocking"] is False
     assert report["readiness"] == "REVIEW"
+
+
+
+def test_preflight_snapshot_is_immutable_hashed_evidence(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+    result = main.campaign_preflight(db, campaign)
+
+    snapshot = main.persist_campaign_preflight_snapshot(
+        db, campaign, result, "user:operator", "manual"
+    )
+
+    assert db.query(CampaignPreflightSnapshot).count() == 1
+    assert snapshot.readiness == result["readiness"]
+    assert snapshot.actor == "user:operator"
+    assert snapshot.source == "manual"
+    assert len(snapshot.result_sha256) == 64
+    assert main.load(snapshot.result_json, {})["campaign_id"] == campaign.id
+
+
+def test_preflight_drift_detects_degradation():
+    previous = {
+        "checks": [
+            {"key": "heartbeat", "label": "Agent freshness", "status": "passed", "message": "recent"},
+            {"key": "patch_guard", "label": "Patch Guard", "status": "passed", "message": "clear"},
+        ]
+    }
+    current = {
+        "checks": [
+            {"key": "heartbeat", "label": "Agent freshness", "status": "warning", "message": "stale"},
+            {"key": "patch_guard", "label": "Patch Guard", "status": "blocked", "message": "rule matched"},
+        ]
+    }
+
+    drift = main.campaign_preflight_drift(previous, current)
+
+    assert drift["status"] == "DEGRADED"
+    assert drift["degraded"] == 2
+    assert {item["key"] for item in drift["changes"]} == {"heartbeat", "patch_guard"}
+
+
+def test_preflight_drift_reports_unchanged():
+    result = {
+        "checks": [
+            {"key": "scope", "label": "Target scope", "status": "passed", "message": "10 endpoints"}
+        ]
+    }
+
+    drift = main.campaign_preflight_drift(result, result)
+
+    assert drift["status"] == "UNCHANGED"
+    assert drift["changed"] is False
+    assert drift["changes"] == []
+
+
+def test_deploy_attempt_persists_preflight_snapshot(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+
+    result = main.deploy_campaign(
+        campaign.id,
+        principal={"actor": "user:operator", "role": "operator"},
+        db=db,
+    )
+
+    snapshots = db.query(CampaignPreflightSnapshot).filter(
+        CampaignPreflightSnapshot.campaign_id == campaign.id
+    ).all()
+    assert len(snapshots) == 1
+    assert snapshots[0].source == "deploy_attempt"
+    assert result["preflight_snapshot"]["id"] == snapshots[0].id
+    assert result["preflight_drift"]["status"] == "NO_BASELINE"
