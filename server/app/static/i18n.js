@@ -39,6 +39,9 @@
   const localeMap = { "pt-BR": "pt-BR", en: "en-US", es: "es-ES" };
   let locale = "pt-BR";
   let tenant = { id: "default", name: "Be Safe", locale: "pt-BR", supported_locales: [] };
+  const sourceText = new WeakMap();
+  const sourceTitle = new WeakMap();
+  const sourcePlaceholder = new WeakMap();
 
   function t(value) {
     const raw = String(value ?? "");
@@ -52,11 +55,11 @@
 
   function translateNode(node) {
     if (!node || node.nodeType !== Node.TEXT_NODE) return;
-    const raw = node.nodeValue;
+    if (!sourceText.has(node)) sourceText.set(node, node.nodeValue);
+    const raw = sourceText.get(node);
     const trimmed = raw.trim();
     if (!trimmed) return;
     const translated = t(trimmed);
-    if (translated === trimmed) return;
     node.nodeValue = raw.replace(trimmed, translated);
   }
 
@@ -68,14 +71,14 @@
     while (walker.nextNode()) nodes.push(walker.currentNode);
     nodes.forEach(translateNode);
     root.querySelectorAll?.("[title]").forEach((el) => {
-      const value = el.getAttribute("title");
-      const translated = t(value);
-      if (translated !== value) el.setAttribute("title", translated);
+      if (!sourceTitle.has(el)) sourceTitle.set(el, el.getAttribute("title") || "");
+      const value = sourceTitle.get(el);
+      el.setAttribute("title", t(value));
     });
     root.querySelectorAll?.("[placeholder]").forEach((el) => {
-      const value = el.getAttribute("placeholder");
-      const translated = t(value);
-      if (translated !== value) el.setAttribute("placeholder", translated);
+      if (!sourcePlaceholder.has(el)) sourcePlaceholder.set(el, el.getAttribute("placeholder") || "");
+      const value = sourcePlaceholder.get(el);
+      el.setAttribute("placeholder", t(value));
     });
     const selector = document.querySelector("#tenantLocale");
     if (selector && selector.value !== locale) selector.value = locale;
