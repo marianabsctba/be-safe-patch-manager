@@ -21,7 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignPreflightSnapshot, CampaignRingDecision, IntegrationState, TenantSettings, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
+from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignApprovalVote, CampaignPreflightSnapshot, CampaignRingDecision, IntegrationState, TenantSettings, PatchJob, PatchBlockRule, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
 from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, TenantSettingsUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
@@ -34,7 +34,7 @@ from .evidence_attestation import EvidenceAttestationError, build_evidence_attes
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.51.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.52.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -5702,9 +5702,17 @@ def serialize_campaign_approval(c: Campaign) -> dict:
     required = bool(payload.get("approval_required", False))
     approval = c.approval
     if not required:
-        return {"required": False, "status": "not_required"}
+        return {"required": False, "status": "not_required", "required_approvals": 0, "approved_count": 0}
     if not approval:
-        return {"required": True, "status": "missing"}
+        return {"required": True, "status": "missing", "required_approvals": 1, "approved_count": 0}
+
+    votes = sorted(
+        list(approval.votes or []),
+        key=lambda item: (item.created_at or datetime.min.replace(tzinfo=timezone.utc), item.id),
+    )
+    approvals = [item for item in votes if item.decision == "approve"]
+    rejections = [item for item in votes if item.decision == "reject"]
+    required_approvals = max(1, int(approval.required_approvals or 1))
     return {
         "required": True,
         "status": approval.status,
@@ -5714,6 +5722,20 @@ def serialize_campaign_approval(c: Campaign) -> dict:
         "decided_by": approval.decided_by,
         "decision_reason": approval.decision_reason,
         "decided_at": approval.decided_at.isoformat() if approval.decided_at else None,
+        "required_approvals": required_approvals,
+        "approved_count": len(approvals),
+        "rejected_count": len(rejections),
+        "remaining_approvals": max(0, required_approvals - len(approvals)),
+        "policy": load(approval.policy_json, {}),
+        "votes": [
+            {
+                "actor": item.actor,
+                "decision": item.decision,
+                "reason": item.reason,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+            }
+            for item in votes
+        ],
     }
 
 
@@ -9636,11 +9658,33 @@ def approve_campaign(
         raise HTTPException(status_code=409, detail=f"campaign approval is {approval.status}")
     if approval.requested_by == principal["actor"]:
         raise HTTPException(status_code=409, detail="requester cannot approve their own campaign")
+    existing_vote = db.query(CampaignApprovalVote).filter(
+        CampaignApprovalVote.approval_id == approval.id,
+        CampaignApprovalVote.actor == principal["actor"],
+    ).first()
+    if existing_vote:
+        raise HTTPException(status_code=409, detail="actor has already voted on this campaign")
 
-    approval.status = "approved"
-    approval.decided_by = principal["actor"]
-    approval.decision_reason = body.reason.strip()
-    approval.decided_at = now()
+    vote = CampaignApprovalVote(
+        id=str(uuid.uuid4()),
+        approval_id=approval.id,
+        campaign_id=campaign.id,
+        actor=principal["actor"],
+        decision="approve",
+        reason=body.reason.strip(),
+    )
+    db.add(vote)
+    db.flush()
+    approved_count = db.query(CampaignApprovalVote).filter(
+        CampaignApprovalVote.approval_id == approval.id,
+        CampaignApprovalVote.decision == "approve",
+    ).count()
+    required_approvals = max(1, int(approval.required_approvals or 1))
+    if approved_count >= required_approvals:
+        approval.status = "approved"
+        approval.decided_by = principal["actor"]
+        approval.decision_reason = body.reason.strip()
+        approval.decided_at = now()
     db.commit()
     audit(
         db,
@@ -9670,6 +9714,22 @@ def reject_campaign(
         raise HTTPException(status_code=409, detail="only draft campaigns can be rejected")
     if approval.status != "pending":
         raise HTTPException(status_code=409, detail=f"campaign approval is {approval.status}")
+    if approval.requested_by == principal["actor"]:
+        raise HTTPException(status_code=409, detail="requester cannot reject their own campaign")
+    existing_vote = db.query(CampaignApprovalVote).filter(
+        CampaignApprovalVote.approval_id == approval.id,
+        CampaignApprovalVote.actor == principal["actor"],
+    ).first()
+    if existing_vote:
+        raise HTTPException(status_code=409, detail="actor has already voted on this campaign")
+    db.add(CampaignApprovalVote(
+        id=str(uuid.uuid4()),
+        approval_id=approval.id,
+        campaign_id=campaign.id,
+        actor=principal["actor"],
+        decision="reject",
+        reason=body.reason.strip(),
+    ))
 
     approval.status = "rejected"
     approval.decided_by = principal["actor"]
@@ -9844,6 +9904,48 @@ def default_rollout_plan(ring_percent: int) -> list[int]:
     return sorted(set(plan))
 
 
+def campaign_change_authority_policy(body: CampaignCreate, scope_baseline: dict) -> dict:
+    assets = scope_baseline.get("assets") if isinstance(scope_baseline, dict) else []
+    assets = assets if isinstance(assets, list) else []
+    critical_assets = [
+        item for item in assets
+        if isinstance(item, dict) and int(item.get("criticality") or 0) >= 4
+    ]
+    tier0_assets = [
+        item for item in assets
+        if isinstance(item, dict)
+        and any(
+            str(tag).strip().lower().replace("_", "-") in {"tier0", "tier-0"}
+            for tag in (item.get("tags") or [])
+        )
+    ]
+    critical_scope = bool(
+        body.action == "install_updates"
+        and (critical_assets or tier0_assets)
+    )
+    requested = bool(body.approval_required)
+    required = bool(requested or critical_scope)
+    required_approvals = 2 if critical_scope else (1 if required else 0)
+    reasons = []
+    if requested:
+        reasons.append("approval explicitly requested for campaign")
+    if critical_assets:
+        reasons.append(f"{len(critical_assets)} asset(s) have criticality 4-5")
+    if tier0_assets:
+        reasons.append(f"{len(tier0_assets)} Tier 0 asset(s) are in scope")
+    return {
+        "required": required,
+        "required_approvals": required_approvals,
+        "policy": "critical_scope_dual_control" if critical_scope else ("standard_single_approval" if required else "not_required"),
+        "segregation_of_duties": True,
+        "requester_may_approve": False,
+        "distinct_approvers_required": required_approvals > 1,
+        "critical_assets": len(critical_assets),
+        "tier0_assets": len(tier0_assets),
+        "reasons": reasons,
+    }
+
+
 @app.post("/api/admin/campaigns")
 def create_campaign(body: CampaignCreate, principal=Depends(require_operator), db: Session = Depends(get_db)):
     if body.action not in {"scan_updates", "install_updates"}:
@@ -9898,8 +10000,6 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
     if body.rollback_required and not body.prepare_rollback:
         raise HTTPException(status_code=400, detail="rollback_required requires prepare_rollback")
     approval_reason = body.approval_reason.strip()
-    if body.approval_required and len(approval_reason) < 5:
-        raise HTTPException(status_code=400, detail="approval_reason is required when approval_required is true")
 
     rollout_plan = []
     for value in body.rollout_plan:
@@ -9929,6 +10029,12 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
         scope_candidates_for_create(db, body, target_agent, target_agents),
         now(),
     )
+    authority_policy = campaign_change_authority_policy(body, scope_baseline)
+    if authority_policy["required"] and len(approval_reason) < 5:
+        if authority_policy["policy"] == "critical_scope_dual_control":
+            approval_reason = "CAB obrigatório: mudança inclui ativo crítico ou Tier 0"
+        else:
+            raise HTTPException(status_code=400, detail="approval_reason is required when approval is required")
 
     policy_payload = {
         **body.payload,
@@ -9949,8 +10055,9 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
         "target_agent_count": len(target_agent_ids),
         "source_finding_id": target_finding.id if target_finding else "",
         "source_cve": target_finding.cve if target_finding else "",
-        "approval_required": body.approval_required,
-        "approval_reason": approval_reason if body.approval_required else "",
+        "approval_required": authority_policy["required"],
+        "approval_reason": approval_reason if authority_policy["required"] else "",
+        "change_authority": authority_policy,
         "ring_strategy": body.ring_strategy,
         "canary_max_critical_percent": int(body.canary_max_critical_percent),
         "rollout_governance": {
@@ -9977,13 +10084,15 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
     )
     db.add(campaign)
     db.flush()
-    if body.approval_required:
+    if authority_policy["required"]:
         db.add(CampaignApproval(
             id=str(uuid.uuid4()),
             campaign_id=campaign.id,
             status="pending",
             request_reason=approval_reason,
             requested_by=principal["actor"],
+            required_approvals=authority_policy["required_approvals"],
+            policy_json=dump(authority_policy),
         ))
     db.commit()
     audit(
@@ -10007,8 +10116,9 @@ def create_campaign(body: CampaignCreate, principal=Depends(require_operator), d
             "target_agent_count": len(target_agent_ids),
             "target_agent_ids": target_agent_ids[:50],
             "source_finding_id": target_finding.id if target_finding else "",
-            "approval_required": body.approval_required,
-            "approval_reason": approval_reason if body.approval_required else "",
+            "approval_required": authority_policy["required"],
+            "approval_reason": approval_reason if authority_policy["required"] else "",
+            "change_authority": authority_policy,
             "rollout_plan": rollout_plan,
             "soak_minutes": int(body.soak_minutes),
             "promotion_min_success_rate": float(body.promotion_min_success_rate),
@@ -11760,18 +11870,21 @@ def campaign_preflight(
     if approval.get("required") and approval.get("status") != "approved":
         add_check(
             "approval",
-            "Approval Gate",
+            "CAB / Change Authority",
             "blocked",
-            f"aprovação administrativa está {approval.get('status') or 'pendente'}",
+            (
+                f"aprovação está {approval.get('status') or 'pendente'}; "
+                f"{approval.get('approved_count', 0)}/{approval.get('required_approvals', 1)} aprovação(ões)"
+            ),
             blocking=True,
             details=approval,
         )
     else:
         add_check(
             "approval",
-            "Approval Gate",
+            "CAB / Change Authority",
             "passed",
-            "aprovação atendida" if approval.get("required") else "aprovação não exigida",
+            "change authority atendida" if approval.get("required") else "aprovação não exigida",
             details=approval,
         )
 
