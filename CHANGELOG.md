@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.57.0
+
+- control plane e dashboard passam para versão 0.57.0; agente permanece em 0.16.0;
+- Exception Governance adiciona dual approval para waiver em Tier 0 ou criticidade >=4;
+- solicitante não pode fornecer a segunda aprovação;
+- owner da exceção passa a ser obrigatório;
+- waiver pending não suprime enforcement até completar quorum;
+- máximo de 3 waivers ativos por campanha;
+- novo endpoint de segunda aprovação;
+- novo relatório de waiver governance com active, pending, expiring_24h, expired e revoked;
+- relatório inclui ranking de policies mais excepcionadas e owners com mais waivers;
+- console Policy Eval mostra owner/status e ação de segunda aprovação.
+
+
 ## 0.56.0
 
 - control plane e dashboard passam para versão 0.56.0; agente permanece em 0.16.0;
