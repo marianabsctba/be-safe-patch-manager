@@ -277,6 +277,7 @@ def test_campaign_evidence_pack_hashes_sections_and_pack(db):
         "change_collisions",
         "change_risk",
         "policy_as_code",
+        "policy_waivers",
         "patch_applicability",
         "maintenance_risk",
         "scope_drift",
