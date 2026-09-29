@@ -30,10 +30,11 @@ from .greenbone import public_config as public_greenbone_config
 from .greenbone import start_task_rescan as start_greenbone_task_rescan
 from .observability import metrics_response, prometheus_http_middleware, readiness_response
 from .agent_updates import AgentReleaseError, load_signed_release
+from .evidence_attestation import EvidenceAttestationError, build_evidence_attestation, verify_evidence_attestation
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.50.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.51.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -12636,6 +12637,17 @@ def verify_campaign_evidence_pack(
         if not campaign_match:
             issues.append("campaign_id does not match expected campaign")
 
+    attestation = verify_evidence_attestation(
+        manifest.get("attestation"),
+        expected_pack_sha256=computed_pack_sha256,
+        expected_campaign_id=normalized_campaign or str(pack.get("campaign_id") or ""),
+    )
+    if attestation.get("valid") is False:
+        issues.extend(
+            f"attestation: {item}"
+            for item in (attestation.get("issues") or [])
+        )
+
     integrity_valid = bool(
         schema_valid
         and pack_hash_matches
@@ -12646,6 +12658,7 @@ def verify_campaign_evidence_pack(
         integrity_valid
         and (anchor_valid is not False)
         and (campaign_match is not False)
+        and (attestation.get("valid") is not False)
     )
 
     return {
@@ -12659,6 +12672,7 @@ def verify_campaign_evidence_pack(
         "observed_schema": pack.get("schema"),
         "campaign_match": campaign_match,
         "campaign_id": pack.get("campaign_id"),
+        "attestation": attestation,
         "pack_sha256": {
             "computed": computed_pack_sha256,
             "manifest": manifest_pack_sha256 or None,
@@ -12786,14 +12800,23 @@ def campaign_evidence_pack(db: Session, campaign: Campaign, reference: datetime 
     }
     pack_sha256 = _evidence_sha256(content)
 
+    manifest = {
+        "hash_algorithm": "SHA-256",
+        "pack_sha256": pack_sha256,
+        "section_hashes": section_hashes,
+        "verification": "Recompute SHA-256 over UTF-8 JSON with sorted keys and compact separators for the pack without the manifest field.",
+    }
+    attestation = build_evidence_attestation(
+        pack_sha256=pack_sha256,
+        campaign_id=campaign.id,
+        generated_at=content["generated_at"],
+    )
+    if attestation:
+        manifest["attestation"] = attestation
+
     return {
         **content,
-        "manifest": {
-            "hash_algorithm": "SHA-256",
-            "pack_sha256": pack_sha256,
-            "section_hashes": section_hashes,
-            "verification": "Recompute SHA-256 over UTF-8 JSON with sorted keys and compact separators for the pack without the manifest field.",
-        },
+        "manifest": manifest,
     }
 
 
@@ -12824,6 +12847,8 @@ def verify_evidence_pack(
             "anchored": result["anchored"],
             "anchor_valid": result["anchor_valid"],
             "computed_pack_sha256": result["pack_sha256"]["computed"],
+            "attestation_status": result["attestation"]["status"],
+            "attestation_key_id": result["attestation"].get("key_id"),
             "issues": result["issues"][:20],
         },
     )
@@ -12839,7 +12864,15 @@ def get_campaign_evidence_pack(
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="campaign not found")
-    pack = campaign_evidence_pack(db, campaign)
+    try:
+        pack = campaign_evidence_pack(db, campaign)
+    except EvidenceAttestationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"evidence attestation unavailable: {str(exc)[:300]}",
+        ) from exc
+    attestation = pack["manifest"].get("attestation") or {}
+    statement = attestation.get("statement") if isinstance(attestation, dict) else {}
     audit(
         db,
         principal["actor"],
@@ -12849,6 +12882,9 @@ def get_campaign_evidence_pack(
         {
             "pack_sha256": pack["manifest"]["pack_sha256"],
             "summary": pack["summary"],
+            "signed": bool(attestation),
+            "signing_key_id": statement.get("signing_key_id") if isinstance(statement, dict) else None,
+            "issuer": statement.get("issuer") if isinstance(statement, dict) else None,
         },
     )
     return pack
