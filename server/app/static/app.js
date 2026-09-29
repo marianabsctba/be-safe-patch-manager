@@ -3503,6 +3503,7 @@ function campaignCard(campaign, compact = false) {
         <button class="secondary" onclick="showCampaignCollisions('${campaign.id}')">Collision Guard</button>
         <button class="secondary" onclick="showPatchApplicability('${campaign.id}')">Applicability</button>
         <button class="secondary" onclick="showMaintenanceRisk('${campaign.id}')">Reboot Plan</button>
+        <button class="secondary" onclick="showScopeDrift('${campaign.id}')">Scope Drift</button>
         <button class="secondary" onclick="showCampaignBlastRadius('${campaign.id}')">Impact Preview</button>
         <button class="secondary" onclick="downloadCampaignEvidencePack('${campaign.id}')">Evidence Pack</button>
         <button class="secondary" onclick="showCampaignFailureIntel('${campaign.id}')">Failure Intel</button>
@@ -3917,6 +3918,67 @@ window.downloadCampaignEvidencePack = async (campaignId) => {
     toast('Evidence Pack: ' + error.message, 'fail');
   }
 };
+window.showScopeDrift = async (campaignId) => {
+  try {
+    const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/scope-drift');
+    const s = report.summary || {};
+    const lines = [
+      'Scope Drift Guard',
+      '',
+      'Estado: ' + String(report.state || '-').toUpperCase(),
+      'Bloqueia deploy: ' + (report.blocking ? 'SIM' : 'não'),
+      'Baseline: ' + String(s.baseline_assets || 0) + ' asset(s)',
+      'Atual: ' + String(s.current_assets || 0) + ' asset(s)',
+      'Entraram: +' + String(s.added || 0),
+      'Saíram: -' + String(s.removed || 0),
+      'Contexto alterado: ' + String(s.context_changed || 0),
+    ];
+
+    if (report.baseline) {
+      lines.push(
+        '',
+        'Baseline capturado: ' + String(report.baseline.captured_at || '-'),
+        'SHA baseline: ' + String(report.baseline.sha256 || '-').slice(0, 16)
+      );
+    }
+
+    if ((report.added || []).length) {
+      lines.push('', 'Entraram no escopo depois da criação:');
+      report.added.slice(0, 15).forEach((item) => lines.push(
+        '+ ' + String(item.hostname || item.agent_id || '-') +
+        ' · ' + String(item.business_service || 'sem service') +
+        ' · ' + String(item.environment || 'sem environment')
+      ));
+    }
+
+    if ((report.removed || []).length) {
+      lines.push('', 'Saíram do escopo depois da criação:');
+      report.removed.slice(0, 15).forEach((item) => lines.push(
+        '- ' + String(item.hostname || item.agent_id || '-') +
+        ' · ' + String(item.business_service || 'sem service') +
+        ' · ' + String(item.environment || 'sem environment')
+      ));
+    }
+
+    if ((report.context_changed || []).length) {
+      lines.push('', 'Mudanças de contexto:');
+      report.context_changed.slice(0, 12).forEach((item) => {
+        const fields = Object.keys(item.changes || {});
+        lines.push(
+          String(item.hostname || item.agent_id || '-') +
+          ' · ' + (fields.length ? fields.join(', ') : 'contexto alterado')
+        );
+      });
+    }
+
+    lines.push('', String(report.note || ''));
+    alert(lines.join('\n'));
+  } catch (error) {
+    toast('Scope Drift: ' + error.message, 'fail');
+  }
+};
+
+
 window.showMaintenanceRisk = async (campaignId) => {
   try {
     const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/maintenance-risk');
