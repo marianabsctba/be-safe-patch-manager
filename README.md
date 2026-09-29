@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.42.0  
+> **Control plane:** v0.43.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -216,6 +216,52 @@ Patch Guard       PASSED  -> BLOCKED
 ```
 
 Toda tentativa de deploy também registra automaticamente um snapshot de preflight, preservando a evidência da condição operacional observada naquele momento.
+
+## Blast Radius Intelligence
+
+Antes do deploy, a campanha calcula o impacto operacional real do ring usando o contexto que já existe no Asset Risk.
+
+O Change Impact Preview mostra:
+
+- tamanho total do escopo;
+- quantidade real do ring;
+- percentual do escopo atingido;
+- ativos com criticidade 4–5;
+- ativos com exposição externa;
+- ativos acima do risk appetite;
+- ativos críticos sem owner;
+- quantidade de business services, owners e environments;
+- Asset Risk médio e máximo;
+- maior concentração por business service;
+- distribuição por business service, owner e environment;
+- lista dos ativos mais sensíveis do ring.
+
+Estados possíveis:
+
+- `contained`;
+- `concentrated`;
+- `critical_scope`.
+
+As regras são explícitas:
+
+```text
+critical asset
+=> criticality >= 4
+
+service concentration
+=> mesmo business service >= 50% de um ring com >= 3 assets
+
+critical_scope
+=> ativo crítico sem owner
+   OU
+=> ativos críticos presentes e ring >= 50% do escopo total
+```
+
+O Blast Radius não cria score composto oculto. Ele reutiliza criticidade, exposição, risk appetite e Business Context já existentes.
+
+Quando o impacto é concentrado ou crítico, o Preflight gera warning explicável. Por padrão isso não bloqueia o deploy: a intenção é dar contexto humano antes da mudança, não inventar uma política que o cliente não configurou.
+
+O Evidence Pack também passa a incluir o snapshot completo de Blast Radius.
 
 ## Patch Failure Intelligence
 
@@ -779,7 +825,7 @@ O pipeline valida:
 - JavaScript;
 - pre-publish security check.
 
-A v0.42 passa pelo pipeline completo antes de ser considerada pronta.
+A v0.43 passa pelo pipeline completo antes de ser considerada pronta.
 
 ## Estrutura
 
