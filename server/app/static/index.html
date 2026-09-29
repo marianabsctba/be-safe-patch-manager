@@ -419,6 +419,9 @@
                 <div>
                   <button class="text-button" onclick="runAutoPatch(false)" data-min-role="operator">Avaliar</button>
                   <button class="text-button" onclick="runAutoPatch(true)" data-min-role="operator">Criar drafts elegíveis</button>
+                  <button class="text-button" onclick="exportPatchPolicyBundle()">Export Policy Bundle</button>
+                  <button class="text-button" onclick="dryRunPatchPolicyBundleFile()">Dry-run Bundle</button>
+                  <button class="text-button" onclick="importPatchPolicyBundleFile()" data-min-role="admin">Import Bundle</button>
                 </div>
               </div>
               <div id="autoPatchStats" class="integration-details"></div>
