@@ -577,6 +577,24 @@ class PatchBlockRule(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class PatchPolicyDefinition(Base):
+    __tablename__ = "patch_policy_definitions"
+    __table_args__ = (
+        UniqueConstraint("name", "version", name="uq_patch_policy_name_version"),
+    )
+
+    id = Column(String(36), primary_key=True)
+    name = Column(String(128), nullable=False, index=True)
+    version = Column(Integer, nullable=False, default=1)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    priority = Column(Integer, nullable=False, default=100, index=True)
+    policy_json = Column(Text, nullable=False)
+    policy_sha256 = Column(String(64), nullable=False, index=True)
+    supersedes_id = Column(String(36), ForeignKey("patch_policy_definitions.id"), nullable=True, index=True)
+    created_by = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+
 class TenantSettings(Base):
     __tablename__ = "tenant_settings"
 
