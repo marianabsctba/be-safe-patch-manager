@@ -196,12 +196,13 @@ def capture_campaigns(page):
           '<article class="campaign">'+
             '<div class="campaign-head"><div><strong>Windows Setembro - Tier0</strong><small>KB5072198 · 20 endpoints · plano 5 → 10 → 30 → 100</small></div><span class="badge ok">SOAK</span></div>'+
             '<div class="campaign-meta"><span>ring atual 30%</span><span>success 96%</span><span>regression STABLE</span></div>'+
-            '<div class="campaign-actions"><button class="secondary">Preflight</button><button class="secondary">Impact Preview</button><button class="secondary">Evidence Pack</button><button class="secondary">Failure Intel</button><button class="secondary">Safe Promotion</button></div>'+
+            '<div class="campaign-actions"><button class="secondary">Preflight</button><button class="secondary">Smart Canary</button><button class="secondary">Impact Preview</button><button class="secondary">Evidence Pack</button><button class="secondary">Failure Intel</button><button class="secondary">Safe Promotion</button></div>'+
             '<div class="preflight-box">'+
               '<div class="preflight-head"><div><p class="section-kicker">CHANGE READINESS</p><h4>Campaign Preflight</h4></div><div class="preflight-head-actions"><span class="badge warn">REVIEW</span><span class="badge fail">DRIFT DEGRADED</span></div></div>'+
               '<div class="preflight-summary"><span>Checks <strong>9</strong></span><span>Passed <strong>7</strong></span><span>Warnings <strong>2</strong></span><span>Blockers <strong>0</strong></span><span>Ring <strong>1/20</strong></span><span>Último snapshot <strong>07:42</strong></span></div>'+
               '<div class="preflight-drift"><strong>Drift desde o último snapshot</strong><span class="drift-row degraded"><b>Agent freshness</b> PASSED → WARNING · 1 endpoint sem heartbeat recente</span></div>'+
               '<div class="preflight-grid">'+
+              '<article class="preflight-check ok"><div class="preflight-check-head"><strong>Smart Canary</strong><span class="badge ok">PASSED</span></div><p>3 endpoints · 3 services · 2 environments · 3 OS segments</p></article>'+
               '<article class="preflight-check warn"><div class="preflight-check-head"><strong>Blast Radius</strong><span class="badge warn">WARNING</span></div><p>2 ativos críticos · identity concentra 66.7% do ring · 1 crítico sem owner</p></article>'+
               '<article class="preflight-check fail"><div class="preflight-check-head"><strong>Local Regression Intelligence</strong><span class="badge fail">BLOCKED</span></div><p>KB5072198 · Windows Server 2022 · 3 falhas / 100% falha efetiva</p><small class="text-danger">Bloqueia deploy</small></article>'+
                 '<article class="preflight-check ok"><div class="preflight-check-head"><strong>Target scope</strong><span class="badge ok">PASSED</span></div><p>20 endpoints elegíveis; 1 no ring inicial de 5%</p></article>'+
