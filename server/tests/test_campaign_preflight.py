@@ -292,6 +292,76 @@ def test_campaign_evidence_pack_hashes_sections_and_pack(db):
     assert pack["manifest"]["pack_sha256"] == main._evidence_sha256(content)
 
 
+def test_campaign_evidence_pack_verifier_accepts_valid_pack(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+    main.deploy_campaign(
+        campaign.id,
+        principal={"actor": "user:operator", "role": "operator"},
+        db=db,
+    )
+    pack = main.campaign_evidence_pack(db, campaign)
+
+    result = main.verify_campaign_evidence_pack(
+        pack,
+        expected_pack_sha256=pack["manifest"]["pack_sha256"],
+        expected_campaign_id=campaign.id,
+    )
+
+    assert result["valid"] is True
+    assert result["integrity_valid"] is True
+    assert result["anchor_valid"] is True
+    assert result["campaign_match"] is True
+    assert result["summary"]["issues"] == 0
+
+
+def test_campaign_evidence_pack_verifier_detects_section_tampering(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+    pack = main.campaign_evidence_pack(db, campaign)
+    pack["sections"]["campaign"]["name"] = "tampered"
+
+    result = main.verify_campaign_evidence_pack(pack)
+
+    assert result["valid"] is False
+    assert result["integrity_valid"] is False
+    assert result["sections"]["campaign"]["matches"] is False
+    assert "pack SHA-256 does not match manifest" in result["issues"]
+
+
+def test_campaign_evidence_pack_external_anchor_detects_rehashed_tampering(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+    pack = main.campaign_evidence_pack(db, campaign)
+    trusted = pack["manifest"]["pack_sha256"]
+
+    pack["sections"]["campaign"]["name"] = "tampered-and-rehashed"
+    new_section_hash = main._evidence_sha256(pack["sections"]["campaign"])
+    pack["section_hashes"]["campaign"] = new_section_hash
+    pack["manifest"]["section_hashes"]["campaign"] = new_section_hash
+    content = {key: value for key, value in pack.items() if key != "manifest"}
+    pack["manifest"]["pack_sha256"] = main._evidence_sha256(content)
+
+    result = main.verify_campaign_evidence_pack(pack, expected_pack_sha256=trusted)
+
+    assert result["integrity_valid"] is True
+    assert result["anchor_valid"] is False
+    assert result["valid"] is False
+    assert "computed pack SHA-256 does not match trusted external anchor" in result["issues"]
+
+
+def test_campaign_evidence_pack_verifier_checks_campaign_binding(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+    pack = main.campaign_evidence_pack(db, campaign)
+
+    result = main.verify_campaign_evidence_pack(pack, expected_campaign_id="different-campaign")
+
+    assert result["integrity_valid"] is True
+    assert result["campaign_match"] is False
+    assert result["valid"] is False
+
+
 def test_campaign_evidence_pack_preserves_job_health_and_rollback_evidence(db):
     make_agent(db)
     campaign = make_campaign(db)
