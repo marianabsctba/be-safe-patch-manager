@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.49.0  
+> **Control plane:** v0.50.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -573,6 +573,20 @@ A exportação possui um manifest verificável com:
 Os hashes usam JSON UTF-8 canonicalizado com chaves ordenadas e separadores compactos.
 
 Isso permite detectar alteração em qualquer parte da evidência exportada sem depender de um score ou interpretação proprietária.
+
+### Evidence Pack Integrity Verifier
+
+A console também valida Evidence Packs já exportados. O fluxo recalcula:
+
+- SHA-256 do pacote completo, sem o campo `manifest`;
+- SHA-256 de cada seção;
+- consistência entre `section_hashes` e o manifest;
+- schema do pacote;
+- vínculo com a campanha esperada.
+
+Opcionalmente, o operador informa um **SHA-256 confiável registrado fora do próprio arquivo**. Essa âncora externa é importante porque hashes internos comprovam autoconsistência, mas não impedem que alguém altere o JSON e recalcule todos os hashes. Com uma cópia confiável do digest original, a plataforma detecta também esse cenário.
+
+Cada validação feita pela API é registrada no audit trail com resultado, digest calculado e divergências encontradas.
 
 ## Progressive Rollout Governance
 
