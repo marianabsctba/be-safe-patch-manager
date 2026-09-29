@@ -1,4 +1,5 @@
 name: README screenshots
+# Captures the current product UI for README documentation.
 
 on:
   push:
