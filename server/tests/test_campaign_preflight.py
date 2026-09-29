@@ -272,6 +272,7 @@ def test_campaign_evidence_pack_hashes_sections_and_pack(db):
     assert set(pack["manifest"]["section_hashes"]) == {
         "campaign",
         "approval",
+        "blast_radius",
         "preflight_snapshots",
         "ring_decisions",
         "jobs",
