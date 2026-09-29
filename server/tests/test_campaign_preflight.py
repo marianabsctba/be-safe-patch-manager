@@ -274,6 +274,7 @@ def test_campaign_evidence_pack_hashes_sections_and_pack(db):
         "approval",
         "blast_radius",
         "ring_plan",
+        "change_collisions",
         "preflight_snapshots",
         "ring_decisions",
         "jobs",
@@ -599,4 +600,134 @@ def test_evidence_pack_includes_ring_plan_hash(db):
     assert "ring_plan" in pack["sections"]
     assert pack["manifest"]["section_hashes"]["ring_plan"] == main._evidence_sha256(
         pack["sections"]["ring_plan"]
+    )
+
+
+
+def test_change_collision_blocks_same_endpoint_with_active_job(db):
+    agent = make_agent(db, "collision-agent")
+    current = make_campaign(db, payload_extra={"target_agent_ids": [agent.id]})
+    other = Campaign(
+        id="other-campaign",
+        name="Other rollout",
+        target_os="windows",
+        target_tag="tier0",
+        ring_percent=100,
+        action="install_updates",
+        payload_json=main.dump({"target_agent_ids": [agent.id], "packages": ["KB1"]}),
+        status="deployed",
+    )
+    db.add(other)
+    db.flush()
+    db.add(PatchJob(
+        id="other-job",
+        campaign_id=other.id,
+        agent_id=agent.id,
+        action="install_updates",
+        payload_json=main.dump({"packages": ["KB1"]}),
+        status="running",
+    ))
+    db.commit()
+
+    report = main.campaign_change_collisions(db, current)
+    assert report["state"] == "direct_collision"
+    assert report["blocking"] is True
+    assert report["summary"]["direct_asset_collisions"] == 1
+
+    preflight = main.campaign_preflight(db, current)
+    collision = check(preflight, "change_collision")
+    assert collision["status"] == "blocked"
+    assert collision["blocking"] is True
+
+
+def test_change_collision_warns_on_shared_service_environment(db):
+    a1 = make_agent(db, "current-agent")
+    a2 = make_agent(db, "other-agent")
+    db.add_all([
+        AssetRiskProfile(
+            agent_id=a1.id, criticality_override=2, external_override=False,
+            owner="identity-owner", business_service="identity", environment="prod",
+            updated_by="user:admin",
+        ),
+        AssetRiskProfile(
+            agent_id=a2.id, criticality_override=2, external_override=False,
+            owner="identity-owner", business_service="identity", environment="prod",
+            updated_by="user:admin",
+        ),
+    ])
+    db.commit()
+
+    current = make_campaign(db, payload_extra={"target_agent_ids": [a1.id]})
+    other = Campaign(
+        id="other-context-campaign",
+        name="Concurrent identity rollout",
+        target_os="windows",
+        target_tag="tier0",
+        ring_percent=100,
+        action="install_updates",
+        payload_json=main.dump({"target_agent_ids": [a2.id], "packages": ["KB2"]}),
+        status="deployed",
+    )
+    db.add(other)
+    db.flush()
+    db.add(PatchJob(
+        id="other-context-job",
+        campaign_id=other.id,
+        agent_id=a2.id,
+        action="install_updates",
+        payload_json=main.dump({"packages": ["KB2"]}),
+        status="running",
+    ))
+    db.commit()
+
+    report = main.campaign_change_collisions(db, current)
+    assert report["state"] == "context_collision"
+    assert report["blocking"] is False
+    assert report["summary"]["shared_service_environment_segments"] == 1
+
+    preflight = main.campaign_preflight(db, current)
+    collision = check(preflight, "change_collision")
+    assert collision["status"] == "warning"
+    assert collision["blocking"] is False
+
+
+def test_change_collision_ignores_terminal_jobs(db):
+    agent = make_agent(db, "terminal-agent")
+    current = make_campaign(db, payload_extra={"target_agent_ids": [agent.id]})
+    other = Campaign(
+        id="terminal-campaign",
+        name="Completed rollout",
+        target_os="windows",
+        target_tag="tier0",
+        ring_percent=100,
+        action="install_updates",
+        payload_json=main.dump({"target_agent_ids": [agent.id], "packages": ["KB3"]}),
+        status="deployed",
+    )
+    db.add(other)
+    db.flush()
+    db.add(PatchJob(
+        id="terminal-job",
+        campaign_id=other.id,
+        agent_id=agent.id,
+        action="install_updates",
+        payload_json=main.dump({"packages": ["KB3"]}),
+        status="success",
+    ))
+    db.commit()
+
+    report = main.campaign_change_collisions(db, current)
+    assert report["state"] == "clear"
+    assert report["blocking"] is False
+
+
+def test_evidence_pack_includes_change_collision_hash(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+
+    pack = main.campaign_evidence_pack(db, campaign)
+
+    assert "change_collisions" in pack["sections"]
+    assert pack["manifest"]["section_hashes"]["change_collisions"] == main._evidence_sha256(
+        pack["sections"]["change_collisions"]
     )
