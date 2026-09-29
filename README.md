@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.56.0  
+> **Control plane:** v0.57.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -176,6 +176,22 @@ Assim o histórico consegue responder:
 > por que esta patch estava READY ontem?
 
 sem recalcular a resposta com os dados de hoje.
+
+## Exception Governance
+
+A v0.57 adiciona governança sobre as próprias exceções:
+
+- waiver de campanha normal: 1 admin;
+- waiver quando o escopo contém Tier 0 ou criticidade >=4: **2 admins distintos**;
+- owner obrigatório da exceção;
+- máximo de 3 waivers ativos por campanha;
+- waiver pendente não suprime enforcement;
+- alerta lógico de expiração em até 24h;
+- relatório `/api/admin/reports/policy-waiver-governance`;
+- ranking de policies mais excepcionadas e owners com mais waivers;
+- relatório separa active, pending, expired e revoked.
+
+A segunda aprovação também é auditada. O solicitante não pode ser o segundo aprovador.
 
 ## Policy Exceptions / Waivers
 
