@@ -276,6 +276,7 @@ def test_campaign_evidence_pack_hashes_sections_and_pack(db):
         "ring_plan",
         "change_collisions",
         "patch_applicability",
+        "maintenance_risk",
         "preflight_snapshots",
         "ring_decisions",
         "jobs",
@@ -806,3 +807,143 @@ def test_applicability_guard_blocks_when_all_targets_report_not_missing(db):
     assert guard["state"] == "blocked"
     assert guard["patches"][0]["state"] == "not_applicable"
     assert guard["patches"][0]["missing_assets"] == 0
+
+
+
+def test_maintenance_risk_blocks_required_reboot_when_policy_forbids_it(db):
+    agent = make_agent(db, "reboot-block")
+    entry = PatchCatalogEntry(
+        patch_key="kb-reboot-required",
+        patch_ref="KB-REBOOT-REQUIRED",
+        vendor="microsoft",
+        product="windows",
+        title="Reboot required update",
+        severity="high",
+        reboot_behavior="reboot required",
+        supersedes_json=main.dump([]),
+        source="test",
+    )
+    db.add(entry)
+    db.flush()
+    db.add(PatchApplicability(
+        id="app-reboot-required",
+        patch_key=entry.patch_key,
+        agent_id=agent.id,
+        status="missing",
+        evidence="agent_scan",
+    ))
+    db.commit()
+
+    campaign = make_campaign(db, payload_extra={
+        "packages": ["KB-REBOOT-REQUIRED"],
+        "target_agent_ids": [agent.id],
+        "reboot_policy": "never",
+    })
+
+    risk = main.campaign_maintenance_risk(db, campaign)
+
+    assert risk["state"] == "blocked"
+    assert risk["blocking"] is True
+    assert risk["summary"]["reboot_required_by_patch"] == 1
+    assert any(item["key"] == "reboot_policy_conflict" for item in risk["signals"])
+
+    preflight = main.campaign_preflight(db, campaign)
+    maintenance = check(preflight, "maintenance_reboot")
+    assert maintenance["status"] == "blocked"
+    assert maintenance["blocking"] is True
+
+
+def test_maintenance_risk_warns_for_preexisting_reboot_on_critical_asset(db):
+    agent = make_agent(db, "critical-reboot")
+    agent.reboot_required = True
+    db.add(AssetRiskProfile(
+        agent_id=agent.id,
+        criticality_override=5,
+        external_override=False,
+        owner="identity-owner",
+        business_service="identity",
+        environment="prod",
+        updated_by="user:admin",
+    ))
+    db.commit()
+
+    campaign = make_campaign(db, payload_extra={
+        "packages": [],
+        "target_agent_ids": [agent.id],
+        "reboot_policy": "if_required",
+    })
+    campaign.allow_reboot = True
+    db.commit()
+
+    risk = main.campaign_maintenance_risk(db, campaign)
+
+    assert risk["state"] == "review"
+    assert risk["blocking"] is False
+    assert risk["summary"]["reboot_required_now"] == 1
+    assert risk["summary"]["critical_assets_exposed"] == 1
+
+
+def test_maintenance_risk_uses_observed_history_for_window_capacity(db):
+    agent = make_agent(db, "window-agent")
+    entry = PatchCatalogEntry(
+        patch_key="kb-window",
+        patch_ref="KB-WINDOW",
+        vendor="microsoft",
+        product="windows",
+        title="Window test update",
+        severity="high",
+        reboot_behavior="none",
+        supersedes_json=main.dump([]),
+        source="test",
+    )
+    db.add(entry)
+    db.flush()
+    db.add(PatchApplicability(
+        id="app-window",
+        patch_key=entry.patch_key,
+        agent_id=agent.id,
+        status="missing",
+        evidence="agent_scan",
+    ))
+    for index, minutes in enumerate([70, 80, 90], start=1):
+        started = datetime.now(timezone.utc) - timedelta(days=index, minutes=minutes)
+        db.add(PatchJob(
+            id=f"history-{index}",
+            campaign_id=None,
+            agent_id=agent.id,
+            action="install_updates",
+            payload_json=main.dump({"packages": ["KB-WINDOW"]}),
+            status="success",
+            started_at=started,
+            finished_at=started + timedelta(minutes=minutes),
+        ))
+    db.commit()
+
+    campaign = make_campaign(db, payload_extra={
+        "packages": ["KB-WINDOW"],
+        "target_agent_ids": [agent.id],
+        "reboot_policy": "if_required",
+        "maintenance_start": "01:00",
+        "maintenance_end": "02:00",
+    })
+    campaign.allow_reboot = True
+    db.commit()
+
+    risk = main.campaign_maintenance_risk(db, campaign)
+
+    assert risk["summary"]["history_samples"] == 3
+    assert risk["summary"]["window_minutes"] == 60
+    assert risk["summary"]["p95_duration_minutes"] == 90.0
+    assert any(item["key"] == "window_capacity" for item in risk["signals"])
+
+
+def test_evidence_pack_includes_maintenance_risk_hash(db):
+    make_agent(db)
+    campaign = make_campaign(db)
+
+    pack = main.campaign_evidence_pack(db, campaign)
+
+    assert "maintenance_risk" in pack["sections"]
+    assert pack["manifest"]["section_hashes"]["maintenance_risk"] == main._evidence_sha256(
+        pack["sections"]["maintenance_risk"]
+    )
