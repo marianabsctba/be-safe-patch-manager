@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
 from .models import AdminSession, AdminUser, Agent, AssetRiskAcceptance, AssetRiskPolicy, AssetRiskProfile, AssetRiskSnapshot, AssetRiskTreatment, AuditEvent, Campaign, CampaignApproval, CampaignApprovalVote, CampaignPreflightSnapshot, CampaignRingDecision, IntegrationState, TenantSettings, PatchJob, PatchBlockRule, PatchPolicyDefinition, PatchPolicyWaiver, PatchCatalogEntry, PatchApplicability, PatchMetadataEvidence, PatchFeedProvider, AutoPatchPolicy, AutoPatchEvaluation, PatchFreezeWindow, CampaignFreezeOverride, RemediationEvidence, RemediationProject, RemediationProjectSnapshot, RiskReductionGoal, VulnerabilityFinding, VulnerabilitySlaException
-from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, PatchPolicyCreate, PatchPolicyVersionCreate, PatchPolicySimulationRequest, PatchPolicyBundleRequest, PatchPolicyBundleImportRequest, PatchPolicyWaiverCreate, PatchPolicyWaiverRevoke, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, TenantSettingsUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
+from .schemas import AgentMtlsBindRequest, AgentUpdateActivationRequest, AgentUpdateQuarantineClearRequest, AgentUpdateRolloutCreate, AssetRiskAcceptanceCreate, AssetRiskAcceptanceRevoke, AssetRiskPolicyCreate, AssetRiskPolicyUpdate, AssetRiskProfileUpdate, AssetRiskSimulationRequest, AssetRiskTreatmentCreate, AssetRiskTreatmentUpdate, CampaignApprovalDecision, CampaignCreate, HeartbeatRequest, JobResultRequest, JobRetryRequest, LeaseRenewRequest, LoginRequest, PasswordChangeRequest, PatchCatalogLifecycleUpdate, PatchMetadataImportRequest, PatchFeedProviderCreate, PatchFeedProviderUpdate, AutoPatchPolicyCreate, AutoPatchPolicyUpdate, AutoPatchSimulationRequest, PatchFreezeWindowCreate, PatchFreezeWindowUpdate, CampaignFreezeOverrideCreate, CampaignFreezeOverrideRevoke, PatchBlockRuleCreate, PatchBlockRuleUpdate, PatchPolicyCreate, PatchPolicyVersionCreate, PatchPolicySimulationRequest, PatchPolicyBundleRequest, PatchPolicyBundleImportRequest, PatchPolicyWaiverCreate, PatchPolicyWaiverRevoke, PatchPolicyWaiverApprove, RegisterRequest, RegisterResponse, RemediationProjectCreate, RemediationProjectUpdate, RemediationRescanRequest, RingAdvance, RiskReductionGoalCreate, RiskReductionGoalUpdate, RollbackRequest, TagUpdate, TenantSettingsUpdate, UserCreateRequest, UserUpdateRequest, VulnerabilityImportRequest, VulnerabilitySlaExceptionCreate, VulnerabilitySlaExceptionRevoke, VulnerabilityStatusUpdate
 from .security import create_session, hash_token, new_token, password_hash, password_needs_rehash, password_verify, require_admin, require_enrollment, require_operator, require_viewer, revoke_session, validate_password_strength, validate_role, validate_username
 from .greenbone import fetch_findings as fetch_greenbone_findings
 from .greenbone import get_config as get_greenbone_config
@@ -34,7 +34,7 @@ from .evidence_attestation import EvidenceAttestationError, build_evidence_attes
 from .threat_intel import fetch_epss, fetch_kev, get_config as get_threat_intel_config, public_config as public_threat_intel_config
 from .patch_feed_adapters import PatchFeedAdapterError, fetch_patch_feed_records
 
-app = FastAPI(title="Be Safe Patch Manager", version="0.56.0")
+app = FastAPI(title="Be Safe Patch Manager", version="0.57.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -517,7 +517,12 @@ def serialize_sla_exception(item: VulnerabilitySlaException, reference: datetime
         "id": item.id,
         "finding_id": item.finding_id,
         "reason": item.reason,
+        "owner": item.owner,
+        "requested_by": item.requested_by,
         "approved_by": item.approved_by,
+        "second_approved_by": item.second_approved_by,
+        "required_approvals": item.required_approvals,
+        "status": item.status,
         "expires_at": expires_at.isoformat(),
         "revoked_at": revoked_at.isoformat() if revoked_at else None,
         "revoked_by": item.revoked_by,
@@ -7839,6 +7844,86 @@ def auto_patch_simulation(db: Session, policy: AutoPatchPolicy, patch_ref: str) 
     }
 
 
+def waiver_governance_for_campaign(campaign: Campaign) -> dict:
+    payload = load(campaign.payload_json, {})
+    baseline = payload.get("scope_baseline") if isinstance(payload.get("scope_baseline"), dict) else {}
+    assets = baseline.get("assets") if isinstance(baseline.get("assets"), list) else []
+    tier0 = 0
+    critical = 0
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        tags = {
+            str(tag).strip().lower().replace("_", "-")
+            for tag in (asset.get("tags") or [])
+            if str(tag).strip()
+        }
+        if "tier0" in tags or "tier-0" in tags:
+            tier0 += 1
+        if int(asset.get("criticality") or 0) >= 4:
+            critical += 1
+    high_impact = bool(tier0 or critical)
+    return {
+        "required_approvals": 2 if high_impact else 1,
+        "tier0_assets": tier0,
+        "critical_assets": critical,
+        "high_impact": high_impact,
+        "max_active_waivers": 3,
+    }
+
+
+def waiver_governance_report(db: Session, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    items = db.query(PatchPolicyWaiver).order_by(PatchPolicyWaiver.created_at.desc()).all()
+    active = []
+    expiring = []
+    by_policy = {}
+    by_owner = {}
+    for item in items:
+        serialized = serialize_patch_policy_waiver(item, reference)
+        if serialized["active"]:
+            active.append(serialized)
+            expires = item.expires_at if item.expires_at.tzinfo else item.expires_at.replace(tzinfo=timezone.utc)
+            if expires <= reference + timedelta(hours=24):
+                expiring.append(serialized)
+        policy = db.get(PatchPolicyDefinition, item.policy_id)
+        policy_name = policy.name if policy else item.policy_id
+        by_policy[policy_name] = by_policy.get(policy_name, 0) + 1
+        owner = item.owner or "unassigned"
+        by_owner[owner] = by_owner.get(owner, 0) + 1
+
+    top_policies = [
+        {"policy": name, "waivers": count}
+        for name, count in sorted(by_policy.items(), key=lambda x: (-x[1], x[0]))[:20]
+    ]
+    top_owners = [
+        {"owner": name, "waivers": count}
+        for name, count in sorted(by_owner.items(), key=lambda x: (-x[1], x[0]))[:20]
+    ]
+    pending = [serialize_patch_policy_waiver(item, reference) for item in items if item.status == "pending" and item.revoked_at is None]
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": {
+            "total": len(items),
+            "active": len(active),
+            "pending": len(pending),
+            "expiring_24h": len(expiring),
+            "revoked": sum(1 for item in items if item.revoked_at is not None),
+            "expired": sum(1 for item in items if serialize_patch_policy_waiver(item, reference)["expired"]),
+        },
+        "active": active[:200],
+        "pending": pending[:200],
+        "expiring_24h": expiring[:200],
+        "top_policies": top_policies,
+        "top_owners": top_owners,
+        "rules": {
+            "critical_dual_approval": "Tier 0 or criticality >=4 requires two distinct admins",
+            "active_limit_per_campaign": 3,
+            "expiration_warning_hours": 24,
+        },
+    }
+
+
 @app.get("/api/admin/campaigns/{campaign_id}/policy-waivers")
 def list_campaign_policy_waivers(campaign_id: str, _=Depends(require_viewer), db: Session = Depends(get_db)):
     if not db.get(Campaign, campaign_id):
@@ -7887,18 +7972,35 @@ def create_campaign_policy_waiver(
         PatchPolicyWaiver.campaign_id == campaign_id,
         PatchPolicyWaiver.policy_id == policy.id,
         PatchPolicyWaiver.revoked_at.is_(None),
+        PatchPolicyWaiver.status == "approved",
         PatchPolicyWaiver.expires_at > reference,
     ).first()
     if existing:
-        raise HTTPException(status_code=409, detail="active waiver already exists for this policy and campaign")
+        raise HTTPException(status_code=409, detail="active or pending waiver already exists for this policy and campaign")
 
+    governance = waiver_governance_for_campaign(campaign)
+    active_count = db.query(PatchPolicyWaiver).filter(
+        PatchPolicyWaiver.campaign_id == campaign_id,
+        PatchPolicyWaiver.revoked_at.is_(None),
+        PatchPolicyWaiver.status == "approved",
+        PatchPolicyWaiver.expires_at > reference,
+    ).count()
+    if active_count >= governance["max_active_waivers"]:
+        raise HTTPException(status_code=409, detail="campaign reached maximum active policy waivers")
+
+    required_approvals = int(governance["required_approvals"])
     waiver = PatchPolicyWaiver(
         id=str(uuid.uuid4()),
         campaign_id=campaign.id,
         policy_id=policy.id,
         policy_sha256=policy.policy_sha256,
         reason=body.reason.strip(),
+        owner=body.owner.strip(),
+        requested_by=principal["actor"],
         approved_by=principal["actor"],
+        second_approved_by="",
+        required_approvals=required_approvals,
+        status="pending" if required_approvals > 1 else "approved",
         expires_at=expires_at,
     )
     db.add(waiver)
@@ -7908,8 +8010,52 @@ def create_campaign_policy_waiver(
         "policy_name": policy.name,
         "policy_version": policy.version,
         "violations": evaluation["violations"],
+        "governance": governance,
     })
     return serialize_patch_policy_waiver(waiver)
+
+
+@app.post("/api/admin/policy-waivers/{waiver_id}/approve")
+def approve_policy_waiver(
+    waiver_id: str,
+    body: PatchPolicyWaiverApprove,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    waiver = db.get(PatchPolicyWaiver, waiver_id)
+    if not waiver:
+        raise HTTPException(status_code=404, detail="waiver not found")
+    if waiver.status != "pending":
+        raise HTTPException(status_code=409, detail=f"waiver is {waiver.status}")
+    if waiver.requested_by == principal["actor"] or waiver.approved_by == principal["actor"]:
+        raise HTTPException(status_code=409, detail="second approval must come from a distinct admin")
+    reference = now()
+    expires = waiver.expires_at if waiver.expires_at.tzinfo else waiver.expires_at.replace(tzinfo=timezone.utc)
+    if expires <= reference:
+        raise HTTPException(status_code=409, detail="waiver expired before second approval")
+
+    active_count = db.query(PatchPolicyWaiver).filter(
+        PatchPolicyWaiver.campaign_id == waiver.campaign_id,
+        PatchPolicyWaiver.revoked_at.is_(None),
+        PatchPolicyWaiver.status == "approved",
+        PatchPolicyWaiver.expires_at > reference,
+    ).count()
+    if active_count >= 3:
+        raise HTTPException(status_code=409, detail="campaign reached maximum active policy waivers")
+
+    waiver.second_approved_by = principal["actor"]
+    waiver.status = "approved"
+    db.commit()
+    audit(db, principal["actor"], "patch_policy.waiver.approved", "campaign", waiver.campaign_id, {
+        "waiver": serialize_patch_policy_waiver(waiver),
+        "reason": body.reason.strip(),
+    })
+    return serialize_patch_policy_waiver(waiver)
+
+
+@app.get("/api/admin/reports/policy-waiver-governance")
+def get_policy_waiver_governance(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    return waiver_governance_report(db)
 
 
 @app.post("/api/admin/policy-waivers/{waiver_id}/revoke")
@@ -12158,7 +12304,7 @@ def evaluate_patch_policy_document(campaign: Campaign, document: dict) -> dict:
 def serialize_patch_policy_waiver(item: PatchPolicyWaiver, reference: datetime | None = None) -> dict:
     reference = reference or now()
     expires_at = item.expires_at if item.expires_at.tzinfo else item.expires_at.replace(tzinfo=timezone.utc)
-    active = item.revoked_at is None and expires_at > reference
+    active = item.revoked_at is None and expires_at > reference and item.status == "approved"
     return {
         "id": item.id,
         "campaign_id": item.campaign_id,
