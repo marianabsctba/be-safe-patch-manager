@@ -1,6 +1,6 @@
 """Add immutable campaign preflight snapshots.
 
-Revision ID: 0030_campaign_preflight_snapshots
+Revision ID: 0030_campaign_preflight
 Revises: 0029_campaign_ring_decisions
 Create Date: 2026-09-29
 """
@@ -8,7 +8,7 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0030_campaign_preflight_snapshots"
+revision: str = "0030_campaign_preflight"
 down_revision: Union[str, None] = "0029_campaign_ring_decisions"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
