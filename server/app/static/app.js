@@ -1957,6 +1957,93 @@ window.toggleFreezeWindow = async (id, enabled) => {
 
 
 
+window.exportPatchPolicyBundle = async () => {
+  try {
+    const bundle = await api('/api/admin/patch-policies/bundle/export');
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'be-safe-patch-policy-bundle.json';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast('Policy Bundle exportado.');
+  } catch (error) {
+    toast('Policy Bundle: ' + error.message, 'fail');
+  }
+};
+
+async function readJsonFileFromPicker() {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.onchange = async () => {
+      try {
+        const file = input.files && input.files[0];
+        if (!file) return reject(new Error('nenhum arquivo selecionado'));
+        resolve(JSON.parse(await file.text()));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    input.click();
+  });
+}
+
+window.dryRunPatchPolicyBundleFile = async () => {
+  try {
+    const bundle = await readJsonFileFromPicker();
+    const result = await api('/api/admin/patch-policies/bundle/dry-run', {
+      method: 'POST',
+      body: JSON.stringify({ bundle }),
+    });
+    const summary = result.summary || {};
+    alert(
+      'Policy Bundle Dry-run\n\n' +
+      'SHA: ' + String(result.bundle_sha256 || '').slice(0, 16) + '…\n' +
+      'Policies: ' + String(result.policy_count || 0) + '\n' +
+      'Campanhas: ' + String(summary.campaigns || 0) + '\n' +
+      'Novos bloqueios: ' + String(summary.newly_blocked || 0) + '\n' +
+      'Resolvidos: ' + String(summary.resolved || 0) + '\n' +
+      'Ainda bloqueados: ' + String(summary.still_blocked || 0) + '\n' +
+      'Matching alterado: ' + String(summary.matching_changed || 0)
+    );
+  } catch (error) {
+    toast('Policy Bundle dry-run: ' + error.message, 'fail');
+  }
+};
+
+window.importPatchPolicyBundleFile = async () => {
+  if (!requireRole('admin', 'Somente admin pode importar Policy Bundles.')) return;
+  try {
+    const bundle = await readJsonFileFromPicker();
+    const preview = await api('/api/admin/patch-policies/bundle/dry-run', {
+      method: 'POST',
+      body: JSON.stringify({ bundle }),
+    });
+    const s = preview.summary || {};
+    if (!confirm(
+      'Importar Policy Bundle?\n\n' +
+      'Novos bloqueios: ' + String(s.newly_blocked || 0) + '\n' +
+      'Resolvidos: ' + String(s.resolved || 0) + '\n' +
+      'Matching alterado: ' + String(s.matching_changed || 0)
+    )) return;
+
+    const result = await api('/api/admin/patch-policies/bundle/import', {
+      method: 'POST',
+      body: JSON.stringify({ bundle }),
+    });
+    toast('Policy Bundle importado: ' + String((result.created || []).length) + ' nova(s) versão(ões).');
+    await load();
+  } catch (error) {
+    toast('Policy Bundle import: ' + error.message, 'fail');
+  }
+};
+
+
 function renderAutoPatch() {
   const report = state.autoPatch || {};
   const summary = report.summary || {};
