@@ -4084,6 +4084,27 @@ window.verifyCampaignEvidencePackFile = async (campaignId) => {
   input.click();
 };
 
+window.createPolicyWaiver = async (campaignId, policyId) => {
+  if (!requireRole('admin', 'Somente admin pode aprovar waiver de policy.')) return;
+  const reason = prompt('Motivo do waiver (mín. 10 caracteres):');
+  if (!reason) return;
+  const hoursRaw = prompt('Validade em horas (1 a 720):', '6');
+  const hours = Math.max(1, Math.min(720, Number(hoursRaw || 0)));
+  if (!Number.isFinite(hours) || hours < 1) return toast('Validade inválida.', 'fail');
+  const expiresAt = new Date(Date.now() + hours * 3600000).toISOString();
+  try {
+    await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/policy-waivers', {
+      method: 'POST',
+      body: JSON.stringify({ policy_id: policyId, reason, expires_at: expiresAt }),
+    });
+    toast('Waiver aprovado e auditado.');
+    await showCampaignPolicyAsCode(campaignId);
+  } catch (error) {
+    toast('Policy waiver: ' + error.message, 'fail');
+  }
+};
+
+
 window.showCampaignPolicyAsCode = async (campaignId) => {
   try {
     const report = await api('/api/admin/campaigns/' + encodeURIComponent(campaignId) + '/policy-as-code');
@@ -4091,9 +4112,13 @@ window.showCampaignPolicyAsCode = async (campaignId) => {
     if (!box) return;
     const rows = (report.evaluations || []).map((item) => {
       const state = !item.matched ? badge('N/A', 'muted-badge') : item.compliant ? badge('COMPLIANT', 'ok') : badge('VIOLATION', 'fail');
-      const violations = (item.violations || []).map((v) => v.key + ': ' + String(v.actual) + ' -> ' + String(v.expected)).join(' · ');
+      const violations = (item.violations || []).map((v) => (v.waived ? '[WAIVED] ' : '') + v.key + ': ' + String(v.actual) + ' -> ' + String(v.expected)).join(' · ');
+      const waiver = item.waiver;
+      const waiveAction = (!item.compliant && !waiver && roleAtLeast('admin'))
+        ? '<br><button class="row-action" onclick="createPolicyWaiver(\'' + esc(campaignId) + '\',\'' + esc(item.policy_id) + '\')">Criar waiver</button>'
+        : waiver ? '<br><small class="muted">waiver até ' + esc(when(waiver.expires_at)) + '</small>' : '';
       return '<tr><td><strong>' + esc(item.name) + '</strong><br><small>v' + esc(item.version) + '</small></td>' +
-        '<td>' + state + '</td><td><small>' + esc(violations || 'sem violações') + '</small></td>' +
+        '<td>' + state + '</td><td><small>' + esc(violations || 'sem violações') + '</small>' + waiveAction + '</td>' +
         '<td><code>' + esc((item.policy_sha256 || '').slice(0, 12)) + '…</code></td></tr>';
     }).join('');
     box.hidden = false;
