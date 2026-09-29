@@ -3,7 +3,7 @@
 Patch management **agent-based para Windows e Linux** com inventário, patch intelligence, priorização por risco, campanhas governadas, rollout progressivo, health gates, soak, regression intelligence, rollback protegido e evidência operacional.
 
 > **Status:** MVP / laboratório.  
-> **Control plane:** v0.51.0  
+> **Control plane:** v0.52.0  
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
@@ -176,6 +176,23 @@ Assim o histórico consegue responder:
 > por que esta patch estava READY ontem?
 
 sem recalcular a resposta com os dados de hoje.
+
+## CAB / Change Authority
+
+O Approval Gate evoluiu para uma camada explícita de **Change Authority**.
+
+Regras padrão:
+
+- campanhas comuns continuam sem aprovação, salvo quando a política ou operador exigir;
+- quando aprovação é exigida em escopo normal, é necessária 1 aprovação administrativa;
+- campanhas de instalação que atinjam ativo com criticidade 4–5 ou tag Tier 0 exigem automaticamente **2 aprovadores distintos**;
+- o solicitante da campanha não pode aprovar nem rejeitar a própria mudança;
+- o mesmo ator não pode votar duas vezes;
+- qualquer rejeição encerra o gate como `rejected`;
+- cada voto guarda ator, decisão, motivo e timestamp;
+- o Preflight mostra `aprovadas / necessárias` e bloqueia enquanto o quorum não for atingido.
+
+A decisão de exigir dupla aprovação é baseada em regras visíveis do escopo, não em score oculto.
 
 ## Campaign Preflight / Change Readiness
 
