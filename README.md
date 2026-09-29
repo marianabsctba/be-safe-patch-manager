@@ -7,9 +7,9 @@ Patch management **agent-based para Windows e Linux** com inventário, patch int
 > **Agente:** v0.16.0  
 > A base já executa patching real, mas ainda exige validação em laboratório antes de uso em produção.
 
-![Be Safe Patch Manager — Visão geral](docs/images/dashboard-overview.svg)
+![Be Safe Patch Manager — Visão geral](docs/screenshots/01-dashboard-overview.png)
 
-> As imagens deste README são renders fiéis dos componentes e labels da interface real da `main`, preenchidos com dados demonstrativos para mostrar o produto em uso.
+> As capturas deste README são geradas automaticamente a partir do front-end atual da `main`, com dados demonstrativos apenas para preencher a interface. Assim, menu, componentes, formulários, labels e estilos acompanham o produto real.
 
 ## Visão geral
 
@@ -85,7 +85,7 @@ O Patch Feed Orchestrator mantém:
 
 ## Auto Patch Policy Engine
 
-![Auto Patch Policy Engine](docs/images/auto-patch-policy.svg)
+![Risk Workbench e Auto Patch Policy Engine](docs/screenshots/02-risk-workbench.png)
 
 Policies podem operar em:
 
@@ -162,7 +162,7 @@ sem recalcular a resposta com os dados de hoje.
 
 ## Progressive Rollout Governance
 
-![Progressive Rollout Governance](docs/images/secure-rollout-flow.svg)
+![Progressive Rollout Governance](docs/screenshots/03-campaign-governance.png)
 
 Cada campanha pode carregar um plano próprio, por exemplo:
 
@@ -255,7 +255,7 @@ Cada deploy inicial e cada promoção de ring ficam registrados com:
 
 ## Risk-Based Remediation
 
-![Risk-Based Remediation](docs/images/risk-reduction-features.svg)
+![Risk-Based Remediation](docs/screenshots/02-risk-workbench.png)
 
 A camada de risco inclui:
 
@@ -296,7 +296,7 @@ A referência completa do modelo de risco está em [docs/risk-model.md](docs/ris
 
 ## Execuções, Health Gate e Rollback
 
-![Execuções e Health Gate](docs/images/dashboard-executions.svg)
+![Execuções e Health Gate](docs/screenshots/04-executions-health-gate.png)
 
 O agente pode coletar baseline imediatamente antes do patch e comparar depois:
 
