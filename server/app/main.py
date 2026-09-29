@@ -1970,35 +1970,6 @@ def choose_preferred_replacement(
         for key in graph_item.get("leaf_replacement_keys", [])
         if key in entries_by_key
     ]
-    if change_risk["blocking"]:
-        add_check(
-            "change_risk",
-            "Change Risk Engine",
-            "blocked",
-            (
-                f"risco operacional {change_risk['level'].upper()} ({change_risk['score']}/100); "
-                f"controles ausentes: {', '.join(change_risk['missing_controls'])}"
-            ),
-            blocking=True,
-            details=change_risk,
-        )
-    elif change_risk["level"] in {"high", "critical", "moderate"}:
-        add_check(
-            "change_risk",
-            "Change Risk Engine",
-            "warning",
-            f"risco operacional {change_risk['level'].upper()} ({change_risk['score']}/100)",
-            details=change_risk,
-        )
-    else:
-        add_check(
-            "change_risk",
-            "Change Risk Engine",
-            "passed",
-            f"risco operacional LOW ({change_risk['score']}/100)",
-            details=change_risk,
-        )
-
     if not candidates:
         return None
     candidates.sort(key=lambda candidate: (
@@ -11877,6 +11848,35 @@ def campaign_preflight(
     maintenance_risk = campaign_maintenance_risk(db, campaign, reference)
     scope_drift = campaign_scope_drift(db, campaign, reference)
     change_risk = campaign_change_risk(db, campaign, reference)
+
+    if change_risk["blocking"]:
+        add_check(
+            "change_risk",
+            "Change Risk Engine",
+            "blocked",
+            (
+                f"risco operacional {change_risk['level'].upper()} ({change_risk['score']}/100); "
+                f"controles ausentes: {', '.join(change_risk['missing_controls'])}"
+            ),
+            blocking=True,
+            details=change_risk,
+        )
+    elif change_risk["level"] in {"high", "critical", "moderate"}:
+        add_check(
+            "change_risk",
+            "Change Risk Engine",
+            "warning",
+            f"risco operacional {change_risk['level'].upper()} ({change_risk['score']}/100)",
+            details=change_risk,
+        )
+    else:
+        add_check(
+            "change_risk",
+            "Change Risk Engine",
+            "passed",
+            f"risco operacional LOW ({change_risk['score']}/100)",
+            details=change_risk,
+        )
 
     if not candidates:
         add_check(
