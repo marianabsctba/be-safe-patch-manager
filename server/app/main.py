@@ -7881,43 +7881,73 @@ def _campaign_business_services(campaign: Campaign) -> set[str]:
     }
 
 
-def exception_budget_usage(db: Session, budget: ExceptionBudget, reference: datetime | None = None) -> dict:
-    reference = reference or now()
+def _exception_budget_usage_context(
+    db: Session,
+    reference: datetime,
+    months: int = 1,
+) -> dict:
+    """Fetch the waiver cohort once and calculate owner/service totals in memory.
+
+    Monthly budgets intentionally charge a waiver to its creation month and
+    reserve its authorized duration in that month. Revoked waivers do not
+    consume the current budget (historical totals follow the same convention).
+    """
     month_start, month_end = _month_bounds(reference)
-    items = db.query(PatchPolicyWaiver).filter(
-        PatchPolicyWaiver.created_at >= month_start,
+    since = month_start
+    for _ in range(months - 1):
+        since = (since - timedelta(days=1)).replace(day=1)
+    waivers = db.query(PatchPolicyWaiver).filter(
+        PatchPolicyWaiver.created_at >= since,
         PatchPolicyWaiver.created_at < month_end,
         PatchPolicyWaiver.revoked_at.is_(None),
     ).all()
+    campaign_ids = {w.campaign_id for w in waivers}
+    campaigns = db.query(Campaign).filter(Campaign.id.in_(campaign_ids)).all() if campaign_ids else []
+    services = {c.id: _campaign_business_services(c) for c in campaigns}
+    owner_totals = {}
+    service_totals = {}
+    for waiver in waivers:
+        created = waiver.created_at if waiver.created_at.tzinfo else waiver.created_at.replace(tzinfo=timezone.utc)
+        expiry = waiver.expires_at if waiver.expires_at.tzinfo else waiver.expires_at.replace(tzinfo=timezone.utc)
+        start, end = _month_bounds(created)
+        hours = max(0.0, (min(expiry, end) - max(created, start)).total_seconds() / 3600.0)
+        period = start.strftime("%Y-%m")
+        owner_key = (period, (waiver.owner or "").strip().lower())
+        for totals, key in [(owner_totals, owner_key)] + [
+            (service_totals, (period, svc)) for svc in services.get(waiver.campaign_id, ())
+        ]:
+            entry = totals.setdefault(key, {"waivers": 0, "hours": 0.0})
+            entry["waivers"] += 1
+            entry["hours"] += hours
+    return {"owner": owner_totals, "business_service": service_totals}
 
-    matched = []
-    hours = 0.0
-    for item in items:
-        if budget.scope_type == "owner":
-            applies = item.owner.strip().lower() == budget.scope_value.strip().lower()
-        else:
-            campaign = db.get(Campaign, item.campaign_id)
-            applies = bool(campaign and budget.scope_value.strip().lower() in _campaign_business_services(campaign))
-        if not applies:
-            continue
-        matched.append(item)
-        created = item.created_at if item.created_at.tzinfo else item.created_at.replace(tzinfo=timezone.utc)
-        expires = item.expires_at if item.expires_at.tzinfo else item.expires_at.replace(tzinfo=timezone.utc)
-        start = max(created, month_start)
-        end = min(expires, month_end)
-        if end > start:
-            hours += (end - start).total_seconds() / 3600.0
 
+def _exception_budget_usage_from_context(
+    budget: ExceptionBudget, context: dict, reference: datetime,
+) -> dict:
+    start, end = _month_bounds(reference)
+    entry = context.get(budget.scope_type, {}).get(
+        (start.strftime("%Y-%m"), budget.scope_value.strip().lower()),
+        {"waivers": 0, "hours": 0.0},
+    )
+    count, hours = entry["waivers"], entry["hours"]
     return {
         "budget": serialize_exception_budget(budget),
-        "period": {"start": month_start.isoformat(), "end": month_end.isoformat()},
-        "used_waivers": len(matched),
+        "period": {"start": start.isoformat(), "end": end.isoformat()},
+        "used_waivers": count,
         "used_hours": round(hours, 2),
-        "remaining_waivers": max(0, int(budget.max_waivers_month) - len(matched)),
+        "remaining_waivers": max(0, int(budget.max_waivers_month) - count),
         "remaining_hours": round(max(0.0, float(budget.max_hours_month) - hours), 2),
-        "waiver_budget_exhausted": len(matched) >= int(budget.max_waivers_month),
+        "waiver_budget_exhausted": count >= int(budget.max_waivers_month),
         "hours_budget_exhausted": hours >= float(budget.max_hours_month),
     }
+
+
+def exception_budget_usage(db: Session, budget: ExceptionBudget, reference: datetime | None = None) -> dict:
+    reference = reference or now()
+    return _exception_budget_usage_from_context(
+        budget, _exception_budget_usage_context(db, reference), reference
+    )
 
 
 def exception_budget_assessment(
@@ -7928,54 +7958,62 @@ def exception_budget_assessment(
     reference: datetime | None = None,
 ) -> dict:
     reference = reference or now()
-    month_start, month_end = _month_bounds(reference)
+    _, month_end = _month_bounds(reference)
     services = _campaign_business_services(campaign)
+    owner_normalized = owner.strip().lower()
     budgets = db.query(ExceptionBudget).filter(
         ExceptionBudget.enabled.is_(True)
     ).order_by(ExceptionBudget.name.asc()).all()
-
+    matched = [
+        budget for budget in budgets
+        if (budget.scope_type == "owner" and budget.scope_value.strip().lower() == owner_normalized)
+        or (budget.scope_type == "business_service" and budget.scope_value.strip().lower() in services)
+    ]
+    if not matched:
+        return {
+            "matched_budgets": 0, "exceeded_budgets": 0,
+            "requires_escalation": False, "budgets": [],
+            "note": "No active exception budget applies.",
+        }
+    context = _exception_budget_usage_context(db, reference)
     matching = []
-    for budget in budgets:
-        if budget.scope_type == "owner":
-            applies = budget.scope_value.strip().lower() == owner.strip().lower()
-        else:
-            applies = budget.scope_value.strip().lower() in services
-        if not applies:
-            continue
-
-        usage = exception_budget_usage(db, budget, reference)
+    for budget in matched:
+        usage = _exception_budget_usage_from_context(budget, context, reference)
         request_end = min(expires_at, month_end)
         proposed_hours = max(0.0, (request_end - reference).total_seconds() / 3600.0)
-        projected_waivers = int(usage["used_waivers"]) + 1
-        projected_hours = float(usage["used_hours"]) + proposed_hours
+        projected_waivers = usage["used_waivers"] + 1
+        # Use unrounded hours for comparison so boundary values cannot be
+        # allowed by the presentation rounding of the usage report.
+        period = _month_bounds(reference)[0].strftime("%Y-%m")
+        exact_hours = context[budget.scope_type].get(
+            (period, budget.scope_value.strip().lower()), {"hours": 0.0}
+        )["hours"]
+        projected_hours = exact_hours + proposed_hours
         exceeded = (
-            projected_waivers > int(budget.max_waivers_month)
+            projected_waivers > budget.max_waivers_month
             or projected_hours > float(budget.max_hours_month)
         )
         matching.append({
-            **usage,
-            "proposed_hours": round(proposed_hours, 2),
+            **usage, "proposed_hours": round(proposed_hours, 2),
             "projected_waivers": projected_waivers,
-            "projected_hours": round(projected_hours, 2),
-            "exceeded": exceeded,
+            "projected_hours": round(projected_hours, 2), "exceeded": exceeded,
         })
-
-    exceeded = [item for item in matching if item["exceeded"]]
     return {
         "matched_budgets": len(matching),
-        "exceeded_budgets": len(exceeded),
-        "requires_escalation": bool(exceeded),
+        "exceeded_budgets": sum(1 for item in matching if item["exceeded"]),
+        "requires_escalation": any(item["exceeded"] for item in matching),
         "budgets": matching,
-        "note": "Exceeding an exception budget escalates the waiver to dual approval instead of silently bypassing governance.",
+        "note": "Exceeding an exception budget escalates the waiver to dual approval.",
     }
 
 
 def exception_budget_report(db: Session, reference: datetime | None = None) -> dict:
     reference = reference or now()
     budgets = db.query(ExceptionBudget).order_by(ExceptionBudget.name.asc()).all()
+    context = _exception_budget_usage_context(db, reference) if budgets else None
     items = []
     for budget in budgets:
-        usage = exception_budget_usage(db, budget, reference)
+        usage = _exception_budget_usage_from_context(budget, context, reference)
         pct_waivers = round((usage["used_waivers"] / max(1, budget.max_waivers_month)) * 100, 1)
         pct_hours = round((usage["used_hours"] / max(1, budget.max_hours_month)) * 100, 1)
         items.append({
@@ -7994,6 +8032,45 @@ def exception_budget_report(db: Session, reference: datetime | None = None) -> d
             "healthy": sum(1 for item in items if item["state"] == "healthy"),
         },
         "items": items,
+    }
+
+
+def exception_budget_trend(db: Session, reference: datetime | None = None, months: int = 6) -> dict:
+    if not 1 <= months <= 12:
+        raise HTTPException(status_code=400, detail="months must be between 1 and 12")
+    reference = reference or now()
+    budgets = db.query(ExceptionBudget).order_by(ExceptionBudget.name.asc()).all()
+    context = _exception_budget_usage_context(db, reference, months) if budgets else None
+    current_start, _ = _month_bounds(reference)
+    periods = [current_start]
+    for _ in range(months - 1):
+        periods.insert(0, (periods[0] - timedelta(days=1)).replace(day=1))
+    rows = []
+    for budget in budgets:
+        monthly = [
+            _exception_budget_usage_from_context(budget, context, period)
+            for period in periods
+        ]
+        months_used = sum(1 for x in monthly if x["used_waivers"])
+        rows.append({
+            "budget": serialize_exception_budget(budget),
+            "months_with_exceptions": months_used,
+            "recurring": months_used >= 2,
+            "monthly": [{
+                "period": item["period"]["start"][:7],
+                "used_waivers": item["used_waivers"],
+                "used_hours": item["used_hours"],
+                "utilization_percent": round(max(
+                    100 * item["used_waivers"] / max(1, budget.max_waivers_month),
+                    100 * item["used_hours"] / max(1, budget.max_hours_month),
+                ), 1),
+            } for item in monthly],
+        })
+    return {
+        "generated_at": reference.isoformat(),
+        "months": months,
+        "budgets": rows,
+        "note": "Historical cohort is based on waiver creation month; revoked waivers are excluded.",
     }
 
 
@@ -8135,6 +8212,11 @@ def update_exception_budget(budget_id: str, body: ExceptionBudgetUpdate, princip
 @app.get("/api/admin/reports/exception-budgets")
 def get_exception_budget_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return exception_budget_report(db)
+
+
+@app.get("/api/admin/reports/exception-budget-trend")
+def get_exception_budget_trend(months: int = 6, _=Depends(require_viewer), db: Session = Depends(get_db)):
+    return exception_budget_trend(db, months=months)
 
 
 @app.get("/api/admin/campaigns/{campaign_id}/policy-waivers")
