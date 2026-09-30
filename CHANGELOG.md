@@ -1,3 +1,10 @@
+## Unreleased — Planejamento de remediação dos hotspots
+
+- Nova visualização somente leitura correlacionando hotspots e a fila de remediação existente por agent_id exato.
+- Evidencia referências de patch por finding, candidatos indicados pela fila e lacunas de correlação sem presumir aplicabilidade.
+- Limites explícitos de 100 hotspots e 500 findings exibidos; informa contagens omitidas.
+- Testes de ordenação, correlação, limites e escaping integrados ao CI.
+
 ## Unreleased — Triagem operacional dos hotspots
 
 - Nova visão somente leitura para cruzar até 100 endpoints do relatório de exposição com o inventário carregado, exclusivamente pelo agent_id.
