@@ -435,3 +435,33 @@ def test_exception_budget_report_tracks_usage(db):
     assert report["summary"]["budgets"] == 1
     assert report["items"][0]["used_waivers"] == 1
     assert report["items"][0]["used_hours"] > 0
+
+
+def test_pending_duplicate_waiver_is_rejected(db):
+    item = campaign(db, ring=10)
+    normalized = main.validate_patch_policy_document(document(max_ring=5))
+    policy = PatchPolicyDefinition(
+        id="pending-dup-policy", name="Tier0 duplicate protection", version=1,
+        enabled=True, priority=100, policy_json=main.dump(normalized),
+        policy_sha256=main._evidence_sha256(normalized), created_by="admin",
+    )
+    db.add(policy)
+    db.commit()
+
+    from app.schemas import PatchPolicyWaiverCreate
+    from fastapi import HTTPException
+    from datetime import datetime, timedelta, timezone
+    body = PatchPolicyWaiverCreate(
+        policy_id=policy.id, owner="iam-owner",
+        reason="Approved testing of duplicate pending policy exception",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=6),
+    )
+    first = main.create_campaign_policy_waiver(
+        item.id, body, principal={"actor": "user:admin1", "role": "admin"}, db=db,
+    )
+    assert first["status"] == "pending"
+    with pytest.raises(HTTPException) as exc:
+        main.create_campaign_policy_waiver(
+            item.id, body, principal={"actor": "user:admin1", "role": "admin"}, db=db,
+        )
+    assert exc.value.status_code == 409
