@@ -35,6 +35,12 @@ O botão **Triagem operacional** cruza, em modo somente leitura, os até 100 end
 
 Findings sem agente e datas inválidas permanecem visíveis; IDs de relatório ausentes no inventário são explicitamente sinalizados para reconciliação. Dados de patch são independentes das vulnerabilidades e não demonstram que uma atualização específica corrige um finding. Essa visão não executa patches, não cria campanhas e não atribui pontuações artificiais. Testes: `node --test scripts/test-exposure-triage.cjs`.
 
+### Planejamento evidenciado de remediação
+
+O botão **Planejar remediação** cruza os até **100 hotspots** retornados pela API com a **fila de remediação já carregada no console**, exclusivamente pelo `agent_id` e preservando a ordenação original da fila. Exibe até **500 findings correlacionados**, referências de patch explicitamente registradas em cada finding, ações de triagem e candidatos indicados pela fila. Mostra separadamente findings sem agente, findings fora dos 100 hotspots, ausência de referência e truncamento de resultados.
+
+Este recurso é **somente leitura**: uma referência de patch registrada não demonstra aplicabilidade ou eficácia. Candidatos não equivalem a campanhas autorizadas. A execução ainda exige verificação de aplicabilidade, bloqueios, pré-flight, janelas, aprovações e evidência de rescan. Contagens por endpoint no plano são relativas aos findings exibidos, não ao universo total de exposição. Testes: `node --test scripts/test-exposure-remediation-plan.cjs`.
+
 ## Observed Exposure Time
 
 O console inclui **Exposure Time** no Risk Program Overview. O endpoint `GET /api/admin/reports/vulnerability-exposure` fornece duração observada agregada por severidade e estado, incluindo findings abertos por mais de 30/90 dias, findings corrigidos com `resolved_at` e exposições abertas sem correlação com agente.
