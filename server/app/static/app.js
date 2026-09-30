@@ -2034,6 +2034,43 @@ window.showExceptionBudgets = async () => {
   }
 };
 
+window.showExposureHotspots = async () => {
+  const box = document.getElementById('observedExposureReport');
+  if (!box) return;
+  box.hidden = false;
+  box.textContent = 'Calculando concentração de exposição…';
+  try {
+    const report = await api('/api/admin/reports/vulnerability-exposure-hotspots?limit=20');
+    const s = report.summary || {};
+    const unmapped = s.unmapped_open_findings || {};
+    const rows = (report.items || []).map((item) =>
+      '<tr><td><strong>' + esc(item.hostname || 'Sem hostname') +
+      '</strong><br><small><code>' + esc(item.agent_id) + '</code></small></td>' +
+      '<td>' + esc(item.critical) + '</td><td>' + esc(item.high) + '</td>' +
+      '<td>' + esc(item.older_30d) + '</td><td>' + esc(item.older_90d) + '</td>' +
+      '<td>' + esc(item.observed_finding_hours) + '</td></tr>'
+    ).join('');
+    box.innerHTML =
+      '<div class="preflight-header"><strong>Exposure Hotspots · concentração por endpoint</strong></div>' +
+      '<div class="campaign-stats"><span>Ativos correlacionados <strong>' +
+      esc(s.mapped_assets_with_open_findings || 0) + '</strong></span>' +
+      '<span>Findings sem correlação <strong>' + esc(unmapped.findings || 0) +
+      '</strong></span><span>Críticos sem correlação <strong>' +
+      esc(unmapped.critical || 0) + '</strong></span>' +
+      '<span>Datas inválidas <strong>' + esc(s.invalid_timestamps || 0) +
+      '</strong></span></div>' +
+      (rows ? '<div class="table-wrap"><table><thead><tr><th>Endpoint</th>' +
+      '<th>Críticos</th><th>Altos</th><th>&gt;30d</th><th>&gt;90d</th>' +
+      '<th>Horas-finding</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+      : '<p>Nenhum endpoint com findings abertos correlacionados.</p>') +
+      '<p><small class="muted">Ordenação explícita: críticos, altos, &gt;90 dias, &gt;30 dias e horas-finding. Sem score artificial. Apenas findings abertos e observados; itens sem agente aparecem separadamente.</small></p>';
+  } catch (error) {
+    box.textContent = 'Falha ao carregar concentração: ' + error.message;
+    toast('Exposure Hotspots: ' + error.message, 'fail');
+  }
+};
+
+
 window.showObservedExposure = async () => {
   const box = document.getElementById('observedExposureReport');
   if (!box) return;
