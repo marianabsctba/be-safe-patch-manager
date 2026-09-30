@@ -181,6 +181,9 @@ jobs:
           cd server
           timeout 360s pytest -q tests
 
+      - name: Safe exposure CSV export tests
+        run: node --test scripts/test-exposure-hotspots-export.cjs
+
       - name: Docker Compose validation
         env:
           ENROLLMENT_TOKEN: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
