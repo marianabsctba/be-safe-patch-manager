@@ -17,6 +17,12 @@ Patch management **agent-based para Windows e Linux** com inventário, patch int
 
 > As capturas deste README são geradas automaticamente a partir do front-end atual da `main`, com dados demonstrativos apenas para preencher a interface. Assim, menu, componentes, formulários, labels e estilos acompanham o produto real.
 
+## Observed Exposure Time
+
+O console inclui **Exposure Time** no Risk Program Overview. O endpoint `GET /api/admin/reports/vulnerability-exposure` fornece duração observada agregada por severidade e estado, incluindo findings abertos por mais de 30/90 dias, findings corrigidos com `resolved_at` e exposições abertas sem correlação com agente.
+
+A leitura utiliza projeção de colunas e processamento incremental (`yield_per(1000)`), sem carregar relacionamentos ORM de cada finding. Os indicadores são expressos em **finding-hours**, não representam quantidade de ativos/CVEs únicos e **não** reconstroem períodos sem observação ou múltiplos ciclos de reabertura. Aceitação de risco não equivale a correção. Não há novo agente nem deploy automático.
+
 ## Tenant Localization
 
 O console possui configuração de idioma persistente por tenant com três locales suportados:
