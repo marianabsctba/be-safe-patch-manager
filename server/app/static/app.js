@@ -2034,6 +2034,37 @@ window.showExceptionBudgets = async () => {
   }
 };
 
+window.showExceptionBudgetTrend = async () => {
+  const box = document.getElementById('exceptionGovernanceReport');
+  if (!box) return;
+  try {
+    const data = await api('/api/admin/reports/exception-budget-trend?months=6');
+    const rows = (data.budgets || []).map((entry) => {
+      const budget = entry.budget || {};
+      const history = (entry.monthly || []).map((item) =>
+        '<div><strong>' + esc(item.period) + '</strong>: ' +
+        esc(item.used_waivers) + ' exceções / ' + esc(item.used_hours) +
+        'h (' + esc(item.utilization_percent) + '%)</div>'
+      ).join('');
+      return '<tr><td><strong>' + esc(budget.name || '-') +
+        '</strong><br><small>' + esc(budget.scope_type || '') + ': ' +
+        esc(budget.scope_value || '') + '</small></td><td>' +
+        (entry.recurring ? badge('RECORRENTE', 'warn') : badge('PONTUAL', 'ok')) +
+        '<br><small>' + esc(entry.months_with_exceptions) +
+        ' mês(es) com exceções</small></td><td>' + history + '</td></tr>';
+    }).join('');
+    box.innerHTML = '<div class="preflight-header"><strong>Dívida de exceções / últimos 6 meses</strong></div>' +
+      '<p><small class="muted">Consumo por mês de criação do waiver; exceções revogadas não são incluídas.</small></p>' +
+      (rows ? '<div class="table-wrap"><table><thead><tr><th>Orçamento</th>' +
+        '<th>Reincidência</th><th>Histórico mensal</th></tr></thead><tbody>' +
+        rows + '</tbody></table></div>' : '<p>Não há orçamentos cadastrados.</p>');
+  } catch (error) {
+    box.textContent = 'Falha ao carregar tendência: ' + error.message;
+    toast('Histórico de exceções: ' + error.message, 'fail');
+  }
+};
+
+
 window.createExceptionBudgetFromConsole = async () => {
   if (!requireRole('admin', 'Somente admin pode cadastrar orçamentos.')) return;
   const name = prompt('Nome do orçamento:');
