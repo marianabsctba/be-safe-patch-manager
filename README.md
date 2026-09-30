@@ -189,6 +189,12 @@ O console exibe painéis de **Exception Governance** e **Exception Budget** junt
 
 Administradores podem cadastrar novos orçamentos por owner ou business service e realizar a segunda aprovação de waivers pendentes diretamente no console. A API continua aplicando RBAC e validações, independentemente dos controles do navegador.
 
+## Exception Debt / histórico e escalabilidade
+
+Relatórios de Exception Budget agora reutilizam **uma única coleta de waivers** por janela e carregam os serviços das campanhas em lote; o número de consultas não cresce com o número de budgets. O cálculo usa a duração exata (sem arredondamento) para decidir escalonamento.
+
+`GET /api/admin/reports/exception-budget-trend?months=6` retorna até 12 meses de histórico por orçamento: quantidade mensal, horas mensais, utilização e reincidência (`recurring` quando há exceções em 2 ou mais meses). Os dados históricos seguem o critério explícito de **mês de criação do waiver** e desconsideram waivers revogados; não são uma contagem de horas efetivamente transcorridas.
+
 ## Exception Budget / Risk Budget
 
 A v0.58 adiciona orçamento mensal de exceções por `owner` ou `business_service`.
