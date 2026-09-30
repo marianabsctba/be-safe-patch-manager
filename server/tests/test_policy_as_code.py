@@ -483,11 +483,11 @@ def test_exception_budget_report_uses_bounded_queries(db):
     def count(conn, cursor, statement, parameters, context, executemany):
         if statement.lstrip().upper().startswith("SELECT"):
             sql.append(statement)
-    event.listen(main.engine, "before_cursor_execute", count)
+    event.listen(engine, "before_cursor_execute", count)
     try:
         report = main.exception_budget_report(db)
     finally:
-        event.remove(main.engine, "before_cursor_execute", count)
+        event.remove(engine, "before_cursor_execute", count)
     assert report["summary"]["budgets"] == 30
     assert len(sql) <= 3
 
