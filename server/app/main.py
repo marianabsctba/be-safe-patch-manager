@@ -3263,6 +3263,81 @@ def vulnerability_sla_report(db: Session, reference: datetime | None = None) -> 
     }
 
 
+def vulnerability_exposure_report(db: Session, reference: datetime | None = None) -> dict:
+    """Observation-based exposure duration; no inferred historical snapshots.
+
+    Uses a narrow projection, not hydrated ORM relationships, to keep memory
+    bounded per record and avoid per-finding queries.
+    """
+    reference = reference or now()
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    rows = db.query(
+        VulnerabilityFinding.severity, VulnerabilityFinding.status,
+        VulnerabilityFinding.first_seen, VulnerabilityFinding.resolved_at,
+        VulnerabilityFinding.agent_id,
+    ).yield_per(1000)
+    summary = {
+        "observed_findings": 0, "currently_open": 0, "verified_resolved": 0,
+        "other_status": 0, "open_over_30_days": 0, "open_over_90_days": 0,
+        "managed_open": 0, "unmapped_open": 0,
+        "open_exposure_hours": 0.0, "resolved_exposure_hours": 0.0,
+        "invalid_timestamps": 0,
+    }
+    by_severity = {}
+    for severity, status, first_seen, resolved_at, agent_id in rows:
+        severity = str(severity or "unknown").strip().lower()
+        group = by_severity.setdefault(severity, {
+            "currently_open": 0, "verified_resolved": 0, "other_status": 0,
+            "open_exposure_hours": 0.0, "resolved_exposure_hours": 0.0,
+        })
+        summary["observed_findings"] += 1
+        if status == "open":
+            key, duration_end = "currently_open", reference
+            if agent_id:
+                summary["managed_open"] += 1
+            else:
+                summary["unmapped_open"] += 1
+        elif status == "remediated" and resolved_at is not None:
+            key, duration_end = "verified_resolved", resolved_at
+        else:
+            key, duration_end = "other_status", None
+        summary[key] += 1
+        group[key] += 1
+        if duration_end is None or first_seen is None:
+            if key != "other_status":
+                summary["invalid_timestamps"] += 1
+            continue
+        start = first_seen if first_seen.tzinfo else first_seen.replace(tzinfo=timezone.utc)
+        end = duration_end if duration_end.tzinfo else duration_end.replace(tzinfo=timezone.utc)
+        if end < start or end > reference:
+            summary["invalid_timestamps"] += 1
+            continue
+        hours = (end - start).total_seconds() / 3600.0
+        metric = "open_exposure_hours" if key == "currently_open" else "resolved_exposure_hours"
+        summary[metric] += hours
+        group[metric] += hours
+        if key == "currently_open":
+            summary["open_over_30_days"] += int(hours >= 720)
+            summary["open_over_90_days"] += int(hours >= 2160)
+    # Round presentation only, never use rounded values for governance.
+    for section in [summary, *by_severity.values()]:
+        for metric in ("open_exposure_hours", "resolved_exposure_hours"):
+            section[metric] = round(section[metric], 2)
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": summary,
+        "by_severity": dict(sorted(by_severity.items())),
+        "methodology": {
+            "unit": "finding-hours",
+            "open": "reference minus first_seen",
+            "resolved": "resolved_at minus first_seen, only status=remediated",
+            "exclusions": "accepted risk and other non-open/non-remediated states do not count as remediation",
+            "limitations": "Observation-based only; reopened findings, monitoring gaps and time outside scanner coverage are not reconstructible. Counts are findings, not unique CVEs or assets.",
+        },
+    }
+
+
 ASSET_CRITICALITY_TAGS = {
     "tier0": 5,
     "mission-critical": 5,
@@ -8826,6 +8901,11 @@ def remediation_queue(
 @app.get("/api/admin/reports/vulnerability-sla")
 def admin_vulnerability_sla_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return vulnerability_sla_report(db)
+
+
+@app.get("/api/admin/reports/vulnerability-exposure")
+def get_vulnerability_exposure_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
+    return vulnerability_exposure_report(db)
 
 
 @app.post("/api/admin/agents/{agent_id}/risk-simulation")
