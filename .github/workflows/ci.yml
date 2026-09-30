@@ -182,7 +182,7 @@ jobs:
           timeout 360s pytest -q tests
 
       - name: Safe exposure CSV export tests
-        run: node --test scripts/test-exposure-hotspots-export.cjs scripts/test-exposure-triage.cjs
+        run: node --test scripts/test-exposure-hotspots-export.cjs scripts/test-exposure-triage.cjs scripts/test-exposure-remediation-plan.cjs
 
       - name: Docker Compose validation
         env:
