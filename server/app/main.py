@@ -8185,7 +8185,7 @@ def create_campaign_policy_waiver(
         PatchPolicyWaiver.campaign_id == campaign_id,
         PatchPolicyWaiver.policy_id == policy.id,
         PatchPolicyWaiver.revoked_at.is_(None),
-        PatchPolicyWaiver.status == "approved",
+        PatchPolicyWaiver.status.in_(("approved", "pending")),
         PatchPolicyWaiver.expires_at > reference,
     ).first()
     if existing:
@@ -12534,7 +12534,12 @@ def serialize_patch_policy_waiver(item: PatchPolicyWaiver, reference: datetime |
         "policy_id": item.policy_id,
         "policy_sha256": item.policy_sha256,
         "reason": item.reason,
+        "owner": item.owner,
+        "requested_by": item.requested_by,
         "approved_by": item.approved_by,
+        "second_approved_by": item.second_approved_by,
+        "required_approvals": item.required_approvals,
+        "status": item.status,
         "expires_at": item.expires_at.isoformat() if item.expires_at else None,
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "revoked_at": item.revoked_at.isoformat() if item.revoked_at else None,
@@ -12550,6 +12555,7 @@ def active_policy_waivers_for_campaign(db: Session, campaign_id: str, reference:
     items = db.query(PatchPolicyWaiver).filter(
         PatchPolicyWaiver.campaign_id == campaign_id,
         PatchPolicyWaiver.revoked_at.is_(None),
+        PatchPolicyWaiver.status == "approved",
         PatchPolicyWaiver.expires_at > reference,
     ).all()
     return {item.policy_id: item for item in items}
