@@ -29,6 +29,12 @@ O botão **Exportar Hotspots CSV** consulta o mesmo relatório autenticado, soli
 
 **Escopo:** os 100 endpoints são somente os primeiros do ranking; os totais agregados continuam refletindo todos os findings abertos analisados. Não é um inventário completo nem uma comprovação de remediação. Campos de texto são protegidos contra execução de fórmulas ao abrir o CSV em planilhas. O teste `node --test scripts/test-exposure-hotspots-export.cjs` integra o CI.
 
+### Triagem operacional dos hotspots
+
+O botão **Triagem operacional** cruza, em modo somente leitura, os até 100 endpoints do relatório autenticado de exposição com o inventário de agentes já carregado no console, usando **exclusivamente o ID do agente** (nunca coincidência de hostname/IP). Mostra disponibilidade aproximada do heartbeat (janela de 15 minutos), pendências de patch informadas pelo agente e reboot, com botão **Abrir endpoint** apenas se houver uma identidade correspondente no inventário carregado.
+
+Findings sem agente e datas inválidas permanecem visíveis; IDs de relatório ausentes no inventário são explicitamente sinalizados para reconciliação. Dados de patch são independentes das vulnerabilidades e não demonstram que uma atualização específica corrige um finding. Essa visão não executa patches, não cria campanhas e não atribui pontuações artificiais. Testes: `node --test scripts/test-exposure-triage.cjs`.
+
 ## Observed Exposure Time
 
 O console inclui **Exposure Time** no Risk Program Overview. O endpoint `GET /api/admin/reports/vulnerability-exposure` fornece duração observada agregada por severidade e estado, incluindo findings abertos por mais de 30/90 dias, findings corrigidos com `resolved_at` e exposições abertas sem correlação com agente.
