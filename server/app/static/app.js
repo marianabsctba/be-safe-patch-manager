@@ -2034,6 +2034,41 @@ window.showExceptionBudgets = async () => {
   }
 };
 
+window.showObservedExposure = async () => {
+  const box = document.getElementById('observedExposureReport');
+  if (!box) return;
+  box.hidden = false;
+  box.textContent = 'Calculando exposição observada…';
+  try {
+    const result = await api('/api/admin/reports/vulnerability-exposure');
+    const s = result.summary || {};
+    const severities = Object.entries(result.by_severity || {}).map(([level, row]) =>
+      '<tr><td>' + esc(level) + '</td><td>' + esc(row.currently_open) +
+      '</td><td>' + esc(row.open_exposure_hours) +
+      '</td><td>' + esc(row.verified_resolved) +
+      '</td><td>' + esc(row.resolved_exposure_hours) + '</td></tr>'
+    ).join('');
+    box.innerHTML =
+      '<div class="preflight-header"><strong>Exposure Time · duração observada</strong></div>' +
+      '<div class="campaign-stats"><span>Em aberto <strong>' + esc(s.currently_open || 0) +
+      '</strong></span><span>Abertas &gt;30 dias <strong>' + esc(s.open_over_30_days || 0) +
+      '</strong></span><span>Abertas &gt;90 dias <strong>' + esc(s.open_over_90_days || 0) +
+      '</strong></span><span>Horas-finding abertas <strong>' + esc(s.open_exposure_hours || 0) +
+      '</strong></span><span>Correções comprovadas <strong>' + esc(s.verified_resolved || 0) +
+      '</strong></span><span>Sem correlação com agente <strong>' + esc(s.unmapped_open || 0) +
+      '</strong></span></div>' +
+      (severities ? '<div class="table-wrap"><table><thead><tr><th>Severidade</th>' +
+      '<th>Abertas</th><th>Horas-finding abertas</th><th>Corrigidas</th>' +
+      '<th>Horas-finding até correção</th></tr></thead><tbody>' + severities +
+      '</tbody></table></div>' : '<p>Sem findings observados.</p>') +
+      '<p><small class="muted">Contagens por finding, não por ativo/CVE. Histórico medido a partir de first_seen; não reconstrói períodos sem telemetria. Estados aceitos não são classificados como remediados.</small></p>';
+  } catch (error) {
+    box.textContent = 'Falha ao carregar exposição: ' + error.message;
+    toast('Exposure Time: ' + error.message, 'fail');
+  }
+};
+
+
 window.showExceptionBudgetTrend = async () => {
   const box = document.getElementById('exceptionGovernanceReport');
   if (!box) return;
