@@ -465,3 +465,73 @@ def test_pending_duplicate_waiver_is_rejected(db):
             item.id, body, principal={"actor": "user:admin1", "role": "admin"}, db=db,
         )
     assert exc.value.status_code == 409
+
+
+def test_exception_budget_report_uses_bounded_queries(db):
+    from app.models import ExceptionBudget
+    from sqlalchemy import event
+    campaign(db)
+    for idx in range(30):
+        db.add(ExceptionBudget(
+            id=f"budget-scale-{idx}", name=f"Budget scale {idx}",
+            scope_type="owner", scope_value=f"owner-{idx}",
+            max_waivers_month=5, max_hours_month=24,
+            created_by="admin", updated_by="admin",
+        ))
+    db.commit()
+    sql = []
+    def count(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            sql.append(statement)
+    event.listen(main.engine, "before_cursor_execute", count)
+    try:
+        report = main.exception_budget_report(db)
+    finally:
+        event.remove(main.engine, "before_cursor_execute", count)
+    assert report["summary"]["budgets"] == 30
+    assert len(sql) <= 3
+
+
+def test_exception_budget_trend_counts_distinct_months(db):
+    from app.models import ExceptionBudget, PatchPolicyWaiver
+    from datetime import datetime, timedelta, timezone
+    item = campaign(db)
+    policy = PatchPolicyDefinition(
+        id="trend-p1", name="Trend", version=1, enabled=True, priority=100,
+        policy_json=main.dump(main.validate_patch_policy_document(document())),
+        policy_sha256=main._evidence_sha256(main.validate_patch_policy_document(document())),
+        created_by="admin",
+    )
+    db.add(policy)
+    db.add(ExceptionBudget(
+        id="trend-b1", name="Trend owner", scope_type="owner", scope_value="iam-owner",
+        max_waivers_month=5, max_hours_month=24, created_by="admin", updated_by="admin",
+    ))
+    db.commit()
+    reference = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    db.add_all([
+        PatchPolicyWaiver(
+            id="trend-w1", campaign_id=item.id, policy_id=policy.id,
+            policy_sha256=policy.policy_sha256, reason="historical", owner="iam-owner",
+            approved_by="admin", expires_at=datetime(2026, 8, 13, tzinfo=timezone.utc),
+            created_at=datetime(2026, 8, 12, tzinfo=timezone.utc),
+        ),
+        PatchPolicyWaiver(
+            id="trend-w2", campaign_id=item.id, policy_id=policy.id,
+            policy_sha256=policy.policy_sha256, reason="current", owner="iam-owner",
+            approved_by="admin", expires_at=datetime(2026, 9, 13, tzinfo=timezone.utc),
+            created_at=datetime(2026, 9, 12, tzinfo=timezone.utc),
+        ),
+    ])
+    db.commit()
+    result = main.exception_budget_trend(db, reference=reference, months=2)
+    row = result["budgets"][0]
+    assert row["recurring"] is True
+    assert [m["used_waivers"] for m in row["monthly"]] == [1, 1]
+
+
+def test_exception_budget_trend_rejects_unbounded_months(db):
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        main.exception_budget_trend(db, months=100)
+    assert exc.value.status_code == 400
