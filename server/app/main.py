@@ -8109,6 +8109,12 @@ def waiver_governance_report(db: Session, reference: datetime | None = None) -> 
     expiring = []
     by_policy = {}
     by_owner = {}
+    # One batched lookup rather than a separate SELECT for every waiver.
+    policy_ids = {item.policy_id for item in items}
+    policies = db.query(PatchPolicyDefinition.id, PatchPolicyDefinition.name).filter(
+        PatchPolicyDefinition.id.in_(policy_ids)
+    ).all() if policy_ids else []
+    policy_names = {policy_id: name for policy_id, name in policies}
     for item in items:
         serialized = serialize_patch_policy_waiver(item, reference)
         if serialized["active"]:
@@ -8116,8 +8122,7 @@ def waiver_governance_report(db: Session, reference: datetime | None = None) -> 
             expires = item.expires_at if item.expires_at.tzinfo else item.expires_at.replace(tzinfo=timezone.utc)
             if expires <= reference + timedelta(hours=24):
                 expiring.append(serialized)
-        policy = db.get(PatchPolicyDefinition, item.policy_id)
-        policy_name = policy.name if policy else item.policy_id
+        policy_name = policy_names.get(item.policy_id, item.policy_id)
         by_policy[policy_name] = by_policy.get(policy_name, 0) + 1
         owner = item.owner or "unassigned"
         by_owner[owner] = by_owner.get(owner, 0) + 1
