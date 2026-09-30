@@ -1968,7 +1968,7 @@ window.showExceptionGovernance = async () => {
       '</code></td><td>' + esc(w.requested_by || '-') +
       '</td><td>' + esc(when(w.expires_at)) +
       '</td><td>' + (roleAtLeast('admin')
-        ? '<button class="row-action" onclick="approvePolicyWaiverFromReport(\\'' + esc(w.id) + '\\')">2ª aprovação</button>'
+        ? '<button class="row-action" onclick="approvePolicyWaiverFromReport(&quot;' + esc(w.id) + '&quot;)">2ª aprovação</button>'
         : 'aguardando admin') + '</td></tr>').join('');
     const expiring = (data.expiring_24h || []).map((w) =>
       '<tr><td>' + esc(w.owner || '-') + '</td><td>' + esc(when(w.expires_at)) +
