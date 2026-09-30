@@ -535,3 +535,72 @@ def test_exception_budget_trend_rejects_unbounded_months(db):
     with pytest.raises(HTTPException) as exc:
         main.exception_budget_trend(db, months=100)
     assert exc.value.status_code == 400
+
+
+def test_exception_budget_precision_escalates_without_display_rounding(db):
+    from app.models import ExceptionBudget, PatchPolicyWaiver
+    from datetime import datetime, timedelta, timezone
+    item = campaign(db, ring=10)
+    db.add(ExceptionBudget(
+        id="precision-budget", name="Precision budget", scope_type="owner",
+        scope_value="iam-owner", max_waivers_month=10, max_hours_month=1,
+        created_by="admin", updated_by="admin",
+    ))
+    policy = PatchPolicyDefinition(
+        id="precision-policy", name="Precision", version=1, enabled=True,
+        priority=100, policy_json=main.dump(main.validate_patch_policy_document(document())),
+        policy_sha256=main._evidence_sha256(main.validate_patch_policy_document(document())),
+        created_by="admin",
+    )
+    db.add(policy)
+    # One second beyond the budget should not be masked by a two-decimal UI.
+    reference = datetime.now(timezone.utc)
+    db.add(PatchPolicyWaiver(
+        id="precision-waiver", campaign_id=item.id, policy_id=policy.id,
+        policy_sha256=policy.policy_sha256, reason="precision test", owner="iam-owner",
+        approved_by="admin", created_at=reference-timedelta(seconds=3599),
+        expires_at=reference,
+    ))
+    db.commit()
+    result = main.exception_budget_assessment(
+        db, item, "iam-owner", reference + timedelta(seconds=2), reference
+    )
+    assert result["requires_escalation"] is True
+    assert result["budgets"][0]["exceeded"] is True
+
+
+def test_waiver_governance_report_batched_policy_lookup(db):
+    from app.models import PatchPolicyWaiver
+    from sqlalchemy import event
+    from datetime import datetime, timedelta, timezone
+    item = campaign(db, ring=10)
+    policy = PatchPolicyDefinition(
+        id="batch-policy", name="Batch policy", version=1, enabled=True,
+        priority=100, policy_json=main.dump(main.validate_patch_policy_document(document())),
+        policy_sha256=main._evidence_sha256(main.validate_patch_policy_document(document())),
+        created_by="admin",
+    )
+    db.add(policy)
+    db.commit()
+    reference = datetime.now(timezone.utc)
+    db.add_all([
+        PatchPolicyWaiver(
+            id=f"batch-waiver-{i}", campaign_id=item.id, policy_id=policy.id,
+            policy_sha256=policy.policy_sha256, reason="volume test", owner="iam",
+            approved_by="admin", created_at=reference,
+            expires_at=reference + timedelta(hours=6),
+        ) for i in range(75)
+    ])
+    db.commit()
+    statements = []
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        report = main.waiver_governance_report(db, reference)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert report["summary"]["active"] == 75
+    assert report["top_policies"][0]["policy"] == "Batch policy"
+    assert len(statements) <= 3
