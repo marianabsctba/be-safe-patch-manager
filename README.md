@@ -23,6 +23,12 @@ O relatório `GET /api/admin/reports/vulnerability-exposure-hotspots?limit=20` e
 
 A coleta lê somente as colunas necessárias dos findings e carrega dados de host apenas para os endpoints selecionados. O número de consultas não aumenta com cada finding. O limite de retorno é de 1 a 100 endpoints, mantendo os findings não correlacionados em um grupo agregado separado, sem inventar associação por hostname/IP. A unidade de exposição é finding-hours, não ativos ou CVEs distintos.
 
+### Exportação CSV dos hotspots
+
+O botão **Exportar Hotspots CSV** consulta o mesmo relatório autenticado, solicitando até **100 endpoints** (limite da API). O CSV UTF-8 contém data/hora da observação, ID/hostname, contagens explícitas, horas-finding e totais agregados de findings sem agente e timestamps inválidos. A exportação mantém a ordenação retornada pelo servidor e inclui uma linha de resumo quando não houver endpoints correlacionados.
+
+**Escopo:** os 100 endpoints são somente os primeiros do ranking; os totais agregados continuam refletindo todos os findings abertos analisados. Não é um inventário completo nem uma comprovação de remediação. Campos de texto são protegidos contra execução de fórmulas ao abrir o CSV em planilhas. O teste `node --test scripts/test-exposure-hotspots-export.cjs` integra o CI.
+
 ## Observed Exposure Time
 
 O console inclui **Exposure Time** no Risk Program Overview. O endpoint `GET /api/admin/reports/vulnerability-exposure` fornece duração observada agregada por severidade e estado, incluindo findings abertos por mais de 30/90 dias, findings corrigidos com `resolved_at` e exposições abertas sem correlação com agente.
