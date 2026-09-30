@@ -1,3 +1,10 @@
+## Unreleased — Triagem operacional dos hotspots
+
+- Nova visão somente leitura para cruzar até 100 endpoints do relatório de exposição com o inventário carregado, exclusivamente pelo agent_id.
+- Evidencia agentes ausentes no inventário carregado, offline/heartbeat desconhecido, reboot e contagem independente de patches pendentes.
+- Navegação ao drawer do endpoint apenas quando há correspondência exata; sem automação de execução ou correlação presumida finding–patch.
+- Testes de correlação, limites da evidência e escaping de HTML adicionados ao CI.
+
 ## Unreleased — Exportação rastreável de Exposure Hotspots
 
 - Botão de exportação CSV autenticada na visão executiva (até 100 endpoints ranqueados).
