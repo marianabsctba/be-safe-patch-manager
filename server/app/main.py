@@ -3338,6 +3338,80 @@ def vulnerability_exposure_report(db: Session, reference: datetime | None = None
     }
 
 
+def vulnerability_exposure_hotspots(
+    db: Session, reference: datetime | None = None, limit: int = 20,
+) -> dict:
+    """Rank observed exposure concentration without inventing a composite risk score."""
+    if not 1 <= limit <= 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    reference = reference or now()
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+
+    # Scan only open-finding columns; keep one aggregate per mapped asset.
+    findings = db.query(
+        VulnerabilityFinding.agent_id, VulnerabilityFinding.severity,
+        VulnerabilityFinding.first_seen,
+    ).filter(VulnerabilityFinding.status == "open").yield_per(1000)
+    assets: dict[str, dict] = {}
+    unmatched = {"findings": 0, "critical": 0, "high": 0, "older_30d": 0}
+    invalid_timestamps = 0
+    for agent_id, severity, first_seen in findings:
+        severity = str(severity or "unknown").lower().strip()
+        if not agent_id:
+            item = unmatched
+        else:
+            item = assets.setdefault(agent_id, {
+                "agent_id": agent_id, "findings": 0, "critical": 0, "high": 0,
+                "older_30d": 0, "older_90d": 0, "observed_finding_hours": 0.0,
+            })
+        item["findings"] += 1
+        item["critical"] += int(severity == "critical")
+        item["high"] += int(severity == "high")
+        if first_seen is None:
+            invalid_timestamps += 1
+            continue
+        start = first_seen if first_seen.tzinfo else first_seen.replace(tzinfo=timezone.utc)
+        if start > reference:
+            invalid_timestamps += 1
+            continue
+        hours = (reference - start).total_seconds() / 3600.0
+        item["older_30d"] += int(hours >= 720)
+        if agent_id:
+            item["older_90d"] += int(hours >= 2160)
+            item["observed_finding_hours"] += hours
+
+    # Explicit sort keys. No undisclosed score and no per-finding ORM joins.
+    ranked = sorted(
+        assets.values(),
+        key=lambda item: (
+            -item["critical"], -item["high"], -item["older_90d"],
+            -item["older_30d"], -item["observed_finding_hours"], item["agent_id"],
+        ),
+    )[:limit]
+    selected_ids = [item["agent_id"] for item in ranked]
+    agents = db.query(Agent.id, Agent.hostname).filter(Agent.id.in_(selected_ids)).all() if selected_ids else []
+    hostnames = {agent_id: hostname for agent_id, hostname in agents}
+    for item in ranked:
+        item["hostname"] = hostnames.get(item["agent_id"], "")
+        item["observed_finding_hours"] = round(item["observed_finding_hours"], 2)
+    return {
+        "generated_at": reference.isoformat(),
+        "summary": {
+            "mapped_assets_with_open_findings": len(assets),
+            "unmapped_open_findings": unmatched,
+            "invalid_timestamps": invalid_timestamps,
+            "returned_assets": len(ranked),
+        },
+        "items": ranked,
+        "methodology": {
+            "rank_order": ["critical_count", "high_count", "over_90_days", "over_30_days", "observed_finding_hours", "agent_id"],
+            "scope": "open findings with an explicit agent_id; unknown agents remain visible by ID",
+            "limitations": "Observation-based findings rather than unique CVEs; critical counts drive order, not an inferred risk score. Unmapped findings are reported separately.",
+        },
+    }
+
+
 ASSET_CRITICALITY_TAGS = {
     "tier0": 5,
     "mission-critical": 5,
@@ -8906,6 +8980,13 @@ def admin_vulnerability_sla_report(_=Depends(require_viewer), db: Session = Depe
 @app.get("/api/admin/reports/vulnerability-exposure")
 def get_vulnerability_exposure_report(_=Depends(require_viewer), db: Session = Depends(get_db)):
     return vulnerability_exposure_report(db)
+
+
+@app.get("/api/admin/reports/vulnerability-exposure-hotspots")
+def get_vulnerability_exposure_hotspots(
+    limit: int = 20, _=Depends(require_viewer), db: Session = Depends(get_db),
+):
+    return vulnerability_exposure_hotspots(db, limit=limit)
 
 
 @app.post("/api/admin/agents/{agent_id}/risk-simulation")
