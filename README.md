@@ -189,6 +189,10 @@ O console exibe painéis de **Exception Governance** e **Exception Budget** junt
 
 Administradores podem cadastrar novos orçamentos por owner ou business service e realizar a segunda aprovação de waivers pendentes diretamente no console. A API continua aplicando RBAC e validações, independentemente dos controles do navegador.
 
+## Integridade e desempenho das exceções
+
+Os relatórios de governança carregam nomes de policies em lote, evitando consultas N+1 conforme cresce o número de waivers. Os testes de desempenho verificam limites de consultas com múltiplos budgets e dezenas de exceções. A decisão de escalonamento compara horas **sem arredondamento**, mesmo quando o painel apresenta apenas duas casas decimais.
+
 ## Exception Debt / histórico e escalabilidade
 
 Relatórios de Exception Budget agora reutilizam **uma única coleta de waivers** por janela e carregam os serviços das campanhas em lote; o número de consultas não cresce com o número de budgets. O cálculo usa a duração exata (sem arredondamento) para decidir escalonamento.
