@@ -183,6 +183,12 @@ Assim o histórico consegue responder:
 
 sem recalcular a resposta com os dados de hoje.
 
+## Console de governança de exceções
+
+O console exibe painéis de **Exception Governance** e **Exception Budget** junto às políticas automáticas. O operador pode consultar exceções ativas, aprovações pendentes, vencimentos nas próximas 24 horas, histórico de policies mais excepcionadas e consumo mensal por orçamento.
+
+Administradores podem cadastrar novos orçamentos por owner ou business service e realizar a segunda aprovação de waivers pendentes diretamente no console. A API continua aplicando RBAC e validações, independentemente dos controles do navegador.
+
 ## Exception Budget / Risk Budget
 
 A v0.58 adiciona orçamento mensal de exceções por `owner` ou `business_service`.
