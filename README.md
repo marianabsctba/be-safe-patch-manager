@@ -17,6 +17,12 @@ Patch management **agent-based para Windows e Linux** com inventário, patch int
 
 > As capturas deste README são geradas automaticamente a partir do front-end atual da `main`, com dados demonstrativos apenas para preencher a interface. Assim, menu, componentes, formulários, labels e estilos acompanham o produto real.
 
+## Exposure Hotspots / concentração por endpoint
+
+O relatório `GET /api/admin/reports/vulnerability-exposure-hotspots?limit=20` e o botão **Exposure Hotspots** do dashboard mostram onde estão concentrados os findings abertos. A ordenação é explícita: quantidade de críticos, altos, findings há mais de 90/30 dias e horas-finding observadas, com desempate pelo ID do agente. Não há score oculto.
+
+A coleta lê somente as colunas necessárias dos findings e carrega dados de host apenas para os endpoints selecionados. O número de consultas não aumenta com cada finding. O limite de retorno é de 1 a 100 endpoints, mantendo os findings não correlacionados em um grupo agregado separado, sem inventar associação por hostname/IP. A unidade de exposição é finding-hours, não ativos ou CVEs distintos.
+
 ## Observed Exposure Time
 
 O console inclui **Exposure Time** no Risk Program Overview. O endpoint `GET /api/admin/reports/vulnerability-exposure` fornece duração observada agregada por severidade e estado, incluindo findings abertos por mais de 30/90 dias, findings corrigidos com `resolved_at` e exposições abertas sem correlação com agente.
