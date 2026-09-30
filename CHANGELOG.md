@@ -1,3 +1,10 @@
+## Unreleased — Exportação rastreável de Exposure Hotspots
+
+- Botão de exportação CSV autenticada na visão executiva (até 100 endpoints ranqueados).
+- Colunas para exposição observada, findings sem agente, datas inválidas e timestamp da coleta.
+- Sanitização contra CSV/spreadsheet formula injection e testes Node executados pelo CI.
+- Não confundir o top 100 com o conjunto inteiro; os agregados mantêm o escopo completo do relatório.
+
 # Changelog
 
 ## 0.58.0
