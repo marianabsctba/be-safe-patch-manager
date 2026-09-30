@@ -1957,6 +1957,110 @@ window.toggleFreezeWindow = async (id, enabled) => {
 
 
 
+window.showExceptionGovernance = async () => {
+  const box = document.getElementById('exceptionGovernanceReport');
+  if (!box) return;
+  try {
+    const data = await api('/api/admin/reports/policy-waiver-governance');
+    const s = data.summary || {};
+    const pending = (data.pending || []).map((w) => '<tr><td>' + esc(w.owner || '-') +
+      '</td><td><code>' + esc(String(w.policy_id || '').slice(0, 12)) +
+      '</code></td><td>' + esc(w.requested_by || '-') +
+      '</td><td>' + esc(when(w.expires_at)) +
+      '</td><td>' + (roleAtLeast('admin')
+        ? '<button class="row-action" onclick="approvePolicyWaiverFromReport(\\'' + esc(w.id) + '\\')">2ª aprovação</button>'
+        : 'aguardando admin') + '</td></tr>').join('');
+    const expiring = (data.expiring_24h || []).map((w) =>
+      '<tr><td>' + esc(w.owner || '-') + '</td><td>' + esc(when(w.expires_at)) +
+      '</td><td>' + esc(w.campaign_id || '-') + '</td></tr>').join('');
+    const top = (data.top_policies || []).map((p) => '<tr><td>' + esc(p.policy) +
+      '</td><td>' + esc(p.waivers) + '</td></tr>').join('');
+    box.innerHTML =
+      '<div class="campaign-stats"><span>Ativos <strong>' + esc(s.active || 0) + '</strong></span>' +
+      '<span>Pendentes <strong>' + esc(s.pending || 0) + '</strong></span>' +
+      '<span>Vencem em 24h <strong>' + esc(s.expiring_24h || 0) + '</strong></span>' +
+      '<span>Expirados <strong>' + esc(s.expired || 0) + '</strong></span></div>' +
+      '<h4>Pendentes de aprovação</h4>' +
+      (pending ? '<div class="table-wrap"><table><thead><tr><th>Owner</th><th>Policy ID</th><th>Solicitado por</th><th>Expiração</th><th>Ação</th></tr></thead><tbody>' + pending + '</tbody></table></div>' : '<p>Nenhuma aprovação pendente.</p>') +
+      '<h4>Expiram nas próximas 24h</h4>' +
+      (expiring ? '<div class="table-wrap"><table><thead><tr><th>Owner</th><th>Expiração</th><th>Campanha</th></tr></thead><tbody>' + expiring + '</tbody></table></div>' : '<p>Nenhuma exceção próxima do vencimento.</p>') +
+      '<h4>Policies com mais exceções (histórico)</h4>' +
+      (top ? '<div class="table-wrap"><table><thead><tr><th>Policy</th><th>Waivers</th></tr></thead><tbody>' + top + '</tbody></table></div>' : '<p>Sem histórico.</p>');
+  } catch (error) {
+    box.textContent = 'Falha ao carregar governança: ' + error.message;
+    toast('Governança: ' + error.message, 'fail');
+  }
+};
+
+window.approvePolicyWaiverFromReport = async (waiverId) => {
+  if (!requireRole('admin', 'Somente admin pode aprovar waivers.')) return;
+  const reason = prompt('Justificativa da segunda aprovação:');
+  if (!reason) return;
+  try {
+    await api('/api/admin/policy-waivers/' + encodeURIComponent(waiverId) + '/approve', {
+      method: 'POST', body: JSON.stringify({ reason }),
+    });
+    toast('Segunda aprovação registrada.');
+    await showExceptionGovernance();
+  } catch (error) {
+    toast('Aprovação: ' + error.message, 'fail');
+  }
+};
+
+window.showExceptionBudgets = async () => {
+  const box = document.getElementById('exceptionGovernanceReport');
+  if (!box) return;
+  try {
+    const data = await api('/api/admin/reports/exception-budgets');
+    const s = data.summary || {};
+    const rows = (data.items || []).map((x) => {
+      const b = x.budget || {};
+      return '<tr><td><strong>' + esc(b.name || '-') + '</strong><br><small>' +
+        esc(b.scope_type || '') + ': ' + esc(b.scope_value || '') + '</small></td>' +
+        '<td>' + esc(x.used_waivers) + ' / ' + esc(b.max_waivers_month) + '</td>' +
+        '<td>' + esc(x.used_hours) + 'h / ' + esc(b.max_hours_month) + 'h</td>' +
+        '<td>' + badge(String(x.state || '').toUpperCase(),
+          x.state === 'exhausted' ? 'fail' : x.state === 'warning' ? 'warn' : 'ok') + '</td></tr>';
+    }).join('');
+    box.innerHTML = '<div class="campaign-stats"><span>Budgets <strong>' + esc(s.budgets || 0) +
+      '</strong></span><span>Em alerta <strong>' + esc(s.warning || 0) +
+      '</strong></span><span>Esgotados <strong>' + esc(s.exhausted || 0) +
+      '</strong></span></div>' +
+      (rows ? '<div class="table-wrap"><table><thead><tr><th>Orçamento</th><th>Waivers/mês</th><th>Horas/mês</th><th>Estado</th></tr></thead><tbody>' +
+      rows + '</tbody></table></div>' : '<p>Nenhum orçamento cadastrado.</p>');
+  } catch (error) {
+    box.textContent = 'Falha ao carregar orçamentos: ' + error.message;
+    toast('Exception Budget: ' + error.message, 'fail');
+  }
+};
+
+window.createExceptionBudgetFromConsole = async () => {
+  if (!requireRole('admin', 'Somente admin pode cadastrar orçamentos.')) return;
+  const name = prompt('Nome do orçamento:');
+  if (!name) return;
+  const scope_type = prompt('Escopo: owner ou business_service:', 'owner');
+  if (!['owner', 'business_service'].includes(scope_type)) return toast('Escopo inválido.', 'fail');
+  const scope_value = prompt('Nome do owner ou business service:');
+  if (!scope_value) return;
+  const max_waivers_month = Number(prompt('Máximo de exceções por mês:', '5'));
+  const max_hours_month = Number(prompt('Máximo de horas de exceção por mês:', '72'));
+  if (!Number.isInteger(max_waivers_month) || max_waivers_month < 1 ||
+      !Number.isInteger(max_hours_month) || max_hours_month < 1) {
+    return toast('Os limites devem ser inteiros positivos.', 'fail');
+  }
+  try {
+    await api('/api/admin/exception-budgets', {
+      method: 'POST',
+      body: JSON.stringify({ name, scope_type, scope_value, max_waivers_month, max_hours_month }),
+    });
+    toast('Exception Budget criado e auditado.');
+    await showExceptionBudgets();
+  } catch (error) {
+    toast('Novo orçamento: ' + error.message, 'fail');
+  }
+};
+
+
 window.exportPatchPolicyBundle = async () => {
   try {
     const bundle = await api('/api/admin/patch-policies/bundle/export');
